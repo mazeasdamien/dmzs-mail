@@ -7,7 +7,7 @@
 
 // Bump on every shell change. The activate handler deletes any cache whose
 // name is not this one, so an old index.html cannot outlive a deploy.
-const SHELL = "dmzs-mail-shell-v4";
+const SHELL = "dmzs-mail-shell-v5";
 
 const SHELL_FILES = [
   "/",
@@ -42,10 +42,9 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
 
-  // The API, OAuth and auth flows always go to the network.
+  // The API and auth flows always go to the network.
   if (
     url.pathname.startsWith("/api/") ||
-    url.pathname.startsWith("/oauth/") ||
     url.pathname.startsWith("/internal/") ||
     url.pathname === "/auth" ||
     url.pathname === "/logout"

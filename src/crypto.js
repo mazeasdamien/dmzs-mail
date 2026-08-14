@@ -1,9 +1,9 @@
 /**
- * Sealing OAuth tokens before they touch D1.
+ * Sealing stored credentials before they touch D1.
  *
  * AES-256-GCM with a key that lives only as a Worker secret (ENC_KEY,
  * 32 random bytes, base64). A dump of the database therefore contains
- * ciphertext, not Google and Microsoft refresh tokens. The IV rides in
+ * ciphertext, not an iCloud app-specific password. The IV rides in
  * front of the ciphertext; GCM authenticates, so tampering reads as null.
  */
 

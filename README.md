@@ -1,10 +1,9 @@
 # dmzs-mail
 
-One inbox for Gmail, Outlook and iCloud, served by a single Cloudflare
-Worker on the free tier, read from a PWA pinned to your phone. Read,
-archive, reply. No mail client installed anywhere, no ads read your mail,
-and the only party holding your messages besides your providers is your own
-Cloudflare account.
+Your iCloud mailbox, served by a single Cloudflare Worker on the free tier
+and read from a PWA pinned to your phone. Read, archive, reply. No mail
+client installed anywhere, no ads read your mail, and the only party holding
+your messages besides Apple is your own Cloudflare account.
 
 **Running cost: $0.** Same free allowances as dmzs-drive and dmzs-music.
 
@@ -14,18 +13,17 @@ Cloudflare account.
 
 ```
                  ┌──────────────────────────────────────────────┐
- Gmail API  ◄───►│                                              │
-                 │   Worker: API, auth, sync cron, defusing     │◄──► phone / desktop (PWA)
- iCloud IMAP◄───►│   D1: accounts, message index, jobs          │
-                 │   R2: defused bodies                         │
+                 │   Worker: API, auth, sync cron, defusing     │
+ iCloud ◄──────► │   D1: accounts, message index, jobs          │◄──► phone / desktop (PWA)
+  IMAP/SMTP      │   R2: defused bodies                         │
                  └──────────────────────────────────────────────┘
 ```
 
-| Provider | Read | Archive | Send | How |
-|---|---|---|---|---|
-| Gmail | ✓ | ✓ | ✓ | Worker ↔ Gmail REST API, OAuth |
-| iCloud | ✓ | ✓ | ✓ | Worker ↔ IMAP/SMTP over a Worker socket, app-specific password |
-| Outlook / Hotmail | – | – | – | code retained, no UI; two secrets away from working |
+One provider, iCloud, over IMAP and SMTP spoken by the Worker itself using an
+app-specific password. Gmail and Outlook were supported once and have been
+removed outright — modules, routes, OAuth, branching and schema. There is no
+dispatch layer and no abstraction over "a mail account", because there is
+nothing to dispatch between.
 
 Apple has no mail API. v1 solved that with a Python agent on a PC you owned,
 which pulled jobs from the Worker — no open port, and the iCloud password
@@ -47,8 +45,8 @@ The old agent still sits in `agent/` and still works. Nothing points at it.
   than a minute behind, and the per-invocation limits of the free plan stay
   respected (~15 subrequests against a ceiling of 50). The **Sync** button
   on an account does the same immediately.
-- Every folder syncs, not just the inbox: Gmail labels including Spam, Sent
-  and your own, and every selectable IMAP mailbox on iCloud.
+- Every folder syncs, not just the inbox: every selectable IMAP mailbox,
+  including Sent, Spam and any you made yourself.
 - Message **bodies** are defused before storage — scripts, event handlers,
   iframes and `javascript:` links stripped, remote loads rewritten to
   `data-blocked-src` — then cached in R2 so the second read is instant.
@@ -61,10 +59,10 @@ The old agent still sits in `agent/` and still works. Nothing points at it.
 
 ### What a leak would cost
 
-OAuth refresh tokens **and the iCloud app-specific password** are sealed
-with AES-256-GCM before touching D1; the key (`ENC_KEY`) exists only as a
-Worker secret. Someone reading your D1 database would get headers, snippets
-and ciphertext — not usable credentials.
+The iCloud app-specific password is sealed with AES-256-GCM before touching
+D1; the key (`ENC_KEY`) exists only as a Worker secret. Someone reading your
+D1 database would get headers, snippets and ciphertext — not a usable
+credential.
 
 Since IMAP moved into the Worker, that ciphertext is the whole story for
 iCloud too: there is no longer a copy of the password that exists only on
@@ -87,44 +85,7 @@ your account** — created 2026-08-12; the database id is pinned in
 `wrangler.jsonc`. If you ever rebuild from scratch:
 `wrangler d1 create dmzs-mail && wrangler r2 bucket create dmzs-mail`.
 
-### 1. Google Cloud Console (for Gmail)
-
-1. <https://console.cloud.google.com> → project selector → **New project**
-   → name `dmzs-mail`.
-2. **APIs & Services → Library** → search **Gmail API** → **Enable**.
-3. **APIs & Services → OAuth consent screen**: External, app name
-   `dmzs-mail`, your address everywhere it asks. No logo, no scopes needed
-   on this screen (they are requested at runtime).
-4. **Publish the app to Production.** This matters: an app left in
-   *Testing* has its refresh tokens killed after 7 days, and you would be
-   reconnecting Gmail every week. In production, unverified, it simply
-   shows a "Google hasn't verified this app" interstitial when *you*
-   connect — click **Advanced → continue**. For a personal app with one
-   user, that is the intended path.
-5. **Credentials → Create credentials → OAuth client ID** → type **Web
-   application** → Authorized redirect URI, exactly:
-   `https://mail.agentxr.app/oauth/google`
-6. Keep the **Client ID** and **Client secret** for step 4 below.
-
-### 2. Microsoft Entra (for Outlook)
-
-1. <https://portal.azure.com> → **Microsoft Entra ID → App registrations →
-   New registration**. Name `dmzs-mail`.
-2. Supported account types: **"Accounts in any organizational directory and
-   personal Microsoft accounts"** — the last option. Without it, personal
-   outlook.com addresses cannot sign in.
-3. Redirect URI: platform **Web**, value
-   `https://mail.agentxr.app/oauth/microsoft`
-4. After creating: **Overview** → copy the **Application (client) ID**.
-5. **Certificates & secrets → New client secret** → 24 months (the
-   maximum). Copy the **Value** column immediately — it is shown once.
-   Put its expiry in your calendar: when it lapses, Outlook sync stops
-   until you mint a new one and update the secret.
-6. Permissions are requested at sign-in (`Mail.ReadWrite`, `Mail.Send`,
-   `offline_access`, `User.Read`); a personal account consents for itself,
-   no admin involved.
-
-### 3. iCloud app-specific password
+### 1. iCloud app-specific password
 
 <https://account.apple.com> → **Sign-In and Security → App-Specific
 Passwords** → generate one named `dmzs-mail`. iCloud Mail must be enabled on
@@ -137,7 +98,7 @@ Apple before anything is stored, so a typo fails at the form rather than
 silently every minute afterwards. Not your Apple ID password: that will be
 rejected.
 
-### 4. Schema, deploy, secrets
+### 2. Schema, deploy, secrets
 
 ```sh
 npm install
@@ -145,7 +106,7 @@ npm run db:schema   # tables into the live D1 (all CREATE TABLE IF NOT EXISTS)
 npm run deploy      # Worker + PWA + cron, served at mail.agentxr.app
 npm run secrets     # generates AUTH_SECRET/BOOTSTRAP_KEY/WORKER_TOKEN/ENC_KEY,
                     # prints your activation link and the agent token — SAVE BOTH —
-                    # then asks you to paste the four OAuth values from steps 1–2
+                    # then offers to store a Gemini key for the writing assistant
 ```
 
 **Deploy before secrets, not after.** `wrangler secret put` writes to a Worker
@@ -156,18 +117,14 @@ secrets set yet the Worker is fail-closed, `/auth` refuses every key, and no
 mail can be reached. Secrets take effect the moment they land, so there is no
 second deploy to remember.
 
-### 5. Activate devices, connect accounts
+### 3. Activate devices, connect iCloud
 
 Open `https://mail.agentxr.app/auth?k=<BOOTSTRAP_KEY>` once per device
 (the link `npm run secrets` printed). Pin to the iPhone home screen like
-the others. Then, in the app: account button → **Connect Gmail**,
-**Connect Outlook**. First sync lands within a cron tick, or immediately
-via the account's **Sync** button.
+the others.
 
-### 6. Connect iCloud
-
-Account button → **Connect iCloud** → your address and the app-specific
-password from step 3. That is the whole step: the Worker speaks IMAP itself,
+Then, in the app: account button → **Connect iCloud** → your address and the
+app-specific password from step 1. That is the whole step: the Worker speaks IMAP itself,
 so there is nothing to install and nothing to keep running.
 
 First sync lands within a minute. History fills in behind it — each pass
@@ -225,25 +182,17 @@ itself is never stored.
 ## Not here yet
 
 Bulk selection, swipe gestures, threading (messages are listed flat), and
-signatures. Multiple accounts work in the schema but only iCloud is
-implemented — the Gmail and Outlook modules were deleted.
+signatures. The schema still carries several accounts per install, and the
+UI still shows an account filter when there is more than one — but iCloud is
+the only provider there is.
 
 ## If something misbehaves
 
-- An account badge says **reconnect needed**: its refresh token died
-  (revoked, password change, Google testing-mode expiry). Accounts →
-  Connect that provider again; same address overwrites in place.
-- Gmail connect loops on the unverified-app screen: the consent screen was
-  left in *Testing* — publish it to production (step 1.4).
-- "No refresh token came back" when connecting Google: that account
-  authorized the app before without granting offline access — remove
-  dmzs-mail under <https://myaccount.google.com/permissions>, connect again.
-- Outlook stops syncing months from now: the Entra client secret expired
-  (step 2.5) — new secret, `npx wrangler secret put MS_CLIENT_SECRET`.
-- iCloud stops syncing with an authentication error: the app-specific
+- An account badge says **reconnect needed**, or iCloud stops syncing with
+  an authentication error: the app-specific
   password was revoked or regenerated. Account button → **Connect iCloud**
   again with a fresh one; same address overwrites in place.
-- An iCloud message shows "too large to render here": over 2 MB, listed from
+- A message shows "too large to render here": over 2 MB, listed from
   its headers by design. Open it in Mail or at icloud.com.
 - Watch it live: `npm run tail`.
 

@@ -85,31 +85,29 @@ eq(encodeHeader("plain ascii"), "plain ascii", "ASCII pur laissé tel quel");
 
 console.log("\n── copies cachées ──────────────────────────");
 {
-  // L'en-tête Bcc n'est demandé que par le chemin Gmail, qui le retire avant
-  // l'envoi. Sur le chemin SMTP il ne doit jamais apparaître : il partirait
-  // tel quel chez tout le monde.
+  // buildRfc822 n'écrit JAMAIS de Bcc. Un tel en-tête partirait tel quel chez
+  // tout le monde, ce qui est l'inverse de « caché » : les destinataires
+  // invisibles ne vivent que dans l'enveloppe SMTP, jamais dans le message.
   ok(!raw.includes("Bcc:"), "pas de Bcc quand aucun n'est passé");
 
   const avec = buildRfc822({
-    from: "d@x.fr",
-    to: "a@y.fr",
-    cc: "c@y.fr",
-    bcc: "secret@y.fr",
-    subject: "Salut",
-    text: "corps",
+    from: "d@x.fr", to: "a@y.fr", cc: "c@y.fr", subject: "Salut", text: "corps",
   });
   ok(avec.includes("Cc: c@y.fr"), "Cc présent");
-  ok(avec.includes("Bcc: secret@y.fr"), "Bcc présent quand demandé");
+  ok(!/^Bcc:/im.test(avec), "aucun en-tête Bcc");
 
-  const sans = buildRfc822({
-    from: "d@x.fr",
-    to: "a@y.fr",
-    cc: "c@y.fr",
-    subject: "Salut",
-    text: "corps",
+  // Et même en le passant : le paramètre n'existe plus, donc rien ne doit
+  // ressortir. C'est ce test qui garde le piège refermé pour la suite.
+  const force = buildRfc822({
+    from: "d@x.fr", to: "a@y.fr", bcc: "secret@y.fr", subject: "Salut", text: "corps",
   });
-  ok(!sans.includes("secret@y.fr"), "aucune trace du destinataire caché sans bcc");
-  ok(!sans.includes("Bcc:"), "en-tête Bcc absent du message SMTP");
+  ok(!force.includes("secret@y.fr"), "un bcc passé par erreur ne fuit pas");
+  ok(!/^Bcc:/im.test(force), "un bcc passé par erreur n'écrit pas d'en-tête");
+
+  // Idem en multipart, où l'en-tête se glisserait dans une autre section.
+  const rich = buildRfc822({ from: "d@x.fr", to: "a@y.fr", html: "<p>x</p>", bcc: "secret@z.fr" });
+  ok(!/^Bcc:/im.test(rich), "pas de Bcc fantôme en multipart");
+  ok(!rich.includes("secret@z.fr"), "l'adresse cachée n'apparaît nulle part");
 }
 
 console.log("\n── message HTML sortant ────────────────────");
@@ -171,30 +169,6 @@ console.log("\n── pièces jointes ──────────────
   // Sans pièce jointe, pas d'enveloppe mixed inutile.
   ok(!buildRfc822({ from: "d@x.fr", to: "a@y.fr", text: "x" }).includes("multipart/mixed"),
      "pas de multipart/mixed quand il n'y a rien à joindre");
-}
-
-console.log("\n── copie cachée (Bcc) ──────────────────────");
-{
-  // Le seul destinataire qui doit rester invisible. L'API Gmail lit l'en-tête
-  // puis le retire ; en SMTP il partirait tel quel à tout le monde, donc ce
-  // chemin ne l'écrit pas du tout et ne nomme les adresses que dans l'enveloppe.
-  const withBcc = buildRfc822({
-    from: "d@x.fr", to: "a@y.fr", cc: "c@y.fr", bcc: "secret@z.fr",
-    subject: "s", text: "corps",
-  });
-  ok(withBcc.includes("Bcc: secret@z.fr"), "Bcc présent quand on le demande (chemin Gmail)");
-  ok(withBcc.includes("Cc: c@y.fr"), "Cc présent");
-
-  const smtpStyle = buildRfc822({
-    from: "d@x.fr", to: "a@y.fr", cc: "c@y.fr",
-    subject: "s", text: "corps",
-  });
-  ok(!/^Bcc:/im.test(smtpStyle), "aucun en-tête Bcc quand il n'est pas passé (chemin SMTP)");
-  ok(!smtpStyle.includes("secret@z.fr"), "l'adresse cachée n'apparaît nulle part");
-
-  // Et l'en-tête ne doit pas fuir dans la version HTML non plus.
-  const rich = buildRfc822({ from: "d@x.fr", to: "a@y.fr", html: "<p>x</p>" });
-  ok(!/^Bcc:/im.test(rich), "pas de Bcc fantôme en multipart");
 }
 
 console.log("\n── HTML désamorcé ──────────────────────────");

@@ -1,7 +1,7 @@
 /**
- * One-shot secret setup: generates what can be generated, asks for what
- * only you have (the two OAuth client secrets), and pushes everything with
- * `wrangler secret put`. Run it once from the project folder:
+ * One-shot secret setup: generates what can be generated, asks for the one
+ * key only you have, and pushes everything with `wrangler secret put`.
+ * Run it once from the project folder:
  *
  *   node scripts/secrets.mjs
  *

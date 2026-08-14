@@ -129,11 +129,6 @@ export function encodeHeader(s) {
   return `=?utf-8?B?${b64encode(new TextEncoder().encode(v))}?=`;
 }
 
-/**
- * A complete RFC 822 message, UTF-8, base64 body. This is what Gmail's
- * `messages.send` wants (base64url-wrapped by the caller) and what keeps the
- * iCloud agent's SMTP path byte-identical to the API path.
- */
 /** UTF-8 → base64, wrapped at 76 chars, which keeps old SMTP servers happy. */
 const b64Body = (s) =>
   (b64encode(new TextEncoder().encode(String(s ?? ""))).match(/.{1,76}/g) || [""]).join("\r\n");
@@ -189,18 +184,23 @@ const newBoundary = (tag) =>
   `dmzs-${tag}-` +
   [...crypto.getRandomValues(new Uint8Array(12))].map((b) => b.toString(16).padStart(2, "0")).join("");
 
+/**
+ * A complete RFC 822 message, UTF-8, base64 body — what goes out over SMTP,
+ * and the same bytes that get appended to the Sent mailbox afterwards.
+ *
+ * There is deliberately no `bcc`. A Bcc header written here would travel
+ * intact to every recipient, which is the exact opposite of blind; blind
+ * recipients belong in the SMTP envelope and nowhere else. The parameter used
+ * to exist because one API read the header and stripped it before delivery —
+ * that API is gone, and leaving the parameter behind would be leaving a
+ * loaded foot-gun for whoever next passes it in good faith.
+ */
 export function buildRfc822({
-  from, to, cc, bcc, subject, text, html, attachments, inReplyTo, references,
+  from, to, cc, subject, text, html, attachments, inReplyTo, references,
   messageId, date,
 }) {
   const lines = [`From: ${from}`, `To: ${to}`];
   if (cc) lines.push(`Cc: ${cc}`);
-  // Only the Gmail API path passes bcc. That API reads this header to pick the
-  // blind recipients and strips it before delivery, so it is the one place the
-  // header is wanted. Over SMTP it would travel intact to everyone, which is
-  // the opposite of blind — that path leaves it out and names the addresses in
-  // the envelope instead.
-  if (bcc) lines.push(`Bcc: ${bcc}`);
   // Date and Message-ID are not optional decoration: a message without them is
   // scored as spam by most receivers, threads nowhere, and — because the local
   // id is derived from the Message-ID — cannot be told apart from every other

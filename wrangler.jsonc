@@ -47,8 +47,7 @@
   },
 
   "vars": {
-    // Public address; OAuth redirect URIs are derived from it, so the value
-    // registered at Google/Microsoft must match exactly.
+    // Public address, used to build the activation link and absolute URLs.
     "APP_URL": "https://mail.agentxr.app",
 
     // Model for the compose assistant. Flash tier on purpose: you are waiting

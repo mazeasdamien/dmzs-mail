@@ -1,13 +1,12 @@
 /**
- * dmzs-mail — one Worker, three mailboxes.
+ * dmzs-mail — one Worker, one mailbox.
  *
  * iCloud only. The Worker speaks IMAP and SMTP itself over outbound sockets,
  * so nothing runs on any machine of yours: a cron pulls every mailbox a few
  * messages at a time, and actions go straight out over the same connection.
  *
- * Gmail and Outlook were supported once and have been removed outright —
- * modules, routes and branching. What is left has one provider, which is why
- * there is no dispatch layer: the code says what it does.
+ * One provider throughout, which is why there is no dispatch layer and no
+ * abstraction over "a mail account": the code says what it does.
  *
  * Sessions, cookies and device activation are dmzs-music's auth.js, verbatim.
  */
@@ -114,14 +113,13 @@ async function storeRows(env, accountId, rows) {
     stmts.push(
       env.DB.prepare(
         `INSERT INTO messages
-           (id, account_id, pid, mid, thread_key, folder, labels, from_name, from_email,
+           (id, account_id, pid, mid, thread_key, folder, from_name, from_email,
             to_line, cc_line, subject, snippet, date, unread, starred, has_body, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
          ON CONFLICT(account_id, pid) DO UPDATE SET
            unread=excluded.unread,
            starred=excluded.starred,
-           folder=excluded.folder,
-           labels=excluded.labels`
+           folder=excluded.folder`
       ).bind(
         await hashHex(`msg|${accountId}|${r.pid}`, 16),
         accountId,
@@ -132,7 +130,6 @@ async function storeRows(env, accountId, rows) {
         // archived, binned or moved elsewhere corrects itself on next sync
         // rather than sitting in the inbox forever.
         r.folder || (r.inInbox === false ? "archive" : "inbox"),
-        JSON.stringify(Array.isArray(r.labels) ? r.labels.slice(0, 40) : []).slice(0, 1000),
         (r.from_name || "").slice(0, 200),
         (r.from_email || "").slice(0, 200),
         (r.to_line || "").slice(0, 500),
@@ -352,7 +349,6 @@ function rowFromRaw({ uid, flags, raw }, folder) {
       date: Date.parse(h.date || "") || Date.now(),
       unread: /\\Seen/i.test(flags) ? 0 : 1,
       starred: /\\Flagged/i.test(flags) ? 1 : 0,
-      labels: [],
     },
     body: {
       html: defused.html,
@@ -856,7 +852,7 @@ async function moveAtProvider(env, acct, msg, target) {
  * SMTP delivers and forgets. It hands the message to the recipient's server and
  * keeps nothing for the sender, so unless a client puts a copy somewhere, a
  * sent message exists nowhere in your own mailbox — which is why Sent stayed
- * empty. Gmail's API did this for us; Apple's SMTP does not.
+ * empty. Nothing else in the stack does it for us.
  *
  * Both halves matter: APPEND so the copy is at Apple and every device sees it,
  * and a row here so it appears in Sent the moment the composer closes rather
@@ -1375,32 +1371,15 @@ async function handleApi(request, env, path, ctx) {
     }
   }
 
-  // GET /api/folders — every place mail actually lives, plus your own labels.
+  // GET /api/folders — every place mail actually lives.
   // Derived from the messages themselves rather than a folders table, so a
-  // label you create in Gmail simply appears here on the next sync.
+  // mailbox you create at Apple simply appears here on the next sync.
   if (path === "/api/folders" && request.method === "GET") {
-    const [f, l] = await env.DB.batch([
-      env.DB.prepare(
-        `SELECT folder, COUNT(*) AS n, SUM(unread) AS unread
-           FROM messages GROUP BY folder ORDER BY folder`
-      ),
-      env.DB.prepare(`SELECT labels FROM messages WHERE labels NOT IN ('[]','') LIMIT 3000`),
-    ]);
-    const tally = new Map();
-    for (const r of l.results ?? []) {
-      let arr = [];
-      try {
-        arr = JSON.parse(r.labels);
-      } catch {}
-      for (const name of arr) tally.set(name, (tally.get(name) || 0) + 1);
-    }
-    return json({
-      folders: f.results ?? [],
-      labels: [...tally.entries()]
-        .map(([name, n]) => ({ name, n }))
-        .sort((a, b) => b.n - a.n)
-        .slice(0, 100),
-    });
+    const { results } = await env.DB.prepare(
+      `SELECT folder, COUNT(*) AS n, SUM(unread) AS unread
+         FROM messages GROUP BY folder ORDER BY folder`
+    ).all();
+    return json({ folders: results ?? [] });
   }
 
   // GET /api/contacts — who you actually write to, most-written-to first.
@@ -1439,28 +1418,22 @@ async function handleApi(request, env, path, ctx) {
     return json({ ok: true });
   }
 
-  // GET /api/messages?folder=&label=&account=&q=&starred=&before=&limit=
+  // GET /api/messages?folder=&account=&q=&starred=&before=&limit=
   // folder=all searches across everything, which is what the search box uses.
   if (path === "/api/messages" && request.method === "GET") {
     const p = new URL(request.url).searchParams;
     const folder = p.get("folder") || "inbox";
-    const label = p.get("label") || "";
     const account = p.get("account") || "";
     const term = (p.get("q") || "").trim().slice(0, 120);
     const before = Number(p.get("before")) || 0;
     const limit = Math.min(100, Number(p.get("limit")) || 50);
 
     let sql =
-      "SELECT id, account_id, thread_key, from_name, from_email, subject, snippet, date, unread, starred, folder, labels, has_body FROM messages WHERE 1=1";
+      "SELECT id, account_id, thread_key, from_name, from_email, subject, snippet, date, unread, starred, folder, has_body FROM messages WHERE 1=1";
     const vals = [];
     if (folder !== "all") {
       sql += " AND folder=?";
       vals.push(folder);
-    }
-    if (label) {
-      // Bounded by quotes so "Work" cannot match "Work/Archive".
-      sql += " AND labels LIKE ?";
-      vals.push(`%"${label}"%`);
     }
     if (account) {
       sql += " AND account_id=?";
@@ -1769,7 +1742,7 @@ async function handleApi(request, env, path, ctx) {
 
     try {
       // Over IMAP, undoing a delete is just another move: out of Trash and
-      // back where it came from. No separate verb, unlike Gmail's untrash.
+      // back where it came from. IMAP has no separate verb for undeleting.
       await moveAtProvider(env, acct, msg, target);
     } catch (e) {
       if (e.reauth) {
@@ -1851,10 +1824,10 @@ async function handleApi(request, env, path, ctx) {
 
   // POST /api/assist { text, mode: "grammar" | "improve" }
   //
-  // Drafts are sent to Google's API, which is a deliberate cost: for Gmail it
-  // changes nothing, for iCloud it is new exposure. Only ever on an explicit
-  // tap, never automatically, and the result is returned for review rather
-  // than applied here.
+  // Drafts are sent to Google's Gemini API, which is a deliberate cost: your
+  // mail lives at Apple, and this is the one thing that shows a draft to
+  // anyone else. Only ever on an explicit tap, never automatically, and the
+  // result comes back for review rather than being applied here.
   if (path === "/api/assist" && request.method === "POST") {
     if (!env.GEMINI_API_KEY) {
       return json({ error: "No AI key set — run: npx wrangler secret put GEMINI_API_KEY" }, 400);
@@ -1969,8 +1942,9 @@ async function handleApi(request, env, path, ctx) {
     try {
       const pass = await icloudPassword(env, acct);
       if (pass) {
-        // Byte-identical to what the Gmail path hands its API, so a reply
-        // threads the same way whichever mailbox it leaves from.
+        // Built once, then used twice: this is both what goes out over SMTP
+        // and what is appended to Sent, so the copy you keep is the message
+        // that was actually delivered rather than a re-rendering of it.
         const raw = buildRfc822({
           from: acct.email,
           to: to.map((a) => a.email).join(", "),
@@ -2078,13 +2052,6 @@ export default {
 
     const session = await requestSession(request, env);
     if (!session) return denied();
-
-    // Gmail and Outlook are gone; their modules were deleted. Anything still
-    // pointing at these paths (a stale bookmark, an old service worker) gets a
-    // clear refusal rather than a confusing 404 from the asset handler.
-    if (path === "/oauth/google" || path === "/oauth/microsoft") {
-      return new Response("This provider is not enabled", { status: 404 });
-    }
 
     if (path.startsWith("/api/")) {
       const res = await handleApi(request, env, path, ctx);

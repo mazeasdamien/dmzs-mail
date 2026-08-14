@@ -736,9 +736,7 @@ const hue = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charC
 let accounts = [];
 let messages = [];
 let folders = [];             // [{folder, n, unread}] straight from the server
-let labelList = [];           // [{name, n}] — Gmail labels and iCloud folders
 let folder = "inbox";
-let label = "";               // filter by a label rather than a folder
 let starredOnly = false;      // the Starred view is a filter, not a folder
 let folderEditing = false;
 let query = "";               // search term; non-empty searches every folder
@@ -748,15 +746,8 @@ let current = null;           // open message {message, account, body}
 let replyTo = null;           // message id when the compose sheet is a reply
 let pollTimer = null;
 
-// Gmail's system labels are shouty ids; nobody wants to see CATEGORY_UPDATES.
-const PRETTY = {
-  INBOX: "Inbox", SENT: "Sent", DRAFT: "Drafts", SPAM: "Spam", TRASH: "Trash",
-  STARRED: "Starred", UNREAD: "Unread",
-  CATEGORY_PERSONAL: "Personal", CATEGORY_SOCIAL: "Social",
-  CATEGORY_PROMOTIONS: "Promotions", CATEGORY_UPDATES: "Updates",
-  CATEGORY_FORUMS: "Forums",
-};
-const pretty = (s) => PRETTY[s] || (s.charAt(0).toUpperCase() + s.slice(1));
+/** Our own bucket names, title-cased for display. */
+const pretty = (s) => String(s).charAt(0).toUpperCase() + String(s).slice(1);
 
 // The order a mailbox is usually read in, rather than alphabetical.
 const FOLDER_ORDER = ["inbox", "archive", "sent", "drafts", "spam", "trash"];
@@ -765,7 +756,7 @@ const folderRank = (f) => {
   return i === -1 ? FOLDER_ORDER.length : i;
 };
 
-const PROVIDER = { icloud: "iCloud", google: "Gmail", microsoft: "Outlook" };
+const PROVIDER = { icloud: "iCloud" };
 
 /* ── the tab's own unread signal ── */
 
@@ -1043,7 +1034,6 @@ async function loadFolders() {
     folders = (d.folders || []).sort(
       (a, b) => folderRank(a.folder) - folderRank(b.folder) || a.folder.localeCompare(b.folder)
     );
-    labelList = d.labels || [];
   } catch (e) { if (String(e.message) === "401") return; }
   renderFolders();
   renderAccounts(); // the header's unread count is derived from this data
@@ -1060,13 +1050,13 @@ const folderLabel = (name) => {
 
 function renderFolders() {
   const cur = folders.find((f) => f.folder === folder);
-  $("#folderName").textContent = starredOnly ? "Starred" : label ? folderLabel(label) : folderLabel(folder);
+  $("#folderName").textContent = starredOnly ? "Starred" : folderLabel(folder);
 
   // Two different questions, so two different marks. The badge answers "how
   // much is unread where I am"; the dot answers "is there new mail at all",
   // which the badge alone could not — sitting in Sent with an unread inbox,
   // nothing on screen said so, which is the whole point of a mail app.
-  const here = !label && !starredOnly && cur ? Number(cur.unread || 0) : 0;
+  const here = !starredOnly && cur ? Number(cur.unread || 0) : 0;
   const total = folders.reduce((n, f) => n + Number(f.unread || 0), 0);
   $("#folderCount").innerHTML = here
     ? `<span class="n num">${here}</span>`
@@ -1075,11 +1065,6 @@ function renderFolders() {
     : "";
   $("#folderBtn").classList.toggle("hasnew", total > 0);
 
-  // Labels that merely restate a folder would be duplicate rows.
-  const covered = new Set(folders.map((f) => f.folder.toLowerCase()));
-  const extra = labelList.filter(
-    (l) => !covered.has(l.name.toLowerCase()) && !covered.has(folderLabel(l.name).toLowerCase())
-  );
   // Folders come from the messages that exist, so an empty one disappears —
   // and an empty inbox with no way back to it is a trap. The standard set is
   // always present, at zero if that is the truth.
@@ -1117,16 +1102,14 @@ function renderFolders() {
 
   $("#folderList").innerHTML =
     system
-      .map((f) => row(!label && folder === f.folder, `data-folder="${esc(f.folder)}"`, folderLabel(f.folder), f.n, f.unread, false, f.folder))
+      .map((f) => row(folder === f.folder, `data-folder="${esc(f.folder)}"`, folderLabel(f.folder), f.n, f.unread, false, f.folder))
       .join("") +
     `<button class="frow${starredOnly ? " on" : ""}" data-starred="1">
        <span class="grow">Starred</span></button>` +
     (mine.length ? `<div class="fgroup">Your folders</div>` : "") +
     mine
-      .map((f) => row(!label && folder === f.folder, `data-folder="${esc(f.folder)}"`, folderLabel(f.folder), f.n, f.unread, true, f.folder))
-      .join("") +
-    (extra.length ? `<div class="fgroup">Labels</div>` : "") +
-    extra.map((l) => row(label === l.name, `data-label="${esc(l.name)}"`, folderLabel(l.name), l.n, 0, false, l.name)).join("");
+      .map((f) => row(folder === f.folder, `data-folder="${esc(f.folder)}"`, folderLabel(f.folder), f.n, f.unread, true, f.folder))
+      .join("");
 }
 
 $("#folderBtn").addEventListener("click", (e) => {
@@ -1161,11 +1144,9 @@ $("#folderList").addEventListener("click", async (e) => {
   }
 
   const f = e.target.closest("[data-folder]");
-  const l = e.target.closest("[data-label]");
   const st = e.target.closest("[data-starred]");
-  if (st) { starredOnly = true; label = ""; }
-  else if (f) { folder = f.dataset.folder; label = ""; starredOnly = false; }
-  else if (l) { label = l.dataset.label; starredOnly = false; }
+  if (st) starredOnly = true;
+  else if (f) { folder = f.dataset.folder; starredOnly = false; }
   else return;
   closeSheets();
   renderFolders();
@@ -1268,7 +1249,6 @@ async function loadList(more = false) {
   // Starred spans every folder, like search does: a flag is not a place.
   const p = new URLSearchParams({ folder: query || starredOnly ? "all" : folder, limit: 50 });
   if (starredOnly) p.set("starred", "1");
-  if (label) p.set("label", label);
   if (query) p.set("q", query);
   if (accountFilter) p.set("account", accountFilter);
   if (before) p.set("before", before);
@@ -1310,8 +1290,6 @@ function renderList() {
           ? "<b>Welcome.</b>Tap the account button up top to connect iCloud."
           : query
           ? `<b>No match.</b>Nothing anywhere for &ldquo;${esc(query)}&rdquo;.`
-          : label
-          ? `<b>Empty.</b>Nothing filed under ${esc(pretty(label))}.`
           : folder === "inbox"
           ? "<b>Inbox zero.</b>Nothing here right now."
           : `<b>Empty.</b>Nothing in ${esc(pretty(folder))}.`
@@ -1329,7 +1307,7 @@ const AUTO_IMAGES = true;
  *
  * Inline images are referenced as `src="cid:<content-id>"`, pointing at a part
  * inside the message. A browser has no idea what that means, which is why the
- * picture in an Outlook mail shows as a broken icon. The bytes are fetched from
+ * picture in a message shows as a broken icon. The bytes are fetched from
  * the attachment endpoint — where the session cookie works — and inlined as
  * data: URIs, because the reader iframe is sandboxed into an opaque origin and
  * could neither send our cookie nor read a blob: URL created out here.
@@ -2477,12 +2455,6 @@ addEventListener("online", () => refreshAll());
 (async function init() {
   applyTheme(localStorage.getItem("dmzs-theme") || "light");
   try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch {}
-
-  // Landing back from an OAuth dance: say so, then clean the URL.
-  const q = new URLSearchParams(location.search);
-  if (q.get("connect") === "ok") toast("Account connected");
-  if (q.get("connect") === "denied") toast("Connection cancelled");
-  if (q.get("connect")) history.replaceState(null, "", "/");
 
   await refreshAll();
   schedulePoll();

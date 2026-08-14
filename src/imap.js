@@ -364,7 +364,7 @@ export async function imapFetchPart(im, uid, part) {
  * Writes a message into a mailbox. This is how a sent message reaches Sent.
  *
  * SMTP hands the message to the recipient's server and keeps nothing for the
- * sender — unlike Gmail's API, which files the copy itself. Every mail client
+ * sender. Every mail client
  * appends its own, and one that does not has a Sent folder that stays empty
  * however much mail leaves it.
  */

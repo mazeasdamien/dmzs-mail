@@ -201,10 +201,10 @@ export async function smtpCheck(opts) {
 /**
  * Hands one message to Apple for delivery.
  *
- * `raw` is a complete RFC 822 message — the same bytes buildRfc822 produces for
- * the Gmail API path, so what leaves here is byte-identical to what leaves
- * there. `to` is the real envelope: recipients come from it, not from parsing
- * headers back out of the message.
+ * `raw` is a complete RFC 822 message from buildRfc822, and the same bytes are
+ * appended to the Sent mailbox afterwards, so the copy you keep is the message
+ * that was actually delivered. `to` is the real envelope: recipients come from
+ * it, not from parsing headers back out of the message.
  */
 export async function smtpSend({ host, port, user, pass, from, to, raw }) {
   const recipients = (Array.isArray(to) ? to : [to]).filter(Boolean);
