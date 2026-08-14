@@ -45,6 +45,18 @@ The old agent still sits in `agent/` and still works. Nothing points at it.
   than a minute behind, and the per-invocation limits of the free plan stay
   respected (~15 subrequests against a ceiling of 50). The **Sync** button
   on an account does the same immediately.
+- **The minute is Apple's floor, not the app's.** Mail to an address on your
+  own domain does not wait for it: Email Routing hands the message to this
+  Worker's `email()` handler at delivery time, so it is in D1 and R2 while
+  the sending server is still connected, and the push notification goes out
+  then rather than up to a minute later. It is forwarded on to iCloud all the
+  same, so Apple keeps the canonical copy and your other devices are
+  unaffected. Both routes key on the Message-ID, so the IMAP pass that later
+  finds the same message updates that row instead of adding a second one —
+  which is also why the fast path is free to fail without losing anything.
+- Mail to an address on the domain that is *not* in `SEND_AS` is **rejected**
+  rather than dropped. The sender gets a bounce and it appears in Email
+  Routing's activity log, where a silent catch-all drop showed nothing at all.
 - Every folder syncs, not just the inbox: every selectable IMAP mailbox,
   including Sent, Spam and any you made yourself.
 - Message **bodies** are defused before storage — scripts, event handlers,

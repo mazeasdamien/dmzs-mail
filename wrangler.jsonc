@@ -70,6 +70,14 @@
     // to Drop, so the failure would be silent.
     "SEND_AS": "damien@agentxr.app",
 
+    // Where the email() handler forwards what it receives, once it has stored
+    // it. Apple keeps the canonical copy, so every other device still sees the
+    // message and the ordinary IMAP sync remains the safety net.
+    //
+    // Email Routing only forwards to an address you have verified as a
+    // destination, which this one already is.
+    "FORWARD_TO": "damien.mazeas@icloud.com",
+
     // Model for the compose assistant. Flash tier on purpose: you are waiting
     // mid-sentence, and grammar does not need a frontier model.
     //

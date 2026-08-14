@@ -978,6 +978,84 @@ async function fileSentCopy(env, account, pass, raw) {
 }
 
 /* ────────────────────────────────────────────────────────────────
+   Mail arriving at your own domain: pushed, not polled.
+   ──────────────────────────────────────────────────────────────── */
+
+/**
+ * Email Routing hands the message to this Worker at delivery time.
+ *
+ * The cron polls IMAP once a minute because Apple offers no push, so a
+ * message is up to a minute old before it appears. That floor is Apple's, and
+ * it does not apply to an address on a domain we run: here the message is
+ * stored while the sending server is still connected.
+ *
+ * It is forwarded to iCloud all the same, so Apple keeps the canonical copy
+ * and every other device still sees it. That is also what makes the storing
+ * safe to fail — the next IMAP pass finds the message in the inbox and stores
+ * it the usual way. Both routes key on the Message-ID, so the second one
+ * updates the row the first wrote rather than adding a duplicate.
+ *
+ * Everything here is unauthenticated and attacker-controlled: anyone at all
+ * may send to the address. Hence the recipient is checked against the
+ * addresses we actually own, the size is bounded before anything is parsed,
+ * and the body goes through the same defusing as synced mail.
+ */
+async function handleEmail(message, env, ctx) {
+  const to = String(message.to || "").toLowerCase();
+
+  // Not an address we use. Rejecting says so out loud — the sender learns it
+  // bounced and it appears in Email Routing's activity log, where a silent
+  // catch-all drop left nothing to see.
+  if (!isSendAs(env, to)) {
+    message.setReject("This address is not in use");
+    return;
+  }
+
+  // Delivery first, and never made conditional on our own bookkeeping: the
+  // copy at Apple is the one that must not be lost.
+  const dest = String(env.FORWARD_TO || "").trim();
+  if (dest) await message.forward(dest);
+
+  try {
+    const acct = await env.DB.prepare(
+      "SELECT * FROM accounts WHERE provider='icloud' ORDER BY created_at LIMIT 1"
+    ).first();
+    if (!acct) return;
+
+    // Too big to hold and parse inside a Worker. It is already on its way to
+    // iCloud, so the ordinary sync will store it by the ordinary route.
+    if (Number(message.rawSize || 0) > MAX_BODY_BYTES) return;
+
+    // Raw bytes rather than text(): rfc822 works in latin1 and decides the
+    // real charset per part from that part's own headers. Decoding as UTF-8
+    // here would corrupt anything that is not.
+    const bytes = new Uint8Array(await new Response(message.raw).arrayBuffer());
+    const { row, body, attachments } = rowFromRaw({ uid: 0, flags: "", raw: bytes }, "inbox");
+    body.attachments = attachments;
+
+    const id = await hashHex(`msg|${acct.id}|${row.pid}`, 16);
+    await env.MAIL.put(bodyKey(id), JSON.stringify(body), {
+      httpMetadata: { contentType: "application/json" },
+    });
+    await storeRows(env, acct.id, [row]);
+    await env.DB.prepare("UPDATE messages SET has_body=1 WHERE account_id=? AND pid=?")
+      .bind(acct.id, row.pid)
+      .run();
+    await indexMessage(env, id, row, htmlToText(body.html || ""));
+
+    // Arriving early is only worth anything if it tells you early.
+    if (ctx) ctx.waitUntil(pushAll(env).catch(() => {}));
+  } catch (e) {
+    // Never fail a delivery over our own storage. The message has already gone
+    // to Apple; the cron picks it up from there within the minute.
+    await env.DB.prepare("UPDATE accounts SET last_error=? WHERE provider='icloud'")
+      .bind(`email-push: ${String(e.message || e)}`.slice(0, 300))
+      .run()
+      .catch(() => {});
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────
    Internal endpoints — bearer token, called only by the agent.
    ──────────────────────────────────────────────────────────────── */
 
@@ -2213,6 +2291,13 @@ export default {
     }
 
     return env.ASSETS.fetch(request);
+  },
+
+  // Delivery-time reception for the addresses on your own domain. Point the
+  // Email Routing rule at this Worker rather than at an address, and mail
+  // lands here before the sending server has hung up.
+  async email(message, env, ctx) {
+    return handleEmail(message, env, ctx);
   },
 
   // Sync heartbeat. Two least-recently-synced API accounts per pass, a dozen
