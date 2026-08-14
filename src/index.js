@@ -863,18 +863,11 @@ async function moveAtProvider(env, acct, msg, target) {
  * than whenever the next sync happens to reach that mailbox.
  */
 async function fileSentCopy(env, account, pass, raw) {
-  const im = await imapOpen({ user: account.email, pass });
-  try {
-    const boxes = await imapList(im);
-    const box = boxes.find((mb) => folderNameFor(mb) === "sent");
-    if (!box) throw new Error(`No Sent mailbox. Server has: ${mailboxList(boxes)}`);
-    // Already read: it is your own message, and an unread badge on Sent is
-    // nobody's idea of new mail.
-    await imapAppend(im, box.name, raw, FLAG_SEEN);
-  } finally {
-    await im.logout();
-  }
-
+  // The local row first, and unconditionally. A message you have sent should
+  // appear in Sent whatever the server then makes of the copy — tying the two
+  // together meant one IMAP hiccup left you with no record of having written
+  // anything, which is worse than a record that is briefly ahead of Apple.
+  //
   // Parsed back out of the bytes that were actually sent rather than rebuilt
   // from the form fields, so what Sent shows is the message as it went.
   const { row, body, attachments } = rowFromRaw({ uid: 0, flags: FLAG_SEEN, raw }, "sent");
@@ -888,6 +881,19 @@ async function fileSentCopy(env, account, pass, raw) {
     .bind(account.id, row.pid)
     .run();
   await indexMessage(env, id, row, htmlToText(body.html || ""));
+
+  // Then Apple's copy, so every other device sees it too.
+  const im = await imapOpen({ user: account.email, pass });
+  try {
+    const boxes = await imapList(im);
+    const box = boxes.find((mb) => folderNameFor(mb) === "sent");
+    if (!box) throw new Error(`no Sent mailbox — server has: ${mailboxList(boxes)}`);
+    // Already read: it is your own message, and an unread badge on Sent is
+    // nobody's idea of new mail.
+    await imapAppend(im, box.name, raw, FLAG_SEEN);
+  } finally {
+    await im.logout();
+  }
 }
 
 /* ────────────────────────────────────────────────────────────────
@@ -1955,6 +1961,10 @@ async function handleApi(request, env, path, ctx) {
     // could fail the message has already gone, and an error at that point reads
     // as "it did not send" and invites sending it twice.
     let filed = false;
+    // The reason, handed back to the client. Recording it only in last_error
+    // put it somewhere nothing displays, which is how "it did not appear in
+    // Sent" stayed a mystery instead of being a message on screen.
+    let filedError = "";
 
     try {
       const pass = await icloudPassword(env, acct);
@@ -1991,8 +2001,9 @@ async function handleApi(request, env, path, ctx) {
           await fileSentCopy(env, acct, pass, raw);
           filed = true;
         } catch (e) {
+          filedError = String(e.message || e).slice(0, 200);
           await env.DB.prepare("UPDATE accounts SET last_error=? WHERE id=?")
-            .bind(`file-sent: ${String(e.message || e)}`.slice(0, 300), acct.id)
+            .bind(`file-sent: ${filedError}`.slice(0, 300), acct.id)
             .run()
             .catch(() => {});
         }
@@ -2015,7 +2026,10 @@ async function handleApi(request, env, path, ctx) {
       }
       return json({ error: String(e.message || e) }, 502);
     }
-    return json({ ok: true, filed, queued: acct.provider === "icloud" && !acct.secret }, 202);
+    return json(
+      { ok: true, filed, filedError, queued: acct.provider === "icloud" && !acct.secret },
+      202
+    );
   }
 
   return json({ error: "Unknown route" }, 404);

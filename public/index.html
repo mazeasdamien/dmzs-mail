@@ -206,8 +206,16 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
   .cta:hover{filter:brightness(1.09)}
   .morebtn:hover{background:color-mix(in srgb,var(--acc) 10%,transparent)}
 
+  .att:hover{background:color-mix(in srgb,var(--acc) 12%,var(--elev));
+    border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
+  .att.primary:hover{background:color-mix(in srgb,var(--acc) 85%,#fff)}
+
   .mi:hover{background:var(--press);border-radius:7px}
-  .frow:hover{background:color-mix(in srgb,var(--acc) 12%,transparent);color:var(--acc)}
+  /* Neutral, so it never competes with the accent that means "you are here".
+     Hovering the current folder deepens its own tint rather than swapping it
+     for a different colour. */
+  .frow:hover{background:var(--press2)}
+  .frow.on:hover{background:color-mix(in srgb,var(--acc) 22%,transparent)}
   .suggest button:hover{background:color-mix(in srgb,var(--acc) 16%,transparent);color:var(--t1)}
 
   .toolbar button:hover,#imgTools button:hover{
@@ -305,15 +313,26 @@ textarea.field{width:100%;padding:11px 12px;font-size:14.5px;line-height:1.45;mi
    button that names where you are picks up the accent while any exists. */
 #folderBtn.hasnew{border-color:color-mix(in srgb,var(--acc) 50%,transparent);
   background:color-mix(in srgb,var(--acc) 12%,var(--elev))}
-.fgroup{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--t3);
-  margin:12px 0 4px;font-weight:600}
-.frow{display:flex;align-items:center;gap:11px;width:100%;min-height:42px;font-size:14.5px;
-  justify-content:flex-start;text-align:left;padding:0 4px;border-radius:7px}
-.frow:active,.frow.on{background:var(--press2)}
-.frow.on{color:var(--acc)}
+.fgroup{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--t3);
+  margin:14px 0 5px;padding:0 10px;font-weight:600}
+/* Breathing room on both sides. The rows used to sit at padding:0 4px inside a
+   panel with its own 14px, so a folder name started two pixels from the edge
+   of its own highlight — which is what made the tinted block look like a slab
+   dropped behind the text rather than the shape of the row. */
+.frow{display:flex;align-items:center;gap:10px;width:100%;min-height:40px;font-size:14.5px;
+  justify-content:flex-start;text-align:left;padding:0 10px;border-radius:9px;
+  transition:background .12s,color .12s}
+.frow:active{background:var(--press2)}
+/* Where you are, and where the cursor is, are different questions and used to
+   get answers of the same weight — a grey slab and a blue wash competing for
+   the same meaning. The current folder is the accent one; hover stays quiet. */
+.frow.on{background:color-mix(in srgb,var(--acc) 14%,transparent);color:var(--acc)}
+.frow.on .grow{font-weight:600}
+.frow.on .side{color:color-mix(in srgb,var(--acc) 70%,var(--t3))}
 /* A folder holding unread mail reads heavier, so the list answers "where is
    the new mail" at a glance rather than by comparing digits down the column. */
 .frow.unread .grow{font-weight:650;color:var(--t1)}
+.frow.on.unread .grow{color:var(--acc)}
 .frow .grow{flex:1;min-width:0}
 .frow .side{font-size:12px;color:var(--t3);flex:none}
 .ftools{display:none;gap:12px;align-items:center;flex:none}
@@ -330,6 +349,10 @@ body.fedit .frow.actionable .fcount{display:none}
   .frow.actionable:hover .fcount{display:none}
 }
 .ftools .side:hover{text-decoration:underline}
+/* Separated from the folders by a rule, because it makes a folder rather than
+   choosing one — a different kind of act from everything above it. */
+#folderNew{width:100%;justify-content:flex-start;min-height:40px;margin-top:6px;padding:0 10px;
+  border-top:1px solid var(--line);border-radius:0 0 9px 9px;color:var(--acc);font-size:13.5px}
 
 /* thin indeterminate loading bar, top of the window */
 #bar{position:fixed;top:0;left:0;right:0;height:2px;z-index:200;pointer-events:none;
@@ -340,13 +363,27 @@ html.busy #bar{opacity:1}
 @keyframes slide{0%{transform:translateX(-100%)}100%{transform:translateX(350%)}}
 
 /* attachments */
-.attbar{display:flex;gap:6px;flex-wrap:wrap;padding:8px 0 0}
+.attbar{display:flex;gap:8px;flex-wrap:wrap;padding:10px 0 0}
 .attbar:empty{padding:0}
-.att{display:flex;align-items:center;gap:8px;height:30px;padding:0 6px 0 11px;border-radius:15px;
-  background:var(--elev2);border:1px solid var(--line);font-size:12.5px;color:var(--t1);max-width:100%}
-.att .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:190px}
-.att .sz{color:var(--t3);font-size:11.5px;flex:none}
-.att button{width:20px;height:20px;border-radius:50%;color:var(--t3);font-size:15px;line-height:1;flex:none}
+/* A file worth downloading should look like a thing you can pick up, not like
+   a link that happened to land in a pill. These are <a download> in the reader
+   and <span> in the composer, which is why text-decoration has to be said out
+   loud — inheriting the browser's underline is what made them read as raw
+   URLs sitting under the message. */
+.att{display:inline-flex;align-items:center;gap:9px;height:36px;padding:0 13px;border-radius:10px;
+  background:var(--elev);border:1px solid var(--line-strong);font-size:13px;color:var(--t1);
+  text-decoration:none;max-width:100%;
+  transition:background .12s,border-color .12s,transform .08s}
+.att:active{transform:scale(.98)}
+.att .ic{color:var(--t3);flex:none}
+.att .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:210px;font-weight:500}
+.att .sz{color:var(--t3);font-size:11.5px;flex:none;font-variant-numeric:tabular-nums}
+/* One archive for the lot: the only one of these you are likely to want, so
+   it is the only one that gets to be solid. */
+.att.primary{background:var(--acc);color:var(--on-acc);border-color:transparent;font-weight:600}
+.att.primary .ic{color:inherit;opacity:.8}
+.att button{width:22px;height:22px;border-radius:50%;color:var(--t3);font-size:15px;line-height:1;
+  flex:none;margin-right:-5px;transition:background .12s,color .12s}
 .att button:hover{background:var(--red);color:#fff}
 
 /* pasted images */
@@ -431,11 +468,15 @@ html.busy #bar{opacity:1}
      drops from the button as a popover and hides nothing. */
   #folderSheet{
     left:16px;right:auto;top:auto;bottom:auto;
-    width:288px;max-height:min(62vh,540px);
-    border:1px solid var(--line-strong);border-radius:12px;
-    box-shadow:0 14px 38px var(--shadow);
-    transform:none;display:none;padding:12px 14px 14px
+    width:300px;max-height:min(62vh,540px);
+    border:1px solid var(--line-strong);border-radius:14px;
+    box-shadow:0 18px 44px var(--shadow);
+    transform:none;display:none;padding:12px 8px 10px
   }
+  /* The heading sits over the rows, so it lines up with their text rather
+     than with the panel's edge. */
+  #folderSheet .crow{padding:2px 10px 0;margin-bottom:8px}
+  #folderSheet #folderNew{padding-left:10px}
   #folderSheet.up{display:flex}
   /* Nothing is being covered, so nothing needs dimming. */
   body.picking #scrim{opacity:0;pointer-events:none}
@@ -614,7 +655,7 @@ html.busy #bar{opacity:1}
     <button class="ghost" id="folderEdit" title="Show rename and delete on every folder">Edit</button>
   </div>
   <div id="folderList"></div>
-  <button class="ghost" id="folderNew" style="width:100%;justify-content:flex-start;min-height:38px">+ New folder</button>
+  <button class="ghost" id="folderNew">+ New folder</button>
 </div>
 
 <div class="sheet" id="contactsSheet">
@@ -1372,6 +1413,28 @@ async function resolveInlineImages(html, id, atts) {
   return out;
 }
 
+/* ── attachment icons ──
+   Four shapes, not a mimetype encyclopedia: the point is to tell a picture
+   from a document at a glance, which is the only distinction that changes
+   what you do next. */
+const svg = (d, extra = "") =>
+  `<svg class="ic" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+     stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}${extra}</svg>`;
+
+const ICON_DOC = svg(`<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/>`);
+const ICON_IMG = svg(`<rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m5 18 5-5 3.5 3.5L17 13l2.5 2.5"/>`);
+const ICON_ZIP = svg(`<path d="M21 8v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8"/><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h17A1.5 1.5 0 0 1 22 4.5V8H2Z"/><path d="M10 12h4"/>`);
+const ICON_PDF = svg(`<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M9 15h6"/><path d="M9 12h3"/>`);
+
+function fileIcon(type, name) {
+  const t = String(type || "").toLowerCase();
+  const ext = String(name || "").split(".").pop().toLowerCase();
+  if (t.startsWith("image/")) return ICON_IMG;
+  if (t.includes("pdf") || ext === "pdf") return ICON_PDF;
+  if (/zip|compress|tar|rar|7z/.test(t) || ["zip", "rar", "7z", "tar", "gz"].includes(ext)) return ICON_ZIP;
+  return ICON_DOC;
+}
+
 const unblockImages = (h) =>
   String(h || "").replace(/data-blocked-(src|srcset|background|poster)=/gi, "$1=");
 
@@ -1445,13 +1508,13 @@ async function openMsg(id) {
   // is more than one file to gather.
   const all =
     atts.length > 1
-      ? `<a class="att" href="/api/messages/${encodeURIComponent(m.id)}/attachments.zip" download
-           style="background:var(--acc);color:var(--on-acc);border-color:transparent;font-weight:600">
-           <span class="nm">Download all (${atts.length})</span></a>`
+      ? `<a class="att primary" href="/api/messages/${encodeURIComponent(m.id)}/attachments.zip" download>
+           ${ICON_ZIP}<span class="nm">Download all (${atts.length})</span></a>`
       : "";
   $("#rAtts").innerHTML = all + atts
     .map(
-      (a, i) => `<a class="att" href="/api/messages/${encodeURIComponent(m.id)}/attachment/${i}" download="${esc(a.filename)}">
+      (a, i) => `<a class="att" href="/api/messages/${encodeURIComponent(m.id)}/attachment/${i}" download="${esc(a.filename)}" title="${esc(a.filename)}">
+        ${fileIcon(a.type, a.filename)}
         <span class="nm">${esc(a.filename)}</span>
         <span class="sz">${humanSize(Math.round((a.size || 0) * 0.75))}</span></a>`
     )
@@ -2094,7 +2157,8 @@ const humanSize = (n) =>
 function renderAtts() {
   $("#cAtts").innerHTML = attached
     .map(
-      (a, i) => `<span class="att"><span class="nm">${esc(a.filename)}</span>
+      (a, i) => `<span class="att" title="${esc(a.filename)}">${fileIcon(a.type, a.filename)}
+        <span class="nm">${esc(a.filename)}</span>
         <span class="sz">${humanSize(a.bytes)}</span>
         <button data-drop="${i}" aria-label="Remove ${esc(a.filename)}">&times;</button></span>`
     )
@@ -2297,9 +2361,10 @@ $("#cSend").addEventListener("click", async () => {
     d.queued
       ? "Queued — the agent sends it in under a minute"
       : d.filed === false
-      // It went. Say so first, then say the copy did not — silence here is how
-      // an empty Sent folder becomes a mystery rather than a known fact.
-      ? "Sent — but no copy could be filed in Sent"
+      // It went, and it is in your Sent folder here. What failed is the copy at
+      // Apple, so the reason travels with the message — an unexplained "could
+      // not file" is the thing that makes this impossible to diagnose.
+      ? `Sent — Apple would not keep a copy: ${d.filedError || "unknown reason"}`
       : "Sent"
   );
   // The copy is filed by now, so Sent and its counts are already stale.
