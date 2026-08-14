@@ -1,0 +1,2436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#09090b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Mail">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<title>dmzs-mail</title>
+<style>
+/* Same design language as dmzs-music: one dark palette, one accent. */
+/* Light is the default palette; dark is the variant. Every colour is defined
+   here first, so a token can never exist only inside a media query — that is
+   the failure mode where one theme quietly loses a colour. */
+:root{
+  --bg:#ffffff; --elev:#f4f4f7; --elev2:#e9e9ef;
+  --line:rgba(0,0,0,.08); --line-strong:rgba(0,0,0,.15);
+  --t1:#16161a; --t2:#5b5b66; --t3:#8a8a95;
+  /* Darker blue than the dark theme's: #5aa7f0 on white fails contrast. */
+  --acc:#1f6fd0; --red:#c8352f; --on-acc:#ffffff;
+  --press:rgba(0,0,0,.045); --press2:#dedee6;
+  --glass:rgba(255,255,255,.97); --sheet:#ffffff; --input:#ffffff;
+  /* The toast inverts against the page, so its tokens flip with the theme. */
+  --toast-bg:rgba(22,22,26,.96); --toast-fg:#f4f4f5; --undo:#7fbcff;
+  --shadow:rgba(0,0,0,.16);
+  --r:7px; --sat:env(safe-area-inset-top); --sab:env(safe-area-inset-bottom);
+}
+
+/* The original palette, kept intact. Applied when the system asks for dark and
+   the reader has not overridden it, and again when they choose dark outright —
+   both directions, so the toggle always wins over the system setting. */
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#09090b; --elev:#141417; --elev2:#1d1d21;
+    --line:rgba(255,255,255,.075); --line-strong:rgba(255,255,255,.13);
+    --t1:#f4f4f5; --t2:#8b8b93; --t3:#56565e;
+    --acc:#5aa7f0; --red:#f2615c; --on-acc:#06121f;
+    --press:rgba(255,255,255,.045); --press2:#2a2a30;
+    --glass:rgba(24,24,28,.97); --sheet:#17171b; --input:#0e0e11;
+    --toast-bg:rgba(240,240,245,.96); --toast-fg:#101014; --undo:#0a58c2;
+    --shadow:rgba(0,0,0,.4);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#09090b; --elev:#141417; --elev2:#1d1d21;
+  --line:rgba(255,255,255,.075); --line-strong:rgba(255,255,255,.13);
+  --t1:#f4f4f5; --t2:#8b8b93; --t3:#56565e;
+  --acc:#5aa7f0; --red:#f2615c; --on-acc:#06121f;
+  --press:rgba(255,255,255,.045); --press2:#2a2a30;
+  --glass:rgba(24,24,28,.97); --sheet:#17171b; --input:#0e0e11;
+  --toast-bg:rgba(240,240,245,.96); --toast-fg:#101014; --undo:#0a58c2;
+  --shadow:rgba(0,0,0,.4);
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden}
+body{background:var(--bg);color:var(--t1);
+  font:400 15px/1.35 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;overscroll-behavior:none;user-select:none;-webkit-user-select:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;display:flex;align-items:center;justify-content:center}
+input,textarea{font:inherit;color:inherit;background:none;border:0;outline:0;user-select:text;-webkit-user-select:text}
+svg{display:block;flex:none}
+.num{font-variant-numeric:tabular-nums}
+.tr{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* The unread badge, defined once.
+   It used to exist only as `.pill .n` and `#folderBtn .n`, so the same markup
+   in the folder list — where you go to find out where the new mail is —
+   inherited nothing and rendered as a bare digit sitting next to the total.
+   Two plain numbers side by side say nothing; this one is meant to be seen
+   from across the room, hence the halo as well as the fill. */
+.n{display:inline-block;font-size:10.5px;font-weight:700;font-variant-numeric:tabular-nums;
+  color:var(--on-acc);background:var(--acc);border-radius:9px;
+  min-width:18px;height:18px;line-height:18px;text-align:center;padding:0 5px;flex:none;
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--acc) 20%,transparent)}
+/* "There is new mail, just not in the folder you are looking at." A count
+   would be a second number competing with the one on the button. */
+.newdot{width:8px;height:8px;border-radius:50%;background:var(--acc);flex:none;
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 25%,transparent)}
+
+#app{height:100%;display:flex;flex-direction:column}
+header{flex:none;padding:calc(var(--sat) + 14px) 16px 0;background:var(--bg)}
+.htop{display:flex;align-items:center;justify-content:space-between;gap:12px}
+h1{font-size:27px;font-weight:700;letter-spacing:-.021em;line-height:1.1}
+.meta{font-size:12.5px;color:var(--t3);margin-top:3px;min-height:16px}
+.meta .unread-n{color:var(--acc);font-weight:600}
+.htools{display:flex;align-items:center;gap:8px;flex:none}
+.iconbtn{width:33px;height:33px;border-radius:50%;flex:none;background:var(--elev2);color:var(--t1);transition:background .12s,transform .08s;position:relative}
+.iconbtn:active{background:var(--press2);transform:scale(.93)}
+.iconbtn .spin{position:absolute;inset:0;border-radius:50%;border:2px solid transparent;border-top-color:var(--acc);animation:sp .7s linear infinite;display:none}
+.iconbtn.busy .spin{display:block}
+.iconbtn.busy{pointer-events:none}
+.iconbtn.busy svg{opacity:.25}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+.pills{display:flex;gap:6px;margin:12px 0 10px;flex-wrap:wrap}
+.pill{height:26px;padding:0 11px;border-radius:13px;background:var(--elev);border:1px solid var(--line);
+  color:var(--t2);font-size:12.5px;font-weight:500;gap:6px;transition:background .12s,color .12s}
+.pill.on{background:color-mix(in srgb,var(--acc) 16%,transparent);color:var(--acc);border-color:color-mix(in srgb,var(--acc) 35%,transparent)}
+.pill .dot{width:7px;height:7px;border-radius:50%;flex:none}
+
+main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+.row{display:flex;gap:11px;padding:11px 16px;position:relative;align-items:flex-start;touch-action:pan-y}
+.row:active{background:var(--press)}
+/* Unread is the state you scan for, so it colours the whole row rather than
+   hiding in a dot. Two signals, not one: a filled band you notice with your
+   eyes unfocused, and a solid stripe down the leading edge that survives even
+   when the tint is washed out by hover or selection. */
+.row.unread{
+  background:color-mix(in srgb,var(--acc) 14%,transparent);
+  box-shadow:inset 3px 0 0 var(--acc);
+}
+.row.unread .from{font-weight:700;color:var(--t1)}
+.row.unread .subj{color:var(--t1);font-weight:600}
+.row.unread .snip{color:var(--t2)}
+.row.unread .when{color:var(--acc);font-weight:600}
+.row::after{content:"";position:absolute;left:16px;right:0;bottom:0;height:1px;background:var(--line)}
+/* Unread is the whole row rather than a mark on it. The dot that used to say
+   so sat next to the account swatch at the same size and colour, so with a
+   single account every message wore what looked like an unread badge. A second
+   `.row.unread` used to follow this comment and quietly halve the tint set
+   above it — two rules for one selector, the weaker one winning. */
+.acc-dot{width:8px;height:8px;border-radius:2.5px;margin-top:6px;flex:none}
+.mi-info{flex:1;min-width:0}
+.l1{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.from{font-size:14.5px;font-weight:600;letter-spacing:-.007em}
+.row:not(.unread) .from{font-weight:400;color:var(--t2)}
+.when{font-size:11.5px;color:var(--t3);flex:none}
+.subj{font-size:13.5px;margin-top:1px;color:var(--t1)}
+.row:not(.unread) .subj{color:var(--t2)}
+.snip{font-size:12.5px;color:var(--t3);margin-top:1px}
+.empty{padding:60px 34px;text-align:center;color:var(--t3);font-size:14px;line-height:1.6}
+.empty b{display:block;color:var(--t2);font-weight:500;margin-bottom:5px}
+.morebtn{width:100%;height:48px;color:var(--acc);font-size:14px;font-weight:500}
+
+/* reader */
+#reader{position:fixed;inset:0;z-index:40;background:var(--bg);display:flex;flex-direction:column;
+  transform:translateX(103%);transition:transform .3s cubic-bezier(.32,.72,0,1)}
+#reader.up{transform:translateX(0)}
+.rhead{flex:none;padding:calc(var(--sat) + 10px) 16px 10px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center}
+.rhead .mi-info{min-width:0}
+.rsubj{font-size:16px;font-weight:600;letter-spacing:-.011em;line-height:1.3;user-select:text;-webkit-user-select:text}
+.rmeta{font-size:12px;color:var(--t2);margin-top:3px;user-select:text;-webkit-user-select:text}
+.rmeta b{color:var(--t1);font-weight:500}
+/* White in both themes on purpose: mail HTML is authored assuming a
+   white page, and forcing it dark turns dark-on-white text invisible.
+   Every mail client does this. */
+#rbody{flex:1;min-height:0;display:flex;background:#fff}
+/* flex:1 rather than height:100%: a percentage height needs a resolved height
+   on the parent, and when that fails the frame collapses to nothing and the
+   message reads as blank white space. */
+#rframe{flex:1;width:100%;min-height:0;border:0;display:block;background:#fff}
+.rbar{flex:none;display:flex;gap:7px;align-items:center;
+  padding:10px 16px calc(var(--sab) + 10px);border-top:1px solid var(--line-strong);
+  background:var(--glass);-webkit-backdrop-filter:blur(22px);backdrop-filter:blur(22px)}
+/* Nothing stretches. Reply used to be flex:1.5 while the icons were fixed, so
+   it absorbed every spare pixel and ended up a metre wide on a desktop. */
+.rbtn{flex:none;height:40px;padding:0 14px;border-radius:var(--r);
+  background:var(--elev);border:1px solid var(--line);font-size:14px;font-weight:500;gap:7px}
+.rbtn:active{background:var(--elev2)}
+/* Pushed to the far edge by the margin, at its natural width: the actions
+   group on one side, the one thing you are most likely to do on the other. */
+.rbtn.acc{background:var(--acc);color:var(--on-acc);border-color:transparent;
+  margin-left:auto;min-width:118px;padding:0 20px}
+.rbtn.ico{width:40px;padding:0}
+.rbtn.on{color:var(--acc);border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
+.rbtn.on svg{fill:color-mix(in srgb,var(--acc) 30%,transparent)}
+.rbtn[hidden]{display:none}
+/* A key cap centres its line box, not the glyph's ink — otherwise "j" sits
+   high to make room for a descender that "k" does not have, and two caps side
+   by side no longer match. Flex centring with a fixed height gets that; the
+   negative vertical-align drops the cap back onto the sentence's baseline. */
+#rEmpty kbd{display:inline-flex;align-items:center;justify-content:center;
+  font:inherit;font-size:12px;line-height:1;min-width:18px;height:18px;padding:0 4px;
+  background:var(--elev2);border:1px solid var(--line-strong);
+  border-radius:4px;color:var(--t2);vertical-align:-0.28em}
+#toast .undo{display:inline;margin-left:11px;color:var(--undo);font-weight:700;font-size:13.5px;
+  background:none;border:0;padding:0;cursor:pointer}
+
+/* ── hover ───────────────────────────────────────────────────────
+   Guarded behind (hover:hover) and (pointer:fine). A touchscreen reports
+   hover on tap and then *keeps* it until you touch something else, so
+   unguarded rules leave a trail of stuck highlights behind your finger. */
+@media (hover:hover) and (pointer:fine){
+  .iconbtn:hover{background:color-mix(in srgb,var(--acc) 22%,var(--elev2));color:var(--acc)}
+
+  .pill:hover{background:color-mix(in srgb,var(--acc) 12%,var(--elev));
+    border-color:color-mix(in srgb,var(--acc) 40%,transparent);color:var(--t1)}
+  .pill.on:hover{background:color-mix(in srgb,var(--acc) 26%,transparent);color:var(--acc)}
+
+  #folderBtn:hover{background:color-mix(in srgb,var(--acc) 14%,var(--elev));
+    border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
+
+  .row:hover{background:rgba(255,255,255,.055);cursor:pointer}
+  .row.sel:hover{background:color-mix(in srgb,var(--acc) 30%,transparent)}
+
+  .rbtn:hover{background:color-mix(in srgb,var(--acc) 15%,var(--elev));
+    border-color:color-mix(in srgb,var(--acc) 42%,transparent);color:var(--acc)}
+  .rbtn.acc:hover{background:color-mix(in srgb,var(--acc) 82%,#fff);color:var(--on-acc)}
+  .rbtn.on:hover{background:color-mix(in srgb,var(--acc) 22%,var(--elev))}
+
+  .cta:hover{filter:brightness(1.09)}
+  .morebtn:hover{background:color-mix(in srgb,var(--acc) 10%,transparent)}
+
+  .mi:hover{background:var(--press);border-radius:7px}
+  .frow:hover{background:color-mix(in srgb,var(--acc) 12%,transparent);color:var(--acc)}
+  .suggest button:hover{background:color-mix(in srgb,var(--acc) 16%,transparent);color:var(--t1)}
+
+  .toolbar button:hover,#imgTools button:hover{
+    background:color-mix(in srgb,var(--acc) 16%,transparent);color:var(--acc)}
+  .toolbar .ai:hover{background:color-mix(in srgb,var(--acc) 24%,transparent)}
+
+  .ghost:hover{background:var(--press2);color:var(--t1)}
+  /* The row's Sync / Make default / Remove keep their own colour; only the
+     surface reacts, so Remove never stops looking like Remove. */
+  .side:hover{background:rgba(255,255,255,.09);border-radius:5px}
+  .searchwrap:hover{border-color:var(--line-strong)}
+  .searchwrap button:hover{color:var(--t1)}
+}
+
+/* composer */
+.sheet.lg{max-height:93vh}
+.crow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px}
+/* The toggles travel together on the right; space-between would otherwise
+   push them to opposite ends of the row. */
+.crow-actions{display:flex;align-items:center;gap:2px;flex:none}
+.ghost{color:var(--t2);font-size:13px;padding:5px 9px;border-radius:6px;flex:none}
+.ghost:active{background:var(--press2)}
+.afield{gap:8px}
+.flabel{color:var(--t3);font-size:13px;flex:none;min-width:24px}
+.suggest{margin:-6px 0 8px;background:var(--elev2);border:1px solid var(--line-strong);
+  border-radius:var(--r);overflow:hidden;display:none;max-height:190px;overflow-y:auto}
+.suggest.on{display:block}
+.suggest button{width:100%;justify-content:flex-start;padding:9px 12px;font-size:13.5px;gap:9px;text-align:left}
+.suggest button.hot{background:var(--press2)}
+.suggest .em{color:var(--t3);font-size:12px}
+.toolbar{display:flex;gap:3px;flex-wrap:wrap;align-items:center;padding:5px 0 7px;border-bottom:1px solid var(--line)}
+.toolbar button{height:30px;min-width:32px;padding:0 8px;border-radius:6px;color:var(--t2);font-size:13px}
+.toolbar button.on,.toolbar button:active{background:var(--press2);color:var(--t1)}
+.toolbar .spacer{flex:1}
+.toolbar .ai{color:var(--acc);font-weight:600}
+.toolbar button:disabled{opacity:.35;pointer-events:none}
+.editor{min-height:170px;max-height:42vh;overflow-y:auto;padding:12px 2px;font-size:14.5px;
+  line-height:1.5;outline:0;user-select:text;-webkit-user-select:text;word-break:break-word}
+.editor:empty:before{content:attr(data-ph);color:var(--t3)}
+.editor blockquote{margin:6px 0 6px 8px;padding-left:11px;border-left:2px solid var(--line-strong);color:var(--t2)}
+.editor a{color:var(--acc)}
+.editor ul,.editor ol{padding-left:22px;margin:6px 0}
+
+/* sheets */
+#scrim{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:opacity .25s}
+#scrim.up{opacity:1;pointer-events:auto}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:60;background:var(--sheet);border-radius:15px 15px 0 0;
+  border-top:1px solid var(--line-strong);padding:8px 16px calc(var(--sab) + 14px);
+  transform:translateY(101%);transition:transform .3s cubic-bezier(.32,.72,0,1);max-height:86vh;overflow-y:auto}
+.sheet.up{transform:translateY(0)}
+.grab{width:35px;height:4px;border-radius:2px;background:rgba(255,255,255,.2);margin:0 auto 14px}
+.sh-t{font-size:16px;font-weight:600;letter-spacing:-.011em;margin-bottom:3px}
+.sh-s{font-size:13px;color:var(--t2);margin-bottom:14px;line-height:1.45}
+.field{display:flex;align-items:center;gap:9px;min-height:42px;padding:0 12px;background:var(--input);
+  border:1px solid var(--line-strong);border-radius:var(--r);margin-bottom:8px}
+.field input{flex:1;font-size:14.5px;min-width:0;height:42px}
+.field input::placeholder,textarea::placeholder{color:var(--t3)}
+textarea.field{width:100%;padding:11px 12px;font-size:14.5px;line-height:1.45;min-height:130px;resize:vertical;display:block}
+.cta{width:100%;height:46px;border-radius:var(--r);margin-top:10px;background:var(--acc);color:var(--on-acc);
+  font-size:15px;font-weight:600;gap:8px;transition:opacity .12s,transform .08s}
+.cta:active{transform:scale(.99);opacity:.85}
+.cta:disabled{opacity:.28;pointer-events:none}
+.formerr{display:none;font-size:13px;color:var(--red);margin-top:10px;line-height:1.45}
+.formerr.show{display:block}
+.mi{display:flex;align-items:center;gap:13px;min-height:50px;font-size:15px;width:100%;justify-content:flex-start;border-bottom:1px solid var(--line);text-align:left}
+.mi:last-child{border-bottom:0}
+.mi svg{color:var(--t2)}
+.mi:active{opacity:.5}
+.mi .sub{font-size:12px;color:var(--t3);margin-top:2px}
+.mi .grow{flex:1;min-width:0}
+.mi .side{font-size:12px;color:var(--t3);flex:none}
+.mi.warn .side{color:var(--red)}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+
+/* search */
+/* Search and the folder picker share a line: two controls that both narrow
+   the same list, and it buys back a whole row of vertical space above the
+   messages — which is what the pane is actually for. */
+.toprow{display:flex;align-items:center;gap:8px;margin:10px 0 10px}
+.searchwrap{display:flex;align-items:center;gap:8px;height:34px;padding:0 11px;background:var(--elev);
+  border:1px solid var(--line);border-radius:var(--r);flex:1;min-width:0}
+.searchwrap svg{color:var(--t3)}
+.searchwrap input{flex:1;font-size:14px;min-width:0;height:34px}
+.searchwrap button{color:var(--t3);font-size:18px;line-height:1;padding:0 2px;display:none}
+.searchwrap.has button{display:block}
+
+/* One button naming where you are, rather than a rail of pills that runs off
+   the edge the moment you have more than five folders. */
+.folderbar{display:flex;align-items:center;gap:8px;flex:none}
+#folderBtn{height:30px;padding:0 12px;border-radius:15px;background:var(--elev);
+  border:1px solid var(--line-strong);color:var(--t1);font-size:13.5px;font-weight:600;gap:7px}
+#folderBtn:active{background:var(--press2)}
+#folderBtn .caret{color:var(--t3);font-size:10px}
+/* Unread mail is worth noticing before you have gone looking for it, so the
+   button that names where you are picks up the accent while any exists. */
+#folderBtn.hasnew{border-color:color-mix(in srgb,var(--acc) 50%,transparent);
+  background:color-mix(in srgb,var(--acc) 12%,var(--elev))}
+.fgroup{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--t3);
+  margin:12px 0 4px;font-weight:600}
+.frow{display:flex;align-items:center;gap:11px;width:100%;min-height:42px;font-size:14.5px;
+  justify-content:flex-start;text-align:left;padding:0 4px;border-radius:7px}
+.frow:active,.frow.on{background:var(--press2)}
+.frow.on{color:var(--acc)}
+/* A folder holding unread mail reads heavier, so the list answers "where is
+   the new mail" at a glance rather than by comparing digits down the column. */
+.frow.unread .grow{font-weight:650;color:var(--t1)}
+.frow .grow{flex:1;min-width:0}
+.frow .side{font-size:12px;color:var(--t3);flex:none}
+.ftools{display:none;gap:12px;align-items:center;flex:none}
+.fcount{display:flex;gap:9px;align-items:center;flex:none}
+.fcount .n{flex:none}
+/* The popover is anchored to the list pane, so cap it there rather than
+   letting a long folder name push it over the reader. */
+#folderSheet{max-width:min(320px,calc(var(--left,430px) - 32px))}
+/* Explicit mode, for touch where there is no hover to rely on. */
+body.fedit .frow.actionable .ftools{display:flex}
+body.fedit .frow.actionable .fcount{display:none}
+@media (hover:hover) and (pointer:fine){
+  .frow.actionable:hover .ftools{display:flex}
+  .frow.actionable:hover .fcount{display:none}
+}
+.ftools .side:hover{text-decoration:underline}
+
+/* thin indeterminate loading bar, top of the window */
+#bar{position:fixed;top:0;left:0;right:0;height:2px;z-index:200;pointer-events:none;
+  opacity:0;transition:opacity .18s}
+html.busy #bar{opacity:1}
+#bar i{display:block;height:100%;width:40%;background:var(--acc);
+  animation:slide 1.05s cubic-bezier(.4,0,.2,1) infinite}
+@keyframes slide{0%{transform:translateX(-100%)}100%{transform:translateX(350%)}}
+
+/* attachments */
+.attbar{display:flex;gap:6px;flex-wrap:wrap;padding:8px 0 0}
+.attbar:empty{padding:0}
+.att{display:flex;align-items:center;gap:8px;height:30px;padding:0 6px 0 11px;border-radius:15px;
+  background:var(--elev2);border:1px solid var(--line);font-size:12.5px;color:var(--t1);max-width:100%}
+.att .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:190px}
+.att .sz{color:var(--t3);font-size:11.5px;flex:none}
+.att button{width:20px;height:20px;border-radius:50%;color:var(--t3);font-size:15px;line-height:1;flex:none}
+.att button:hover{background:var(--red);color:#fff}
+
+/* pasted images */
+.editor img{max-width:100%;height:auto;border-radius:4px;cursor:pointer}
+.editor img.sel{outline:2px solid var(--acc);outline-offset:1px}
+#imgTools{display:flex;gap:4px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)}
+#imgTools[hidden]{display:none}
+#imgTools span{color:var(--t3);font-size:12px;margin-right:4px}
+#imgTools button{height:28px;padding:0 10px;border-radius:6px;color:var(--t2);font-size:12.5px}
+#imgTools button:active{background:var(--press2);color:var(--t1)}
+
+/* reading pane: overlay on phones, right-hand column on a desktop */
+#rClose{display:none}
+@media (min-width:900px){ #rClose{display:flex} }
+/* flex:1 so it actually fills the pane — without it the block sizes to its
+   own text, and centring inside a box the width of the sentence puts the
+   sentence wherever the box happens to land. */
+#rEmpty{
+  display:none;flex:1;min-width:0;
+  flex-direction:column;align-items:center;justify-content:center;gap:14px;
+  color:var(--t3);font-size:14.5px;background:var(--bg);
+  text-align:center;padding:24px
+}
+#rEmpty svg{opacity:.3}
+#rEmpty b{display:block;color:var(--t2);font-weight:600;font-size:15px;margin-bottom:3px}
+#rEmpty span{display:block;font-size:13px;color:var(--t3)}
+#reader:not(.up) #rEmpty{display:flex}
+/* The header goes with the body it describes. Leaving it behind puts the
+   subject of a message you just deleted above "Select a message to read". */
+#reader:not(.up) .rhead,/* With no message open, the header renders "—" and the toolbar offers Star,
+   Delete and Reply for a message that does not exist. Hide the lot; the
+   placeholder is the only honest thing to show. */
+#reader:not(.up) #rframe,
+#reader:not(.up) .rbar,
+#reader:not(.up) .rhead,
+#reader:not(.up) #rAtts{display:none}
+#rAtts:empty{display:none}
+
+/* The drag handle only exists in the two-pane layout. */
+#grip{display:none}
+
+@media (max-width:899px){
+  /* Narrow screens cannot spare 118px for a label next to six icons. */
+  .rbar{gap:5px}
+  .rbtn.ico{width:38px}
+  .rbtn.acc{min-width:0;padding:0 14px}
+  /* The labelled buttons in the bar drop to their icon rather than pushing
+     Reply off the edge. Both keep their title and aria-label, so what they do
+     is still available to a screen reader and to a long press. */
+  .rbar .lbl{display:none}
+  .rbtn.lab{width:38px;padding:0}
+}
+
+@media (min-width:900px){
+  body{display:flex}
+  #app{width:var(--left,430px);flex:none;min-width:0}
+  #grip{display:block;flex:none;width:6px;cursor:col-resize;background:var(--line-strong);
+    transition:background .12s;touch-action:none}
+  #grip:hover,#grip.drag{background:var(--acc)}
+  /* Out of the fixed overlay and into the flow, so the two panes sit side by
+     side and the slide-in transform stops applying. */
+  #reader{position:static;flex:1;min-width:0;transform:none;transition:none}
+  #rBack{display:none}
+  .row{cursor:pointer}
+  /* Well clear of the unread tint: an unread message that is also the open one
+     carries both classes, and at 13% against 9% the two were the same colour. */
+  .row.sel{background:color-mix(in srgb,var(--acc) 25%,transparent)}
+
+  /* Sheets slide in from the right instead of up from the bottom. A
+     full-width strip across the foot of a 2000px monitor is a phone pattern
+     wearing the wrong clothes: the compose body ends up short and wide, and
+     the list it covers is the thing you are writing about. */
+  .sheet{
+    left:auto;right:0;top:0;bottom:0;width:min(640px,55vw);max-height:none;
+    border-radius:0;border-top:0;border-left:1px solid var(--line-strong);
+    transform:translateX(101%);padding:20px 22px calc(var(--sab) + 18px);
+    display:flex;flex-direction:column;gap:0
+  }
+  .sheet.up{transform:translateX(0)}
+  /* A folder picker is a menu, not a view. As a full-height panel it covered
+     the message list — the very thing it filters — so on a wide screen it
+     drops from the button as a popover and hides nothing. */
+  #folderSheet{
+    left:16px;right:auto;top:auto;bottom:auto;
+    width:288px;max-height:min(62vh,540px);
+    border:1px solid var(--line-strong);border-radius:12px;
+    box-shadow:0 14px 38px var(--shadow);
+    transform:none;display:none;padding:12px 14px 14px
+  }
+  #folderSheet.up{display:flex}
+  /* Nothing is being covered, so nothing needs dimming. */
+  body.picking #scrim{opacity:0;pointer-events:none}
+  .grab{display:none}
+  /* The editor takes whatever height is left rather than a fixed slab. */
+  .editor{max-height:none;flex:1;min-height:220px}
+  .suggest{max-height:240px}
+
+  /* Compose is not a dialog — it is what the right-hand pane is *for* while
+     you are writing. So it joins the flex row as a real column and the reader
+     stands down, rather than a panel hovering over the thing you are
+     replying to. */
+  #composeSheet{
+    position:static;flex:1;min-width:0;width:auto;
+    display:none;transform:none;border-left:0;padding:18px 22px
+  }
+  #composeSheet.up{display:flex}
+  body.composing #reader{display:none}
+  /* Nothing to dim: the composer is not covering anything. */
+  body.composing #scrim{opacity:0;pointer-events:none}
+}
+
+/* in-page dialogs, replacing confirm() and prompt()
+   The browser's own are unstyleable, ignore the theme, and on a destructive
+   action give you an OS box that looks identical whether it is about deleting
+   mail or leaving a page. */
+#modal{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.45);padding:24px}
+#modal[hidden]{display:none}
+.mcard{background:var(--sheet);border:1px solid var(--line-strong);border-radius:14px;
+  padding:20px 22px 16px;width:min(430px,100%);box-shadow:0 20px 60px var(--shadow)}
+.mtitle{font-size:16px;font-weight:600;letter-spacing:-.011em;color:var(--t1)}
+.mdetail{font-size:13.5px;color:var(--t2);line-height:1.5;margin-top:7px}
+.mdetail:empty{display:none}
+#modalInput{margin-top:14px;width:100%}
+.mactions{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
+.mactions .rbtn{margin-left:0;min-width:92px}
+.rbtn.danger{background:var(--red);color:#fff;border-color:transparent}
+
+#toast{position:fixed;left:50%;bottom:calc(var(--sab) + 26px);transform:translate(-50%,14px);z-index:80;
+  background:var(--toast-bg);color:var(--toast-fg);padding:9px 15px;border-radius:19px;font-size:13.5px;font-weight:500;
+  opacity:0;pointer-events:none;transition:opacity .22s,transform .22s;max-width:82vw;text-align:center;box-shadow:0 8px 26px var(--shadow)}
+#toast.up{opacity:1;transform:translate(-50%,0)}
+</style>
+</head>
+<body>
+
+<div id="bar"><i></i></div>
+
+<div id="app">
+  <header>
+    <div class="htop">
+      <div style="min-width:0">
+        <h1>Mail</h1>
+        <div class="meta" id="hmeta">Loading…</div>
+      </div>
+      <div class="htools">
+        <button class="iconbtn" id="syncBtn" aria-label="Refresh"><span class="spin"></span>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 1 3 6.7"/><path d="M3 20v-5h5"/></svg>
+        </button>
+        <button class="iconbtn" id="acctBtn" aria-label="Accounts">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5 20c.8-3.4 3.6-5.4 7-5.4s6.2 2 7 5.4"/></svg>
+        </button>
+        <button class="iconbtn" id="composeBtn" aria-label="Compose">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="toprow">
+    <div class="searchwrap" id="searchWrap">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="q" type="text" placeholder="Search all mail" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button id="qClear" aria-label="Clear search">&times;</button>
+    </div>
+    <div class="pills" id="accPills"></div>
+    <div class="folderbar">
+      <button id="folderBtn"><span id="folderName">Inbox</span><span id="folderCount"></span><span class="caret">▾</span></button>
+    </div>
+  </header>
+  <main id="main"><div id="list"></div></main>
+</div>
+
+<div id="grip" role="separator" aria-orientation="vertical" aria-label="Resize list"></div>
+
+<div id="reader">
+  <div class="rhead">
+    <button class="iconbtn" id="rClose" aria-label="Close message" title="Close (Esc)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+    <button class="iconbtn" id="rBack" aria-label="Back">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="m14 6-6 6 6 6"/></svg>
+    </button>
+    <div class="mi-info">
+      <div class="rsubj" id="rSubj">—</div>
+      <div class="rmeta tr" id="rMeta">—</div>
+    </div>
+  </div>
+  <div id="rbody">
+    <div id="rEmpty">
+      <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 7.5 8.5 6 8.5-6"/></svg>
+      <div><b>Nothing open</b><span>Pick a message on the left, or press <kbd>j</kbd> to start at the top.</span></div>
+    </div>
+    <iframe id="rframe" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>
+  </div>
+  <div class="attbar" id="rAtts" style="padding:8px 16px 0"></div>
+  <div class="rbar">
+    <button class="rbtn lab" id="rImages" hidden>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m5 18 5-5 3.5 3.5L17 13l2.5 2.5"/></svg><span class="lbl">Images</span>
+    </button>
+    <button class="rbtn lab" id="rUnsub" hidden aria-label="Unsubscribe" title="Unsubscribe from this sender">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 12.5V9a6.5 6.5 0 0 0-13 0c0 6-2.5 7.5-2.5 7.5h11"/><path d="M10.3 20a2 2 0 0 0 3.4 0"/><path d="M16 18h6"/></svg><span class="lbl">Unsubscribe</span>
+    </button>
+    <button class="rbtn ico" id="rStar" aria-label="Star" title="Star (s)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3.6 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.8l5.9-.9Z"/></svg>
+    </button>
+    <button class="rbtn ico" id="rUnread" aria-label="Mark unread" title="Mark unread (u)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 7 8.5 6 8.5-6"/></svg>
+    </button>
+    <button class="rbtn ico" id="rArchive" aria-label="Archive" title="Archive (e)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1.4"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9"/><path d="M10 13h4"/></svg>
+    </button>
+    <button class="rbtn ico" id="rDelete" aria-label="Delete" title="Delete (#)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5.2A1.2 1.2 0 0 1 10.2 4h3.6A1.2 1.2 0 0 1 15 5.2V7"/><path d="M6 7v12a1.5 1.5 0 0 0 1.5 1.5h9A1.5 1.5 0 0 0 18 19V7"/><path d="M10 11v6M14 11v6"/></svg>
+    </button>
+    <button class="rbtn ico" id="rMove" aria-label="Move to folder" title="Move (v)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 18Z"/></svg>
+    </button>
+    <button class="rbtn ico" id="rReplyAll" aria-label="Reply all" title="Reply all (a)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 8 3 12l4.5 4"/><path d="M12.5 8 8 12l4.5 4"/><path d="M8 12h7a6 6 0 0 1 6 6v1"/></svg>
+    </button>
+    <button class="rbtn acc" id="rReply">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 9 4 13.5 9.5 18"/><path d="M4 13.5h9a7 7 0 0 0 7-7V5"/></svg>Reply
+    </button>
+  </div>
+</div>
+
+<div id="scrim"></div>
+
+<div class="sheet" id="acctSheet">
+  <div class="grab"></div>
+  <div class="sh-t">Accounts</div>
+  <div class="sh-s">iCloud connects here in two taps. It appears on its own once the agent runs on your PC (see the README).</div>
+  <div id="acctList"></div>
+  <button class="cta" id="addIcloud" style="background:var(--elev2);color:var(--t1)">Connect iCloud</button>
+  <button class="cta" id="openContacts" style="background:var(--elev2);color:var(--t1)">Contacts</button>
+  <div class="sh-s" style="margin:14px 0 6px">Appearance</div>
+  <div class="chips" id="themePick">
+    <button class="pill" data-theme="light">Light</button>
+    <button class="pill" data-theme="dark">Dark</button>
+    <button class="pill" data-theme="system">System</button>
+  </div>
+  <button class="cta" id="notifyBtn" style="background:var(--elev2);color:var(--t1)">Enable notifications</button>
+</div>
+
+<div class="sheet" id="icloudSheet">
+  <div class="grab"></div>
+  <div class="sh-t">Connect iCloud</div>
+  <div class="sh-s">Needs an <b>app-specific password</b> from account.apple.com &rarr; Sign-In and Security &rarr; App-Specific Passwords. Not your Apple ID password &mdash; that will not work and should not be typed here.</div>
+  <div class="field"><input id="icEmail" type="text" inputmode="email" placeholder="you@icloud.com" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+  <div class="field"><input id="icPass" type="password" placeholder="xxxx-xxxx-xxxx-xxxx" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+  <div class="formerr" id="icErr"></div>
+  <button class="cta" id="icSave">Connect</button>
+</div>
+
+<div class="sheet" id="moveSheet">
+  <div class="grab"></div>
+  <div class="sh-t">Move to</div>
+  <div class="sh-s" id="moveSub">Filed at the provider, not just here.</div>
+  <div id="moveList"></div>
+</div>
+
+<div class="sheet" id="folderSheet">
+  <div class="grab"></div>
+  <div class="crow">
+    <div class="sh-t">Folders</div>
+    <button class="ghost" id="folderEdit" title="Show rename and delete on every folder">Edit</button>
+  </div>
+  <div id="folderList"></div>
+  <button class="ghost" id="folderNew" style="width:100%;justify-content:flex-start;min-height:38px">+ New folder</button>
+</div>
+
+<div class="sheet" id="contactsSheet">
+  <div class="grab"></div>
+  <div class="sh-t">Contacts</div>
+  <div class="sh-s">Gathered from mail you have sent. Removing one only hides it from autocomplete here &mdash; it changes nothing at your provider.</div>
+  <div class="field"><input id="ctSearch" type="text" placeholder="Filter" autocomplete="off" spellcheck="false"></div>
+  <div id="contactList"></div>
+</div>
+
+<div class="sheet lg" id="composeSheet">
+  <div class="grab"></div>
+  <div class="crow">
+    <div class="sh-t" id="cTitle">New message</div>
+    <div class="crow-actions">
+      <span style="display:flex;gap:4px"><button class="ghost" id="cCcToggle" title="Carbon copy: extra recipients who receive the message. Everyone can see who is on Cc.">+ Cc</button><button class="ghost" id="cBccToggle" title="Blind carbon copy: recipients who receive the message without anyone else knowing they did.">+ Bcc</button></span>
+    </div>
+  </div>
+  <div class="chips" id="cAccounts"></div>
+
+  <div class="field afield"><span class="flabel">To</span>
+    <input id="cTo" type="text" inputmode="email" placeholder="name@example.com" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+  <div class="suggest" id="cSuggest"></div>
+
+  <div class="field afield" id="cCcWrap" hidden><span class="flabel">Cc</span>
+    <input id="cCc" type="text" inputmode="email" placeholder="Also send a copy — everyone can see these" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+
+  <div class="field afield" id="cBccWrap" hidden><span class="flabel">Bcc</span>
+    <input id="cBcc" type="text" inputmode="email" placeholder="Send a copy — no other recipient sees these" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+
+
+  <div class="field" id="cSubjWrap"><input id="cSubj" type="text" placeholder="Subject" autocomplete="off"></div>
+
+  <div class="toolbar" id="cTools">
+    <button data-cmd="bold" title="Bold (Ctrl+B)"><b>B</b></button>
+    <button data-cmd="italic" title="Italic (Ctrl+I)"><i>I</i></button>
+    <button data-cmd="underline" title="Underline (Ctrl+U)"><u>U</u></button>
+    <button data-cmd="insertUnorderedList" title="Bulleted list">&bull;&nbsp;&#8212;</button>
+    <button data-cmd="insertOrderedList" title="Numbered list">1.&nbsp;&#8212;</button>
+    <button data-block="blockquote" title="Quote">&ldquo;&nbsp;&rdquo;</button>
+    <button id="cLink" title="Insert link">Link</button>
+    <button data-cmd="removeFormat" title="Clear formatting">Clear</button>
+    <button id="cAttach" title="Attach a file">&#128206; Attach</button>
+    <input type="file" id="cFile" multiple hidden>
+    <span class="spacer"></span>
+    <button class="ai" id="aiFix" title="Fix spelling and grammar">Fix</button>
+    <button class="ai" id="aiImprove" title="Rewrite more clearly">Improve</button>
+  </div>
+
+  <div id="imgTools" hidden><span>Image</span><button data-w="25%">25%</button><button data-w="50%">50%</button><button data-w="75%">75%</button><button data-w="100%">Full</button><button data-w="">Reset</button><button id="imgDel">Remove</button></div>
+  <div class="editor" id="cBody" contenteditable="true" data-ph="Write…"></div>
+  <div class="attbar" id="cAtts"></div>
+  <div class="formerr" id="cErr"></div>
+  <button class="cta" id="cSend">Send</button>
+</div>
+
+<div id="modal" hidden>
+  <div class="mcard" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="mtitle" id="modalTitle"></div>
+    <div class="mdetail" id="modalDetail"></div>
+    <input class="field" id="modalInput" type="text" autocomplete="off" spellcheck="false" hidden>
+    <div class="mactions">
+      <button class="rbtn" id="modalCancel">Cancel</button>
+      <button class="rbtn acc" id="modalOk">OK</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const hue = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+
+let accounts = [];
+let messages = [];
+let folders = [];             // [{folder, n, unread}] straight from the server
+let labelList = [];           // [{name, n}] — Gmail labels and iCloud folders
+let folder = "inbox";
+let label = "";               // filter by a label rather than a folder
+let starredOnly = false;      // the Starred view is a filter, not a folder
+let folderEditing = false;
+let query = "";               // search term; non-empty searches every folder
+let searchTimer = null;
+let accountFilter = "";       // account id, or "" for all
+let current = null;           // open message {message, account, body}
+let replyTo = null;           // message id when the compose sheet is a reply
+let pollTimer = null;
+
+// Gmail's system labels are shouty ids; nobody wants to see CATEGORY_UPDATES.
+const PRETTY = {
+  INBOX: "Inbox", SENT: "Sent", DRAFT: "Drafts", SPAM: "Spam", TRASH: "Trash",
+  STARRED: "Starred", UNREAD: "Unread",
+  CATEGORY_PERSONAL: "Personal", CATEGORY_SOCIAL: "Social",
+  CATEGORY_PROMOTIONS: "Promotions", CATEGORY_UPDATES: "Updates",
+  CATEGORY_FORUMS: "Forums",
+};
+const pretty = (s) => PRETTY[s] || (s.charAt(0).toUpperCase() + s.slice(1));
+
+// The order a mailbox is usually read in, rather than alphabetical.
+const FOLDER_ORDER = ["inbox", "archive", "sent", "drafts", "spam", "trash"];
+const folderRank = (f) => {
+  const i = FOLDER_ORDER.indexOf(f);
+  return i === -1 ? FOLDER_ORDER.length : i;
+};
+
+const PROVIDER = { icloud: "iCloud", google: "Gmail", microsoft: "Outlook" };
+
+/* ── the tab's own unread signal ── */
+
+let faviconBase = null;   // the icon, loaded once
+let faviconMarked = null; // avoids redrawing on every refresh
+
+/**
+ * Paints a red dot onto the favicon.
+ *
+ * The PWA badge only exists for an installed app, and the in-app count is
+ * invisible from another tab — which is where you actually are when mail
+ * arrives. A favicon is the one signal that survives being ignored.
+ */
+function markFavicon(on) {
+  if (faviconMarked === on) return;
+  const apply = (href) => {
+    let link = document.querySelector('link[rel="icon"][data-dyn]');
+    if (!link) {
+      link = document.createElement("link");
+      link.rel = "icon";
+      link.dataset.dyn = "1";
+      document.head.appendChild(link);
+    }
+    link.href = href;
+    faviconMarked = on;
+  };
+
+  const draw = () => {
+    const size = 64;
+    const c = document.createElement("canvas");
+    c.width = c.height = size;
+    const g = c.getContext("2d");
+    g.drawImage(faviconBase, 0, 0, size, size);
+    if (on) {
+      // A ring in the page background first, so the dot reads as a dot at
+      // 16 pixels rather than merging into whatever it sits on.
+      g.beginPath();
+      g.arc(size - 17, 17, 17, 0, Math.PI * 2);
+      g.fillStyle = getComputedStyle(document.body).backgroundColor || "#fff";
+      g.fill();
+      g.beginPath();
+      g.arc(size - 17, 17, 13, 0, Math.PI * 2);
+      g.fillStyle = "#e5342c";
+      g.fill();
+    }
+    apply(c.toDataURL("image/png"));
+  };
+
+  if (faviconBase) return draw();
+  const img = new Image();
+  img.onload = () => { faviconBase = img; draw(); };
+  img.onerror = () => {}; // no icon, no badge; not worth failing over
+  img.src = "/icon-192.png";
+}
+
+/* ── dialogs ──
+   ask()     → Promise<boolean>
+   askText() → Promise<string|null>
+
+   Title and detail are separate fields rather than one string with newlines in
+   it: the question stays readable at a glance and the consequence sits under
+   it, which is the part that matters on a destructive action. */
+let modalDone = null;
+
+function closeModal(value) {
+  const done = modalDone;
+  modalDone = null;
+  $("#modal").hidden = true;
+  $("#modalInput").hidden = true;
+  if (done) done(value);
+}
+
+function openModal({ title, detail = "", input = false, value = "", placeholder = "", ok = "OK", danger = false }) {
+  // A second dialog would orphan the first one's promise, so resolve it first.
+  if (modalDone) closeModal(null);
+  $("#modalTitle").textContent = title;
+  $("#modalDetail").textContent = detail;
+  const field = $("#modalInput");
+  field.hidden = !input;
+  field.value = value;
+  field.placeholder = placeholder;
+  const okBtn = $("#modalOk");
+  okBtn.textContent = ok;
+  okBtn.classList.toggle("danger", danger);
+  $("#modal").hidden = false;
+  setTimeout(() => (input ? field.focus() : okBtn.focus()), 40);
+  return new Promise((resolve) => (modalDone = resolve));
+}
+
+/** Confirmation. Resolves true only on an explicit yes. */
+const ask = (title, detail, opts = {}) =>
+  openModal({ title, detail, ...opts }).then((v) => v !== null);
+
+/** Text entry. Resolves null when cancelled, so "" stays distinguishable. */
+const askText = (title, value = "", opts = {}) =>
+  openModal({ title, input: true, value, ...opts }).then((v) => (v === null ? null : String(v)));
+
+$("#modalOk").addEventListener("click", () =>
+  closeModal($("#modalInput").hidden ? true : $("#modalInput").value.trim())
+);
+$("#modalCancel").addEventListener("click", () => closeModal(null));
+$("#modal").addEventListener("click", (e) => {
+  if (e.target.id === "modal") closeModal(null); // clicking the backdrop cancels
+});
+$("#modalInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") closeModal($("#modalInput").value.trim());
+});
+
+let toastTimer;
+/** `undo` turns the toast into the safety net for a destructive action. */
+function toast(msg, undo) {
+  const el = $("#toast");
+  // Built as a text node, never innerHTML: these strings carry folder names and
+  // sometimes subjects, and a subject is attacker-controlled.
+  el.textContent = "";
+  el.appendChild(document.createTextNode(msg));
+  if (undo) {
+    const b = document.createElement("button");
+    b.className = "undo";
+    b.textContent = "Undo";
+    b.onclick = () => {
+      clearTimeout(toastTimer);
+      el.classList.remove("up");
+      undo();
+    };
+    el.appendChild(b);
+  }
+  el.classList.add("up");
+  clearTimeout(toastTimer);
+  // Long enough to actually reach for, without loitering.
+  toastTimer = setTimeout(() => el.classList.remove("up"), undo ? 6500 : 2400);
+}
+
+// Every network call raises the bar; a counter rather than a flag, so two
+// overlapping requests do not switch it off halfway through the second.
+let inflight = 0;
+function busy(delta) {
+  inflight = Math.max(0, inflight + delta);
+  document.documentElement.classList.toggle("busy", inflight > 0);
+}
+
+async function api(path, opts = {}) {
+  busy(1);
+  let res;
+  try {
+    res = await fetch(path, { credentials: "same-origin", ...opts });
+  } finally {
+    busy(-1);
+  }
+  if (res.status === 401) {
+    document.body.innerHTML =
+      `<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;color:var(--t2)">
+         <div><strong style="display:block;color:var(--t1);font-size:17px;margin-bottom:6px">Session expired</strong>
+         Open your activation link again.</div></div>`;
+    throw new Error("401");
+  }
+  return res;
+}
+
+/* ── time ── */
+function fmtWhen(ms) {
+  if (!ms) return "";
+  const d = new Date(ms);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString())
+    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  if (d.getFullYear() === now.getFullYear())
+    return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "2-digit" });
+}
+
+/* ── accounts ── */
+async function loadAccounts() {
+  try {
+    const res = await api("/api/accounts");
+    if (!res.ok) return;
+    accounts = (await res.json()).accounts || [];
+  } catch (e) { if (String(e.message) === "401") return; }
+
+  // The default account leads the list and is preselected when composing.
+  // iCloud unless told otherwise, since that is the mailbox in daily use.
+  const chosen =
+    localStorage.getItem("dmzs-primary") ||
+    (accounts.find((a) => a.provider === "icloud") || {}).id ||
+    (accounts[0] || {}).id;
+  accounts.sort((a, b) => (b.id === chosen) - (a.id === chosen));
+  if (!composeAcct || !accounts.some((a) => a.id === composeAcct)) composeAcct = chosen || "";
+
+  renderAccounts();
+}
+
+const acctById = (id) => accounts.find((a) => a.id === id);
+
+// Hashing the address to a hue gave no guarantee two accounts landed apart —
+// with a handful of mailboxes the odds of two similar blues are high. A fixed
+// palette, assigned in connection order, is separated by construction. The
+// hash only returns as a fallback past the end of the palette.
+const ACCENT_PALETTE = ["#5aa7f0", "#f2a23c", "#59d191", "#c07cf0", "#f2657f", "#3fd0cd"];
+function acctColor(a) {
+  const i = accounts.findIndex((x) => x.id === a.id);
+  return i >= 0 && i < ACCENT_PALETTE.length ? ACCENT_PALETTE[i] : `hsl(${hue(a.email)} 62% 58%)`;
+}
+
+function renderAccounts() {
+  // Every unread message, not just the inbox's. The header used to count the
+  // inbox alone, so an unread message in Archive showed as a badge on the
+  // folder and "0 unread" in the header at the same time — two numbers for the
+  // same thing, both defensible, together nonsense.
+  const total = folders.length
+    ? folders.reduce((n, f) => n + Number(f.unread || 0), 0)
+    : accounts.reduce((n, a) => n + (a.unread || 0), 0);
+  // The service worker sets this on a push; keep it truthful while you are
+  // actually looking at the app, or it lingers after you have read everything.
+  try {
+    if (total > 0) navigator.setAppBadge?.(total);
+    else navigator.clearAppBadge?.();
+  } catch {}
+
+  // The tab itself: a count in the title and a red dot on the favicon. Both
+  // are visible from another tab, which the in-app badge is not.
+  document.title = total ? `(${total}) Mail` : "Mail";
+  markFavicon(total > 0);
+  const broken = accounts.filter((a) => a.status !== "ok").length;
+  // "1 account" is a fact about the app, not about your mail. With several it
+  // earns its place; with one it is a line of chrome saying nothing.
+  // Markup rather than a text node, so the count can carry the accent — and
+  // safe to build that way because every value interpolated here is a number
+  // this function counted itself.
+  const parts = [];
+  if (accounts.length > 1) parts.push(`${Number(accounts.length)} accounts`);
+  parts.push(total ? `<b class="unread-n">${Number(total)} unread</b>` : "All read");
+  if (broken) parts.push(`${Number(broken)} need${broken > 1 ? "" : "s"} attention`);
+  $("#hmeta").innerHTML = accounts.length ? parts.join(" · ") : "No account connected yet";
+
+  // With a single account the filter is a row of buttons that all do nothing.
+  $("#accPills").hidden = accounts.length < 2;
+  document.body.classList.toggle("multi", accounts.length > 1);
+  $("#accPills").innerHTML =
+    accounts.length < 2
+      ? ""
+      : `<button class="pill${accountFilter === "" ? " on" : ""}" data-acc="">All</button>` +
+    accounts.map((a) =>
+      `<button class="pill${accountFilter === a.id ? " on" : ""}" data-acc="${a.id}" title="${esc(a.email)}">
+        <span class="dot" style="background:${acctColor(a)}"></span>${esc(PROVIDER[a.provider] || a.provider)}
+        ${a.unread ? `<span class="n num">${a.unread}</span>` : ""}
+      </button>`
+    ).join("");
+
+  $("#acctList").innerHTML = accounts.length
+    ? accounts.map((a) => {
+        const age = a.last_sync ? Math.round((Date.now() - a.last_sync) / 60000) : null;
+        const state = a.status !== "ok"
+          ? (a.status === "reauth" ? "reconnect needed" : (a.last_error || "error"))
+          : age === null ? "never synced" : age < 1 ? "just now" : `${age} min ago`;
+        return `<div class="mi${a.status !== "ok" ? " warn" : ""}">
+          <span class="dot" style="width:9px;height:9px;border-radius:50%;background:${acctColor(a)};flex:none"></span>
+          <span class="grow"><div class="tr">${esc(a.email)}</div>
+          <div class="sub">${esc(PROVIDER[a.provider])} · ${esc(state)}</div></span>
+          ${accounts[0] && accounts[0].id === a.id
+            ? `<span class="side" style="color:var(--acc)">Default</span>`
+            : `<button class="side" data-primary="${a.id}">Make default</button>`}
+          <button class="side" data-syncacc="${a.id}" style="color:var(--acc)">Sync</button>
+          <button class="side" data-delacc="${a.id}" style="color:var(--red)">Remove</button>
+        </div>`;
+      }).join("")
+    : `<div class="sh-s">Nothing yet — connect one below.</div>`;
+}
+
+/* ── folders ── */
+async function loadFolders() {
+  try {
+    const res = await api("/api/folders");
+    if (!res.ok) return;
+    const d = await res.json();
+    folders = (d.folders || []).sort(
+      (a, b) => folderRank(a.folder) - folderRank(b.folder) || a.folder.localeCompare(b.folder)
+    );
+    labelList = d.labels || [];
+  } catch (e) { if (String(e.message) === "401") return; }
+  renderFolders();
+  renderAccounts(); // the header's unread count is derived from this data
+}
+
+/** Reads that change a count have to refresh both, or the two disagree. */
+const refreshCounts = () => Promise.all([loadFolders(), loadAccounts()]);
+
+/** Nested IMAP paths read better as their leaf: "INBOX/Cranfield" → "Cranfield". */
+const folderLabel = (name) => {
+  const leaf = String(name).split(/[\/.]/).filter(Boolean).pop() || name;
+  return pretty(leaf);
+};
+
+function renderFolders() {
+  const cur = folders.find((f) => f.folder === folder);
+  $("#folderName").textContent = starredOnly ? "Starred" : label ? folderLabel(label) : folderLabel(folder);
+
+  // Two different questions, so two different marks. The badge answers "how
+  // much is unread where I am"; the dot answers "is there new mail at all",
+  // which the badge alone could not — sitting in Sent with an unread inbox,
+  // nothing on screen said so, which is the whole point of a mail app.
+  const here = !label && !starredOnly && cur ? Number(cur.unread || 0) : 0;
+  const total = folders.reduce((n, f) => n + Number(f.unread || 0), 0);
+  $("#folderCount").innerHTML = here
+    ? `<span class="n num">${here}</span>`
+    : total
+    ? `<span class="newdot" title="${total} unread elsewhere"></span>`
+    : "";
+  $("#folderBtn").classList.toggle("hasnew", total > 0);
+
+  // Labels that merely restate a folder would be duplicate rows.
+  const covered = new Set(folders.map((f) => f.folder.toLowerCase()));
+  const extra = labelList.filter(
+    (l) => !covered.has(l.name.toLowerCase()) && !covered.has(folderLabel(l.name).toLowerCase())
+  );
+  // Folders come from the messages that exist, so an empty one disappears —
+  // and an empty inbox with no way back to it is a trap. The standard set is
+  // always present, at zero if that is the truth.
+  const known = new Set(folders.map((f) => f.folder));
+  for (const name of ["inbox", "archive", "sent", "spam", "trash"]) {
+    if (!known.has(name)) folders.push({ folder: name, n: 0, unread: 0 });
+  }
+  folders.sort(
+    (a, b) => folderRank(a.folder) - folderRank(b.folder) || a.folder.localeCompare(b.folder)
+  );
+
+  const system = folders.filter((f) => FOLDER_ORDER.includes(f.folder));
+  const mine = folders.filter((f) => !FOLDER_ORDER.includes(f.folder));
+
+  // In edit mode a folder row stops being a link and becomes a thing you act
+  // on, so the actions replace the count rather than sitting beside it.
+  // Both the count and the actions are always rendered; CSS decides which you
+  // see. On a desktop the actions appear on hover, so renaming a folder does
+  // not require first discovering a mode.
+  const row = (key, attr, name, count, unread, editable, raw) => {
+    const tools = editable
+      ? `<span class="ftools">
+           <span class="side" data-ren="${esc(raw)}">Rename</span>
+           <span class="side" data-del="${esc(raw)}" style="color:var(--red)">Delete</span>
+         </span>`
+      : raw === "trash" || raw === "spam"
+      ? `<span class="ftools"><span class="side" data-empty="${esc(raw)}" style="color:var(--red)">Empty</span></span>`
+      : "";
+    return `<button class="frow${key ? " on" : ""}${unread ? " unread" : ""}${tools ? " actionable" : ""}" ${attr}>
+       <span class="grow">${esc(name)}</span>
+       ${tools}
+       <span class="fcount">${unread ? `<span class="n num">${unread}</span>` : ""}<span class="side num">${count}</span></span>
+     </button>`;
+  };
+
+  $("#folderList").innerHTML =
+    system
+      .map((f) => row(!label && folder === f.folder, `data-folder="${esc(f.folder)}"`, folderLabel(f.folder), f.n, f.unread, false, f.folder))
+      .join("") +
+    `<button class="frow${starredOnly ? " on" : ""}" data-starred="1">
+       <span class="grow">Starred</span></button>` +
+    (mine.length ? `<div class="fgroup">Your folders</div>` : "") +
+    mine
+      .map((f) => row(!label && folder === f.folder, `data-folder="${esc(f.folder)}"`, folderLabel(f.folder), f.n, f.unread, true, f.folder))
+      .join("") +
+    (extra.length ? `<div class="fgroup">Labels</div>` : "") +
+    extra.map((l) => row(label === l.name, `data-label="${esc(l.name)}"`, folderLabel(l.name), l.n, 0, false, l.name)).join("");
+}
+
+$("#folderBtn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  renderFolders();
+  if (matchMedia("(min-width:900px)").matches) {
+    const r = e.currentTarget.getBoundingClientRect();
+    const sheet = $("#folderSheet");
+    sheet.style.top = `${Math.round(r.bottom + 6)}px`;
+    sheet.style.left = `${Math.round(Math.max(12, r.left))}px`;
+    document.body.classList.add("picking");
+  }
+  openSheet("#folderSheet");
+});
+// A popover has no scrim to click, so the document closes it instead.
+document.addEventListener("click", (e) => {
+  if (!document.body.classList.contains("picking")) return;
+  if (e.target.closest("#folderSheet") || e.target.closest("#folderBtn")) return;
+  closeSheets();
+});
+$("#folderList").addEventListener("click", async (e) => {
+  // Edit actions first: in edit mode a row is a target, not a link.
+  const ren = e.target.closest("[data-ren]");
+  const del = e.target.closest("[data-del]");
+  const emp = e.target.closest("[data-empty]");
+  if (ren || del || emp) {
+    e.stopPropagation();
+    if (ren) await renameFolder(ren.dataset.ren);
+    else if (del) await deleteFolder(del.dataset.del);
+    else await emptyFolder(emp.dataset.empty);
+    return;
+  }
+
+  const f = e.target.closest("[data-folder]");
+  const l = e.target.closest("[data-label]");
+  const st = e.target.closest("[data-starred]");
+  if (st) { starredOnly = true; label = ""; }
+  else if (f) { folder = f.dataset.folder; label = ""; starredOnly = false; }
+  else if (l) { label = l.dataset.label; starredOnly = false; }
+  else return;
+  closeSheets();
+  renderFolders();
+  loadList();
+});
+
+$("#folderEdit").addEventListener("click", (e) => {
+  e.stopPropagation();
+  folderEditing = !folderEditing;
+  document.body.classList.toggle("fedit", folderEditing);
+  $("#folderEdit").textContent = folderEditing ? "Done" : "Edit";
+  renderFolders();
+});
+
+async function folderCall(path, opts) {
+  const res = await api(path, opts).catch(() => null);
+  const d = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { toast(d.error || "That didn't work"); return null; }
+  await Promise.all([loadFolders(), loadList(), loadAccounts()]);
+  return d;
+}
+
+$("#folderNew").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  const name = await askText("New folder", "", { placeholder: "Name", ok: "Create" });
+  if (!name || !name.trim()) return;
+  if (await folderCall("/api/folders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name.trim() }),
+  })) toast(`Created ${name.trim()}`);
+});
+
+async function renameFolder(from) {
+  const to = await askText(`Rename "${folderLabel(from)}"`, folderLabel(from), { ok: "Rename" });
+  if (!to || !to.trim() || to.trim() === from) return;
+  if (await folderCall("/api/folders/rename", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from, to: to.trim() }),
+  })) {
+    if (folder === from) folder = to.trim();
+    toast("Renamed");
+  }
+}
+
+async function deleteFolder(name) {
+  const f = folders.find((x) => x.folder === name);
+  const n = f ? f.n : 0;
+  // Deleting a mailbox destroys its messages at Apple. No bin, no undo.
+  const gone = await ask(
+    `Delete the folder "${folderLabel(name)}"?`,
+    (n ? `Its ${n} message${n > 1 ? "s" : ""} will be permanently deleted from iCloud too. ` : "") +
+      "This cannot be undone.",
+    { ok: "Delete", danger: true }
+  );
+  if (!gone) return;
+  if (await folderCall(`/api/folders/${encodeURIComponent(name)}`, { method: "DELETE" })) {
+    if (folder === name) folder = "inbox";
+    toast(`Deleted ${folderLabel(name)}`);
+  }
+}
+
+async function emptyFolder(which) {
+  const f = folders.find((x) => x.folder === which);
+  const n = f ? f.n : 0;
+  if (!n) { toast(`${folderLabel(which)} is already empty`); return; }
+  const sure = await ask(
+    `Permanently delete all ${n} message${n > 1 ? "s" : ""} in ${folderLabel(which)}?`,
+    "They are removed from iCloud itself. This cannot be undone.",
+    { ok: "Empty", danger: true }
+  );
+  if (!sure) return;
+  if (await folderCall("/api/folders/empty", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ folder: which }),
+  })) toast(`${folderLabel(which)} emptied`);
+}
+
+/* ── search ── */
+$("#q").addEventListener("input", (e) => {
+  query = e.target.value.trim();
+  $("#searchWrap").classList.toggle("has", query.length > 0);
+  clearTimeout(searchTimer);
+  // Debounced: typing a word should be one query, not six.
+  searchTimer = setTimeout(loadList, 220);
+});
+$("#qClear").addEventListener("click", () => {
+  query = "";
+  $("#q").value = "";
+  $("#searchWrap").classList.remove("has");
+  loadList();
+});
+
+/* ── list ── */
+async function loadList(more = false) {
+  const before = more && messages.length ? messages[messages.length - 1].date : 0;
+  // A search spans everything; without one you are looking at a folder.
+  // Starred spans every folder, like search does: a flag is not a place.
+  const p = new URLSearchParams({ folder: query || starredOnly ? "all" : folder, limit: 50 });
+  if (starredOnly) p.set("starred", "1");
+  if (label) p.set("label", label);
+  if (query) p.set("q", query);
+  if (accountFilter) p.set("account", accountFilter);
+  if (before) p.set("before", before);
+  try {
+    const res = await api(`/api/messages?${p}`);
+    if (!res.ok) return;
+    const batch = (await res.json()).messages || [];
+    messages = more ? messages.concat(batch) : batch;
+    messages._more = batch.length === 50;
+  } catch (e) { if (String(e.message) === "401") return; }
+  renderList();
+}
+
+function renderList() {
+  const rows = messages;
+  $("#list").innerHTML = rows.length
+    ? rows.map((m) => {
+        const a = acctById(m.account_id);
+        const open = current && current.message && current.message.id === m.id;
+        return `<div class="row${m.unread ? " unread" : ""}${open ? " sel" : ""}" data-id="${m.id}">
+          ${
+            // Which account a message arrived on is only worth a swatch when
+            // there is more than one of them, the same rule the account pills
+            // follow. On a single mailbox it marked every row identically.
+            accounts.length > 1
+              ? `<span class="acc-dot" style="background:${a ? acctColor(a) : "var(--t3)"}"></span>`
+              : ""
+          }
+          <div class="mi-info">
+            <div class="l1"><span class="from tr">${esc(m.from_name || m.from_email || "—")}</span>
+            <span class="when num">${fmtWhen(m.date)}</span></div>
+            <div class="subj tr">${esc(m.subject || "(no subject)")}</div>
+            <div class="snip tr">${esc(m.snippet || "")}</div>
+          </div>
+        </div>`;
+      }).join("") + (rows._more ? `<button class="morebtn" id="moreBtn">Load older</button>` : "")
+    : `<div class="empty">${
+        !accounts.length
+          ? "<b>Welcome.</b>Tap the account button up top to connect iCloud."
+          : query
+          ? `<b>No match.</b>Nothing anywhere for &ldquo;${esc(query)}&rdquo;.`
+          : label
+          ? `<b>Empty.</b>Nothing filed under ${esc(pretty(label))}.`
+          : folder === "inbox"
+          ? "<b>Inbox zero.</b>Nothing here right now."
+          : `<b>Empty.</b>Nothing in ${esc(pretty(folder))}.`
+      }</div>`;
+}
+
+/* ── reader ── */
+
+// Your choice: images load without asking. The cost is that tracking pixels
+// work again — a sender learns when and how often you open their mail. One
+// line to reverse, and the stored bodies never lost the blocked form.
+const AUTO_IMAGES = true;
+/**
+ * Turns cid: references into something a browser can actually load.
+ *
+ * Inline images are referenced as `src="cid:<content-id>"`, pointing at a part
+ * inside the message. A browser has no idea what that means, which is why the
+ * picture in an Outlook mail shows as a broken icon. The bytes are fetched from
+ * the attachment endpoint — where the session cookie works — and inlined as
+ * data: URIs, because the reader iframe is sandboxed into an opaque origin and
+ * could neither send our cookie nor read a blob: URL created out here.
+ */
+/**
+ * Case-insensitive replace-all, done by scanning rather than by RegExp.
+ *
+ * A Content-ID can contain any of `. * + ? ^ $ { } ( ) | [ ] \`, so building a
+ * pattern from one means escaping it correctly every time — and getting that
+ * wrong produces a syntax error that takes the entire script down with it.
+ * Indexes cannot be mis-escaped.
+ */
+function replaceAllCaseless(haystack, needle, replacement) {
+  const lowerNeedle = needle.toLowerCase();
+  let rest = haystack;
+  let out = "";
+  for (;;) {
+    const at = rest.toLowerCase().indexOf(lowerNeedle);
+    if (at === -1) return out + rest;
+    out += rest.slice(0, at) + replacement;
+    rest = rest.slice(at + needle.length);
+  }
+}
+
+async function resolveInlineImages(html, id, atts) {
+  if (!/cid:/i.test(html) || !atts.length) return html;
+
+  // Every distinct cid the HTML asks for, in the order it asks.
+  const refs = [];
+  for (const m of html.matchAll(/cid:([^"'\s>)]+)/gi)) {
+    const cid = decodeURIComponent(m[1]);
+    if (!refs.some((r) => r.toLowerCase() === cid.toLowerCase())) refs.push(cid);
+  }
+  if (!refs.length) return html;
+
+  // Preferred: match on the Content-ID recorded with the attachment.
+  //
+  // Fallback: pair them up in order against the image attachments. Messages
+  // stored before Content-IDs were captured have none, and re-syncing the whole
+  // mailbox to recover a field is a poor trade — a message with one cid: and
+  // one image is unambiguous whatever the metadata remembers.
+  const images = atts.map((a, i) => ({ a, i })).filter(({ a }) => String(a.type || "").startsWith("image/"));
+  let unclaimed = 0;
+  const wanted = new Map();
+  for (const cid of refs) {
+    const exact = atts.findIndex((a) => (a.cid || "").toLowerCase() === cid.toLowerCase());
+    if (exact !== -1) {
+      wanted.set(cid, exact);
+      continue;
+    }
+    const guess = images[unclaimed++];
+    if (guess) wanted.set(cid, guess.i);
+  }
+  if (!wanted.size) return html;
+
+  const asDataUri = async (index) => {
+    const res = await api(`/api/messages/${encodeURIComponent(id)}/attachment/${index}`);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    // Skip anything implausibly large: a data: URI that size would stall the
+    // render for a picture nobody asked to see inline.
+    if (blob.size > 8 * 1024 * 1024) return null;
+    return new Promise((done) => {
+      const r = new FileReader();
+      r.onload = () => done(String(r.result));
+      r.onerror = () => done(null);
+      r.readAsDataURL(blob);
+    });
+  };
+
+  let out = html;
+  for (const [cid, index] of wanted) {
+    try {
+      const uri = await asDataUri(index);
+      if (!uri) continue;
+      out = replaceAllCaseless(out, "cid:" + cid, uri);
+    } catch {
+      /* one unreadable image should not blank the message */
+    }
+  }
+  return out;
+}
+
+const unblockImages = (h) =>
+  String(h || "").replace(/data-blocked-(src|srcset|background|poster)=/gi, "$1=");
+
+function frameDoc(body) {
+  // The iframe is the security boundary: no scripts, no same-origin. What
+  // arrives here was already defused server-side; this wrapper just makes
+  // it readable and opens links in a new tab.
+  return `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<base target="_blank">
+<style>body{margin:14px;font:15px/1.5 -apple-system,Segoe UI,system-ui,sans-serif;color:#111;background:#fff;word-break:break-word}
+img{max-width:100%;height:auto}a{color:#1a63c9}</style></head><body>${body}</body></html>`;
+}
+
+async function openMsg(id) {
+  // The composer now occupies the reading pane, so opening a message replaces
+  // it. Never silently: a half-written reply is worth one question.
+  if (draftDirty() && !(await ask("Discard the message you are writing?",
+      "It has not been sent and will not be kept.", { ok: "Discard", danger: true }))) return;
+  closeSheets();
+  const row = messages.find((m) => m.id === id);
+  try {
+    const res = await api(`/api/messages/${id}`);
+    if (!res.ok) { toast("Could not open this message"); return; }
+    current = await res.json();
+  } catch { return; }
+  if (row) { row.unread = 0; renderList(); }
+
+  const m = current.message;
+  $("#rSubj").textContent = m.subject || "(no subject)";
+  $("#rMeta").innerHTML =
+    `<b>${esc(m.from_name || m.from_email)}</b> · ${esc(new Date(m.date).toLocaleString())} · to ${esc(m.to_line || "me")}`;
+  // Bodies are stored with remote loads neutralised either way; this decides
+  // whether they come back on render. Flip AUTO_IMAGES to false and the tap-to-
+  // load protection returns without re-fetching a single message.
+  // Two different failures, said in our own voice rather than spliced into the
+  // body where they would read as something the sender wrote. Neither is a
+  // blank white pane, which is what this used to be and is indistinguishable
+  // from the app being broken.
+  const note = (t) => `<p style="color:#6b6b73;font-style:italic">${t}</p>`;
+  const html = current.body.missing
+    ? note("This message could not be fetched from iCloud. It may have been deleted elsewhere, or the account needs reconnecting.")
+    : current.body.empty
+    ? note(
+        "This message has no readable text" +
+          ((current.body.attachments || []).length ? " — only the attachments below." : ".")
+      )
+    : AUTO_IMAGES
+    ? unblockImages(current.body.html)
+    : current.body.html || "";
+  // Render immediately, then swap in inline images once fetched: a message
+  // should never wait on its pictures to become readable.
+  $("#rframe").srcdoc = frameDoc(html);
+  resolveInlineImages(html, m.id, current.body.attachments || []).then((withImages) => {
+    if (withImages !== html && current && current.message.id === m.id) {
+      $("#rframe").srcdoc = frameDoc(withImages);
+    }
+  });
+  $("#rImages").hidden = AUTO_IMAGES || !(current.body.blocked > 0);
+  $("#rStar").classList.toggle("on", !!Number(m.starred));
+
+  // Unsubscribing is something you do to the message, not something attached
+  // to it, so it belongs in the action bar with Archive and Delete rather than
+  // among the downloads.
+  $("#rUnsub").hidden = !current.body.unsubscribe;
+
+  // Downloads are plain links: same-origin, cookie-authenticated, and the
+  // browser streams the file straight to disk without it passing through JS.
+  const atts = current.body.attachments || [];
+  // One archive beats eleven download prompts, so it only appears when there
+  // is more than one file to gather.
+  const all =
+    atts.length > 1
+      ? `<a class="att" href="/api/messages/${encodeURIComponent(m.id)}/attachments.zip" download
+           style="background:var(--acc);color:var(--on-acc);border-color:transparent;font-weight:600">
+           <span class="nm">Download all (${atts.length})</span></a>`
+      : "";
+  $("#rAtts").innerHTML = all + atts
+    .map(
+      (a, i) => `<a class="att" href="/api/messages/${encodeURIComponent(m.id)}/attachment/${i}" download="${esc(a.filename)}">
+        <span class="nm">${esc(a.filename)}</span>
+        <span class="sz">${humanSize(Math.round((a.size || 0) * 0.75))}</span></a>`
+    )
+    .join("");
+  $("#reader").classList.add("up");
+  renderList(); // repaint so the open row shows as selected
+  refreshCounts(); // opening marks it read, which moves a folder's count
+}
+
+/**
+ * Closing the reader has to forget the message, not just hide it: every rbar
+ * action reads `current`, so a message that has been deleted out from under the
+ * pane would still be the target of a star or a move.
+ */
+function closeReader() {
+  $("#reader").classList.remove("up");
+  current = null;
+  $("#rSubj").textContent = "—";
+  $("#rMeta").textContent = "—";
+  $("#rframe").srcdoc = "";
+  // Both belong to the message that was open, not to the pane.
+  $("#rUnsub").hidden = true;
+  $("#rImages").hidden = true;
+}
+
+// Back on a phone, × on a desktop — same function, two affordances. Binding
+// only one of them is how the desktop close button ended up inert.
+$("#rBack").addEventListener("click", closeReader);
+$("#rClose").addEventListener("click", closeReader);
+
+/* ── keyboard ── */
+
+/** True while the keystroke belongs to something being typed into. */
+const isTyping = (t) =>
+  !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || ""));
+
+/** Moves to the message after (or before) the open one. */
+function step(delta) {
+  if (!messages.length) return;
+  const at = current ? messages.findIndex((m) => m.id === current.message.id) : -1;
+  const next = messages[Math.min(messages.length - 1, Math.max(0, at + delta))];
+  if (next && (!current || next.id !== current.message.id)) openMsg(next.id);
+}
+
+addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    // Escape peels one layer at a time rather than dismissing everything.
+    if (document.querySelector(".sheet.up")) closeSheets();
+    else if ($("#reader").classList.contains("up")) closeReader();
+    return;
+  }
+
+  // Never take a keystroke from a field, and never from one the browser owns:
+  // Ctrl+R has to keep reloading the page.
+  if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
+
+  if (e.key === "/") {
+    e.preventDefault();
+    $("#q").focus();
+    return;
+  }
+  if (document.querySelector(".sheet.up")) return; // a sheet is in charge
+
+  if (e.key === "j" || e.key === "ArrowDown") { e.preventDefault(); return step(1); }
+  if (e.key === "k" || e.key === "ArrowUp") { e.preventDefault(); return step(-1); }
+
+  if (!current) return;
+  switch (e.key) {
+    // Delete and Backspace both bin it, with Undo in the toast. A keystroke is
+    // easier to hit by accident than a button, so the safety net matters more.
+    case "Delete":
+    case "Backspace":
+      e.preventDefault();
+      fileCurrent("trash", "Deleted");
+      break;
+    case "e":
+      e.preventDefault();
+      fileCurrent("archive", "Archived");
+      break;
+    case "s":
+      e.preventDefault();
+      $("#rStar").click();
+      break;
+    case "u":
+      e.preventDefault();
+      $("#rUnread").click();
+      break;
+    case "v":
+      e.preventDefault();
+      $("#rMove").click();
+      break;
+    case "r":
+      e.preventDefault();
+      startReply(false);
+      break;
+    case "a":
+      e.preventDefault();
+      startReply(true);
+      break;
+  }
+});
+
+$("#rImages").addEventListener("click", () => {
+  const html = String(current?.body?.html || "").replace(/data-blocked-(src|srcset|background|poster)=/gi, "$1=");
+  $("#rframe").srcdoc = frameDoc(html);
+  $("#rImages").hidden = true;
+});
+/** One filing call. Returns the server's reply, or null once it has complained. */
+async function fileMessage(id, target) {
+  const res = await api(`/api/messages/${id}/move`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ folder: target }),
+  }).catch(() => null);
+  if (!res || !res.ok) {
+    const d = res ? await res.json().catch(() => ({})) : {};
+    toast(d.error || "That didn't work");
+    loadList();
+    return null;
+  }
+  return res.json().catch(() => ({}));
+}
+
+/**
+ * Archive, delete and move are the same operation with a different destination.
+ * The row leaves the list immediately and the undo puts it back where it was —
+ * the server reports the previous folder precisely so this can exist.
+ */
+async function fileCurrent(target, said) {
+  if (!current) return;
+  const id = current.message.id;
+  const wasIn = current.message.folder || "inbox";
+
+  // Advance to the next message rather than dumping you back on the list —
+  // triaging is a sequence, and closing the reader after every action makes it
+  // one. Falls back to the previous message at the end of the list.
+  const at = messages.findIndex((m) => m.id === id);
+  messages = messages.filter((m) => m.id !== id);
+  const next = messages[at] || messages[at - 1] || null;
+  renderList();
+
+  // On a phone the reader is the whole screen, so staying in it would hide the
+  // fact that anything happened. Two panes can show both at once.
+  if (next && matchMedia("(min-width:900px)").matches) openMsg(next.id);
+  else closeReader();
+
+  const d = await fileMessage(id, target);
+  if (!d) return;
+  const back = d.from || wasIn;
+  toast(d.queued ? `${said} — queued` : said, async () => {
+    await fileMessage(id, back);
+    await Promise.all([loadList(), refreshCounts()]);
+  });
+  refreshCounts();
+}
+
+$("#rArchive").addEventListener("click", () => fileCurrent("archive", "Archived"));
+$("#rDelete").addEventListener("click", async () => {
+  if (!current) return;
+  const here = current.message.folder;
+  // Already in the bin: the only delete left is the permanent one. Moving it
+  // to Trash again did nothing, which read as the button being broken.
+  if (here !== "trash" && here !== "spam") return fileCurrent("trash", "Deleted");
+
+  if (!(await ask("Delete this message permanently?",
+      "It is removed from iCloud itself and cannot be recovered.", { ok: "Delete", danger: true }))) return;
+  const id = current.message.id;
+  const at = messages.findIndex((m) => m.id === id);
+  messages = messages.filter((m) => m.id !== id);
+  const next = messages[at] || messages[at - 1] || null;
+  renderList();
+  if (next && matchMedia("(min-width:900px)").matches) openMsg(next.id);
+  else closeReader();
+
+  const res = await api(`/api/messages/${id}/purge`, { method: "POST" }).catch(() => null);
+  const d = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) {
+    toast(d.error || "Could not delete");
+    loadList();
+    return;
+  }
+  toast("Deleted permanently");
+  refreshCounts();
+});
+
+$("#rStar").addEventListener("click", async () => {
+  if (!current) return;
+  const on = !Number(current.message.starred);
+  current.message.starred = on ? 1 : 0;
+  $("#rStar").classList.toggle("on", on);
+  const row = messages.find((m) => m.id === current.message.id);
+  if (row) row.starred = on ? 1 : 0;
+  renderList();
+  await api(`/api/messages/${current.message.id}/flag`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ starred: on }),
+  }).catch(() => {});
+});
+
+$("#rUnread").addEventListener("click", async () => {
+  if (!current) return;
+  const id = current.message.id;
+  closeReader();
+  const row = messages.find((m) => m.id === id);
+  if (row) row.unread = 1;
+  renderList();
+  await api(`/api/messages/${id}/flag`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ unread: true }),
+  }).catch(() => {});
+  toast("Marked unread");
+  refreshCounts();
+});
+
+$("#rMove").addEventListener("click", () => {
+  if (!current) return;
+  const here = current.message.folder;
+  const choices = folders.filter((f) => f.folder !== here);
+  $("#moveList").innerHTML = choices.length
+    ? choices
+        .map(
+          (f) =>
+            `<button class="mi" data-move="${esc(f.folder)}"><span class="grow">${esc(pretty(f.folder))}</span><span class="side num">${f.n}</span></button>`
+        )
+        .join("")
+    : `<div class="sh-s">Nothing else to move it to yet.</div>`;
+  openSheet("#moveSheet");
+});
+$("#moveList").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-move]");
+  if (!b) return;
+  closeSheets();
+  fileCurrent(b.dataset.move, `Moved to ${pretty(b.dataset.move)}`);
+});
+/** Every address in a header line, lowercased. */
+const addressesIn = (line) =>
+  (String(line || "").match(/[^\s<>,"();]+@[^\s<>,"();]+/g) || []).map((s) => s.toLowerCase());
+
+/**
+ * Reply → the sender. Reply all → the sender plus everyone who was on it,
+ * minus yourself, because replying to your own address is how mail loops start.
+ */
+function replyTargets(msg, all) {
+  const me = (acctById(msg.account_id) || {}).email?.toLowerCase();
+  const from = [String(msg.from_email || "").toLowerCase()];
+  const rest = all ? [...addressesIn(msg.to_line), ...addressesIn(msg.cc_line)] : [];
+  const seen = new Set();
+  const keep = (list) => list.filter((e) => e && e !== me && !seen.has(e) && seen.add(e));
+  return { to: keep(from), cc: keep(rest) };
+}
+
+function startReply(all) {
+  if (!current) return;
+  const m = current.message;
+  const { to, cc } = replyTargets(m, all);
+  // The original, quoted, so a reply carries its own context.
+  const quoted =
+    `<p><br></p><blockquote>On ${esc(new Date(m.date).toLocaleString())}, ` +
+    `${esc(m.from_name || m.from_email)} wrote:<br>${esc(m.snippet || "")}…</blockquote>`;
+  openCompose({
+    title: all ? "Reply all" : "Reply",
+    reply: m.id,
+    account: m.account_id,
+    to: to.join(", "),
+    cc: cc.join(", "),
+    subject: /^re\s*:/i.test(m.subject || "") ? m.subject : `Re: ${m.subject || ""}`,
+    html: quoted,
+  });
+}
+
+$("#rReply").addEventListener("click", () => startReply(false));
+$("#rReplyAll").addEventListener("click", () => startReply(true));
+
+/* ── unsubscribe ── */
+$("#rUnsub").addEventListener("click", async () => {
+  if (!current) return;
+  const id = current.message.id;
+  const res = await api(`/api/messages/${id}/unsubscribe`, { method: "POST" }).catch(() => null);
+  const d = res ? await res.json().catch(() => ({})) : {};
+
+  if (d.ok) {
+    // RFC 8058 one-click: the Worker made the request, nothing to open.
+    toast("Unsubscribed — the sender has been told");
+    return;
+  }
+  if (d.url) {
+    // Not one-click, so this is a link from inside an email. Show where it
+    // goes and let the decision be yours rather than opening it silently.
+    // The URL is shown in full, not summarised: it is the whole basis for
+    // deciding whether to follow a link that arrived inside an email.
+    if (await ask("Open this sender's unsubscribe page?", d.url, { ok: "Open" })) {
+      window.open(d.url, "_blank", "noopener,noreferrer");
+    }
+    return;
+  }
+  if (d.mailto) {
+    const to = d.mailto.replace(/^mailto:/i, "").split("?")[0];
+    if (await ask("Unsubscribe by email?", `This sender accepts only a message to ${to}.`, { ok: "Write it" })) {
+      openCompose({ title: "Unsubscribe", account: current.message.account_id, to, subject: "unsubscribe", html: "<p>unsubscribe</p>" });
+    }
+    return;
+  }
+  toast(d.error || "No unsubscribe option in this message");
+});
+
+/* ── sheets ── */
+const openSheet = (s) => { $("#scrim").classList.add("up"); $(s).classList.add("up"); };
+function closeSheets() {
+  $("#scrim").classList.remove("up");
+  document.body.classList.remove("composing");
+  document.body.classList.remove("picking");
+  document.querySelectorAll(".sheet").forEach((s) => s.classList.remove("up"));
+}
+
+/** True once the composer holds something worth not throwing away. */
+const draftDirty = () => document.body.classList.contains("composing") && $("#cBody").innerText.trim().length > 0;
+$("#scrim").addEventListener("click", closeSheets);
+
+/* accounts sheet */
+$("#acctBtn").addEventListener("click", () => { renderAccounts(); refreshNotifyButton(); openSheet("#acctSheet"); });
+$("#addIcloud").addEventListener("click", () => {
+  closeSheets();
+  setTimeout(() => openSheet("#icloudSheet"), 60);
+});
+$("#icSave").addEventListener("click", async () => {
+  const err = $("#icErr");
+  err.classList.remove("show");
+  const btn = $("#icSave");
+  btn.disabled = true;
+  btn.textContent = "Checking with Apple…";
+  const res = await api("/api/accounts/icloud", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: $("#icEmail").value.trim(), password: $("#icPass").value.trim() }),
+  }).catch(() => null);
+  btn.disabled = false;
+  btn.textContent = "Connect";
+  if (!res || !res.ok) {
+    const d = res ? await res.json().catch(() => ({})) : {};
+    err.textContent = d.error || "Could not connect";
+    err.classList.add("show");
+    return;
+  }
+  // Never leave the password sitting in a field once it is stored.
+  $("#icPass").value = "";
+  closeSheets();
+  toast("iCloud connected — first sync within a minute");
+  refreshAll();
+});
+$("#acctList").addEventListener("click", async (e) => {
+  const prim = e.target.closest("[data-primary]");
+  if (prim) {
+    localStorage.setItem("dmzs-primary", prim.dataset.primary);
+    composeAcct = prim.dataset.primary;
+    await loadAccounts();
+    toast("Default account changed");
+    return;
+  }
+  const sync = e.target.closest("[data-syncacc]");
+  if (sync) {
+    toast("Syncing…");
+    const res = await api(`/api/accounts/${sync.dataset.syncacc}/sync`, { method: "POST" }).catch(() => null);
+    const d = res && res.ok ? await res.json().catch(() => ({})) : {};
+    toast(d.note || (d.fetched ? `${d.fetched} new` : "Up to date"));
+    await Promise.all([loadAccounts(), loadList()]);
+    return;
+  }
+  const del = e.target.closest("[data-delacc]");
+  if (del) {
+    const a = acctById(del.dataset.delacc);
+    // Remove deletes every stored message and body for the account, not just
+    // the connection. The mail survives at the provider and re-downloads, but
+    // slowly, so this should never happen by a mis-tap.
+    const yes = await ask(
+      `Disconnect ${a ? a.email : "this account"}?`,
+      "Its stored messages here are deleted too. Mail at the provider is untouched, and reconnecting re-downloads it.",
+      { ok: "Disconnect", danger: true }
+    );
+    if (!yes) return;
+    toast(`Removed ${a ? a.email : "account"}`);
+    if (accountFilter === del.dataset.delacc) accountFilter = "";
+    await Promise.all([loadAccounts(), loadList()]);
+  }
+});
+
+/* compose sheet */
+let composeAcct = "";
+let contacts = [];
+
+/** Addresses out of your own sent mail; loaded once, filtered as you type. */
+async function loadContacts() {
+  if (contacts.length) return;
+  try {
+    const res = await api("/api/contacts");
+    if (res.ok) contacts = (await res.json()).contacts || [];
+  } catch { /* autocomplete is a convenience, never a blocker */ }
+}
+
+function openCompose(opts = {}) {
+  replyTo = opts.reply || null;
+  composeAcct = opts.account || composeAcct || (accounts[0] && accounts[0].id) || "";
+  $("#cTitle").textContent = opts.title || (replyTo ? "Reply" : "New message");
+  $("#cTo").value = opts.to || "";
+  $("#cCc").value = opts.cc || "";
+  $("#cCcWrap").hidden = !opts.cc;
+  // Never carried over from a reply: Bcc is not something to inherit by
+  // accident, and the original's blind recipients were never ours to see.
+  $("#cBcc").value = "";
+  $("#cBccWrap").hidden = true;
+  $("#cSubj").value = opts.subject || "";
+  $("#cBody").innerHTML = opts.html || "";
+  $("#cErr").classList.remove("show");
+  $("#cSuggest").classList.remove("on");
+  attached = [];
+  renderAtts();
+  $("#cAccounts").innerHTML = accounts.map((a) =>
+    `<button class="pill${a.id === composeAcct ? " on" : ""}" data-cacc="${a.id}">
+      <span class="dot" style="background:${acctColor(a)}"></span>${esc(a.email)}</button>`
+  ).join("");
+  document.body.classList.add("composing");
+  openSheet("#composeSheet");
+  loadContacts();
+  // Straight to the body on a reply — the recipient is already decided.
+  setTimeout(() => (replyTo ? $("#cBody") : $("#cTo")).focus(), 80);
+}
+
+/* ── contact autocomplete ── */
+let suggestFor = null;
+function showSuggest(input) {
+  const raw = input.value;
+  const term = raw.split(",").pop().trim().toLowerCase();
+  const box = $("#cSuggest");
+
+  // The list lives wherever you are typing. It was fixed in the markup between
+  // To and Cc, so typing into Cc popped suggestions *above* the field they
+  // belonged to, looking like they came from To.
+  const field = input.closest(".field");
+  if (field && field.nextElementSibling !== box) field.insertAdjacentElement("afterend", box);
+
+  if (term.length < 2) { box.classList.remove("on"); return; }
+  const hits = contacts
+    .filter((c) => c.email.includes(term) || (c.name || "").toLowerCase().includes(term))
+    .slice(0, 6);
+  if (!hits.length) { box.classList.remove("on"); return; }
+  suggestFor = input;
+  box.innerHTML = hits
+    .map((c) => `<button data-pick="${esc(c.email)}">${esc(c.name || c.email)}${c.name ? `<span class="em">${esc(c.email)}</span>` : ""}</button>`)
+    .join("");
+  box.classList.add("on");
+}
+$("#cTo").addEventListener("input", (e) => showSuggest(e.target));
+$("#cCc").addEventListener("input", (e) => showSuggest(e.target));
+$("#cBcc").addEventListener("input", (e) => showSuggest(e.target));
+// Delayed: a click on a suggestion blurs the input before the click lands.
+for (const id of ["#cTo", "#cCc", "#cBcc"]) {
+  $(id).addEventListener("blur", () => setTimeout(() => $("#cSuggest").classList.remove("on"), 150));
+  $(id).addEventListener("focus", (e) => showSuggest(e.target));
+}
+$("#cSuggest").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-pick]");
+  if (!b || !suggestFor) return;
+  // Replace only the fragment being typed, keeping earlier recipients intact.
+  const parts = suggestFor.value.split(",");
+  parts[parts.length - 1] = " " + b.dataset.pick;
+  suggestFor.value = parts.join(",").replace(/^\s+/, "") + ", ";
+  $("#cSuggest").classList.remove("on");
+  suggestFor.focus();
+});
+
+for (const [btn, wrap, input] of [["#cCcToggle", "#cCcWrap", "#cCc"], ["#cBccToggle", "#cBccWrap", "#cBcc"]]) {
+  $(btn).addEventListener("click", () => {
+    const w = $(wrap);
+    w.hidden = !w.hidden;
+    if (!w.hidden) $(input).focus();
+  });
+}
+
+
+/* ── formatting ── */
+// execCommand is deprecated but universally implemented, and the standard
+// replacement does not exist. For a toolbar over contenteditable it remains the
+// only thing that works in every browser without shipping an editor framework.
+$("#cTools").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.cmd) {
+    document.execCommand(b.dataset.cmd, false, null);
+    $("#cBody").focus();
+  } else if (b.dataset.block) {
+    document.execCommand("formatBlock", false, b.dataset.block);
+    $("#cBody").focus();
+  }
+});
+$("#cLink").addEventListener("click", async () => {
+  const url = await askText("Insert link", "https://", { ok: "Insert" });
+  if (!url) return;
+  // Only http(s): a javascript: URL here would execute in your own compose pane.
+  if (!/^https?:\/\//i.test(url)) { toast("Links must start with http:// or https://"); return; }
+  $("#cBody").focus();
+  document.execCommand("createLink", false, url);
+});
+
+/* ── the AI pass ── */
+async function assist(mode, btn) {
+  const body = $("#cBody");
+  const before = body.innerHTML;
+  const text = body.innerText.trim();
+  if (!text) { toast("Write something first"); return; }
+  const tools = document.querySelectorAll("#cTools .ai");
+  tools.forEach((t) => (t.disabled = true));
+  const was = btn.textContent;
+  btn.textContent = "…";
+  try {
+    const res = await api("/api/assist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, mode }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) { toast(d.error || "AI failed"); return; }
+    // Plain text back, escaped and re-broken into paragraphs. Never innerHTML
+    // from a model: it would be a script-injection hole into your own composer.
+    body.innerHTML = d.text
+      .split(/\n{2,}/)
+      .map((p) => `<p>${esc(p).replace(/\n/g, "<br>")}</p>`)
+      .join("");
+    toast(mode === "improve" ? "Rewritten" : "Corrected", () => { body.innerHTML = before; });
+  } catch { toast("AI failed"); }
+  finally {
+    tools.forEach((t) => (t.disabled = false));
+    btn.textContent = was;
+  }
+}
+$("#aiFix").addEventListener("click", (e) => assist("grammar", e.currentTarget));
+$("#aiImprove").addEventListener("click", (e) => assist("improve", e.currentTarget));
+
+/* ── appearance ── */
+
+/**
+ * Light unless told otherwise. Not "system": the default should be the thing
+ * asked for, and following the OS would hand a dark desktop a dark app.
+ */
+function applyTheme(choice) {
+  const root = document.documentElement;
+  if (choice === "system") root.removeAttribute("data-theme");
+  else root.setAttribute("data-theme", choice);
+  localStorage.setItem("dmzs-theme", choice);
+
+  // The browser paints the address bar and the PWA title bar from this, so it
+  // has to move with the palette or the chrome stays the wrong colour.
+  const dark =
+    choice === "dark" ||
+    (choice === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.querySelector('meta[name="theme-color"]').setAttribute("content", dark ? "#09090b" : "#ffffff");
+
+  document.querySelectorAll("#themePick [data-theme]").forEach((b) =>
+    b.classList.toggle("on", b.dataset.theme === choice)
+  );
+}
+$("#themePick").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-theme]");
+  if (b) applyTheme(b.dataset.theme);
+});
+
+/* ── notifications ── */
+
+/** base64url VAPID key → the Uint8Array subscribe() insists on. */
+function keyToBytes(b64) {
+  const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+
+async function refreshNotifyButton() {
+  const btn = $("#notifyBtn");
+  if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+    btn.textContent = "Notifications unsupported here";
+    btn.disabled = true;
+    return;
+  }
+  const reg = await navigator.serviceWorker.getRegistration();
+  const sub = reg && (await reg.pushManager.getSubscription());
+  btn.textContent = sub
+    ? "Notifications on — tap to turn off"
+    : Notification.permission === "denied"
+    ? "Notifications blocked in browser settings"
+    : "Enable notifications";
+  btn.disabled = Notification.permission === "denied" && !sub;
+}
+
+$("#notifyBtn").addEventListener("click", async () => {
+  const reg = await navigator.serviceWorker.ready;
+  const existing = await reg.pushManager.getSubscription();
+
+  if (existing) {
+    const endpoint = existing.endpoint;
+    await existing.unsubscribe();
+    await api("/api/push/subscribe", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint }),
+    }).catch(() => {});
+    navigator.clearAppBadge?.();
+    toast("Notifications off");
+    return refreshNotifyButton();
+  }
+
+  if ((await Notification.requestPermission()) !== "granted") {
+    toast("Permission refused");
+    return refreshNotifyButton();
+  }
+  try {
+    const { key } = await (await api("/api/push/key")).json();
+    const sub = await reg.pushManager.subscribe({
+      // Required: a push without one is rejected by every browser now.
+      userVisibleOnly: true,
+      applicationServerKey: keyToBytes(key),
+    });
+    const res = await api("/api/push/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(sub.toJSON()),
+    });
+    toast(res.ok ? "Notifications on" : "Could not register this device");
+  } catch (e) {
+    toast("Could not enable notifications");
+  }
+  refreshNotifyButton();
+});
+
+/* ── attachments ── */
+let attached = [];
+const SEND_LIMIT = 20 * 1024 * 1024; // matches the Worker's ceiling
+
+const humanSize = (n) =>
+  n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+
+function renderAtts() {
+  $("#cAtts").innerHTML = attached
+    .map(
+      (a, i) => `<span class="att"><span class="nm">${esc(a.filename)}</span>
+        <span class="sz">${humanSize(a.bytes)}</span>
+        <button data-drop="${i}" aria-label="Remove ${esc(a.filename)}">&times;</button></span>`
+    )
+    .join("");
+}
+
+/** File → base64, without the `data:…;base64,` prefix the reader prepends. */
+const fileToBase64 = (file) =>
+  new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1] || "");
+    r.onerror = () => reject(new Error("unreadable"));
+    r.readAsDataURL(file);
+  });
+
+$("#cAttach").addEventListener("click", () => $("#cFile").click());
+$("#cFile").addEventListener("change", async (e) => {
+  const files = [...(e.target.files || [])];
+  e.target.value = ""; // so choosing the same file twice still fires
+  busy(1);
+  try {
+    for (const f of files) {
+      const data = await fileToBase64(f);
+      // Base64 is what actually travels, so budget against its length rather
+      // than the file size on disk — it is about a third larger.
+      const total = attached.reduce((n, a) => n + a.data.length, 0) + data.length;
+      if (total > SEND_LIMIT) {
+        toast(`${f.name} would push this over 20 MB`);
+        continue;
+      }
+      attached.push({ filename: f.name, type: f.type || "application/octet-stream", data, bytes: f.size });
+    }
+  } catch {
+    toast("Could not read that file");
+  } finally {
+    busy(-1);
+  }
+  renderAtts();
+});
+$("#cAtts").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-drop]");
+  if (!b) return;
+  attached.splice(Number(b.dataset.drop), 1);
+  renderAtts();
+});
+
+/* ── pasted images ── */
+
+/**
+ * Shrinks a pasted image before it ever enters the document.
+ *
+ * A screenshot off the clipboard is often 3000px wide and several megabytes;
+ * as a base64 data: URI in the message body that becomes ~33% larger again,
+ * and mail servers start refusing it. 1600px is past what any mail client
+ * displays, so this costs nothing visible.
+ */
+async function downscale(file, maxPx = 1600, quality = 0.82) {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, maxPx / Math.max(bmp.width, bmp.height));
+  const w = Math.round(bmp.width * scale);
+  const h = Math.round(bmp.height * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(bmp, 0, 0, w, h);
+  bmp.close?.();
+  // PNG keeps screenshots crisp but balloons photos; JPEG is the safer default
+  // and transparency is not something a pasted screenshot relies on.
+  return canvas.toDataURL("image/jpeg", quality);
+}
+
+$("#cBody").addEventListener("paste", async (e) => {
+  const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith("image/"));
+  if (!item) return; // ordinary text or HTML: let the browser handle it
+  e.preventDefault();
+  const file = item.getAsFile();
+  if (!file) return;
+  busy(1);
+  try {
+    const url = await downscale(file);
+    document.execCommand("insertHTML", false, `<img src="${url}" style="width:75%">`);
+  } catch {
+    toast("Could not read that image");
+  } finally {
+    busy(-1);
+  }
+});
+
+let pickedImg = null;
+$("#cBody").addEventListener("click", (e) => {
+  const img = e.target.closest("img");
+  document.querySelectorAll("#cBody img.sel").forEach((i) => i.classList.remove("sel"));
+  pickedImg = img || null;
+  if (img) img.classList.add("sel");
+  $("#imgTools").hidden = !img;
+});
+$("#imgTools").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b || !pickedImg) return;
+  if (b.id === "imgDel") {
+    pickedImg.remove();
+    pickedImg = null;
+    $("#imgTools").hidden = true;
+    return;
+  }
+  // Percentages rather than pixels: the reader's window is not yours.
+  pickedImg.style.width = b.dataset.w || "";
+  $("#cBody").focus();
+});
+
+/* ── contacts ── */
+$("#openContacts").addEventListener("click", async () => {
+  closeSheets();
+  contacts = [];
+  await loadContacts();
+  renderContacts();
+  openSheet("#contactsSheet");
+});
+
+function renderContacts() {
+  const term = $("#ctSearch").value.trim().toLowerCase();
+  const shown = contacts.filter(
+    (c) => !term || c.email.includes(term) || (c.name || "").toLowerCase().includes(term)
+  );
+  $("#contactList").innerHTML = shown.length
+    ? shown
+        .map(
+          (c) => `<div class="mi">
+            <span class="grow"><div class="tr">${esc(c.name || c.email)}</div>
+            ${c.name ? `<div class="sub tr">${esc(c.email)}</div>` : ""}</span>
+            <span class="side num">${c.n}</span>
+            <button class="side" data-forget="${esc(c.email)}" style="color:var(--red)">Remove</button>
+          </div>`
+        )
+        .join("")
+    : `<div class="sh-s">${contacts.length ? "No match." : "Nothing yet — these appear once you have sent mail."}</div>`;
+}
+$("#ctSearch").addEventListener("input", renderContacts);
+$("#contactList").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-forget]");
+  if (!b) return;
+  const email = b.dataset.forget;
+  contacts = contacts.filter((c) => c.email !== email);
+  renderContacts();
+  await api(`/api/contacts/${encodeURIComponent(email)}`, { method: "DELETE" }).catch(() => {});
+  toast(`Removed ${email}`);
+});
+$("#composeBtn").addEventListener("click", () => {
+  if (!accounts.length) { toast("Connect an account first"); return; }
+  openCompose();
+});
+$("#cAccounts").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-cacc]");
+  if (!b) return;
+  composeAcct = b.dataset.cacc;
+  document.querySelectorAll("#cAccounts .pill").forEach((p) => p.classList.toggle("on", p.dataset.cacc === composeAcct));
+});
+$("#cSend").addEventListener("click", async () => {
+  const err = $("#cErr");
+  err.classList.remove("show");
+  const html = $("#cBody").innerHTML.trim();
+  const text = $("#cBody").innerText.trim();
+  if (!text) {
+    err.textContent = "Nothing to send";
+    err.classList.add("show");
+    return;
+  }
+  const body = {
+    account_id: composeAcct,
+    to: $("#cTo").value.trim(),
+    cc: $("#cCc").value.trim() || undefined,
+    bcc: $("#cBcc").value.trim() || undefined,
+    attachments: attached.map(({ filename, type, data }) => ({ filename, type, data })),
+    subject: $("#cSubj").value.trim(),
+    // Both forms travel: html for readers that want it, text for those that
+    // don't, and the server derives one if the other is missing.
+    text,
+    html,
+    reply_to: replyTo || undefined,
+  };
+  const btn = $("#cSend");
+  btn.disabled = true;
+  btn.textContent = "Sending…";
+  const res = await api("/api/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).catch(() => null);
+  btn.disabled = false;
+  btn.textContent = "Send";
+  if (!res || !res.ok) {
+    const d = res ? await res.json().catch(() => ({})) : {};
+    err.textContent = d.error || "Could not send";
+    err.classList.add("show");
+    return;
+  }
+  const d = await res.json().catch(() => ({}));
+  closeSheets();
+  toast(
+    d.queued
+      ? "Queued — the agent sends it in under a minute"
+      : d.filed === false
+      // It went. Say so first, then say the copy did not — silence here is how
+      // an empty Sent folder becomes a mystery rather than a known fact.
+      ? "Sent — but no copy could be filed in Sent"
+      : "Sent"
+  );
+  // The copy is filed by now, so Sent and its counts are already stale.
+  refreshAll();
+});
+
+/* ── events: header, list ── */
+$("#accPills").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-acc]");
+  if (!b) return;
+  accountFilter = b.dataset.acc;
+  renderAccounts();
+  loadList();
+});
+
+$("#list").addEventListener("click", (e) => {
+  if (e.target.closest("#moreBtn")) { loadList(true); return; }
+  const r = e.target.closest(".row");
+  if (r) openMsg(r.dataset.id);
+});
+
+async function refreshAll(spin = false) {
+  if (spin) $("#syncBtn").classList.add("busy");
+  await Promise.all([loadAccounts(), loadFolders(), loadList()]);
+  if (spin) $("#syncBtn").classList.remove("busy");
+
+  // Tell the Chrome extension, if it is installed, that the count just moved.
+  // Its own poll is a once-a-minute safety net; reading a message and watching
+  // the toolbar stay wrong for another fifty seconds is not a safety net.
+  //
+  // Posted to our own window rather than sent to the extension directly: the
+  // extension's id is not fixed for an unpacked install, so a content script
+  // listens here and relays. A page that is not ours has no listener, and a
+  // window with no extension simply has nobody listening.
+  try {
+    window.postMessage({ type: "dmzs-mail:changed" }, location.origin);
+  } catch {}
+}
+$("#syncBtn").addEventListener("click", async () => {
+  const btn = $("#syncBtn");
+  if (btn.classList.contains("busy")) return;
+  btn.classList.add("busy");
+  try {
+    // It used to only re-read what was already stored, which looked like
+    // nothing happening. Ask the server to go and look at Apple first.
+    const answers = await Promise.all(
+      accounts.map((a) =>
+        api(`/api/accounts/${a.id}/sync`, { method: "POST" })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null)
+      )
+    );
+    await refreshAll();
+    const got = answers.reduce((n, d) => n + (d?.fetched || 0), 0);
+    toast(got ? `${got} new message${got > 1 ? "s" : ""}` : "Up to date");
+  } finally {
+    btn.classList.remove("busy");
+  }
+});
+
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  if (navigator.onLine && document.visibilityState === "visible") {
+    pollTimer = setTimeout(async () => { await refreshAll(); schedulePoll(); }, 60000);
+  }
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") { refreshAll(); schedulePoll(); }
+});
+addEventListener("online", () => refreshAll());
+
+/* ── resizable list pane ── */
+(function resizer() {
+  const grip = $("#grip");
+  const root = document.documentElement;
+  const saved = localStorage.getItem("dmzs-left");
+  if (saved) root.style.setProperty("--left", saved);
+
+  let dragging = false;
+  // Pointer events rather than mouse: one code path covers trackpad, mouse and
+  // a stylus, and setPointerCapture keeps the drag alive over the iframe, which
+  // would otherwise swallow the move events the moment the cursor crossed it.
+  grip.addEventListener("pointerdown", (e) => {
+    dragging = true;
+    grip.setPointerCapture(e.pointerId);
+    grip.classList.add("drag");
+    e.preventDefault();
+  });
+  grip.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const w = Math.max(300, Math.min(760, e.clientX));
+    root.style.setProperty("--left", w + "px");
+  });
+  const stop = () => {
+    if (!dragging) return;
+    dragging = false;
+    grip.classList.remove("drag");
+    localStorage.setItem("dmzs-left", root.style.getPropertyValue("--left") || "430px");
+  };
+  grip.addEventListener("pointerup", stop);
+  grip.addEventListener("pointercancel", stop);
+  // Double-click puts it back where it started.
+  grip.addEventListener("dblclick", () => {
+    root.style.setProperty("--left", "430px");
+    localStorage.setItem("dmzs-left", "430px");
+  });
+})();
+
+/* ── init ── */
+(async function init() {
+  applyTheme(localStorage.getItem("dmzs-theme") || "light");
+  try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch {}
+
+  // Landing back from an OAuth dance: say so, then clean the URL.
+  const q = new URLSearchParams(location.search);
+  if (q.get("connect") === "ok") toast("Account connected");
+  if (q.get("connect") === "denied") toast("Connection cancelled");
+  if (q.get("connect")) history.replaceState(null, "", "/");
+
+  await refreshAll();
+  schedulePoll();
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+    // The push woke the service worker; an open tab hears about it here and
+    // repaints straight away rather than waiting out the rest of its poll.
+    navigator.serviceWorker.addEventListener("message", (e) => {
+      if (e.data?.type === "mail") refreshAll();
+    });
+  }
+})();
+</script>
+</body>
+</html>

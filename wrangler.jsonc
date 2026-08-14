@@ -1,0 +1,72 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dmzs-mail",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-01",
+
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    // The Worker runs first: the cookie is checked before any file is served.
+    "run_worker_first": true
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "dmzs-mail",
+      // Created 2026-08-12 in your account, WEUR.
+      "database_id": "1ec281be-33be-4c95-aee7-d735e6bc7b35"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      // Defused message bodies live here as small JSON blobs, one per message.
+      "binding": "MAIL",
+      "bucket_name": "dmzs-mail"
+    }
+  ],
+
+  "routes": [
+    { "pattern": "mail.agentxr.app", "custom_domain": true }
+  ],
+
+  "triggers": {
+    // Two schedules, told apart by event.cron in the Worker.
+    //
+    // Every minute: the sync heartbeat — the finest granularity Cloudflare
+    // offers. Each pass pulls a few messages per mailbox, so new mail is never
+    // more than a minute behind. ~1,440 invocations/day against a 100,000/day
+    // allowance, ~15 subrequests per pass against a 50-per-invocation ceiling.
+    //
+    // 03:17 UTC: the nightly database snapshot into R2. An odd minute on
+    // purpose, so it does not land on the hour alongside every other cron job
+    // on the platform.
+    "crons": ["* * * * *", "17 3 * * *"]
+  },
+
+  "vars": {
+    // Public address; OAuth redirect URIs are derived from it, so the value
+    // registered at Google/Microsoft must match exactly.
+    "APP_URL": "https://mail.agentxr.app",
+
+    // Model for the compose assistant. Flash tier on purpose: you are waiting
+    // mid-sentence, and grammar does not need a frontier model.
+    //
+    // Not the "-latest" alias, deliberately: an alias moves under you, so the
+    // assistant could change behaviour on a morning nothing here was touched.
+    // Pinned instead, and /api/ai-check lists what this key can actually use
+    // when it is time to move again.
+    "GEMINI_MODEL": "gemini-3.5-flash"
+  },
+
+  "observability": { "enabled": true }
+
+  // Secrets (npm run secrets, or wrangler secret put):
+  //   AUTH_SECRET, BOOTSTRAP_KEY, WORKER_TOKEN, ENC_KEY   — generated
+  //   GEMINI_API_KEY                                      — optional, for Fix/Improve
+  //
+  // The iCloud app-specific password is not here: it is entered in the app and
+  // sealed into D1 with ENC_KEY, so it is per-account rather than per-Worker.
+}

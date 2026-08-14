@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "dmzs-mail",
+  "version": "1.0.0",
+  "description": "Unread count and new-mail alerts for mail.agentxr.app, without keeping the tab open.",
+
+  "permissions": ["alarms", "storage", "notifications"],
+
+  "host_permissions": ["https://mail.agentxr.app/*"],
+
+  "background": { "service_worker": "background.js" },
+
+  "content_scripts": [
+    {
+      "matches": ["https://mail.agentxr.app/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+
+  "action": {
+    "default_title": "dmzs-mail",
+    "default_icon": { "128": "icon128.png" }
+  },
+
+  "options_page": "options.html",
+
+  "icons": { "128": "icon128.png" }
+}

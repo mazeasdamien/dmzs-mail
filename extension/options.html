@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>dmzs-mail</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    max-width: 34rem;
+    margin: 2.5rem auto;
+    padding: 0 1.25rem;
+  }
+  h1 { font-size: 1.15rem; margin: 0 0 .35rem; }
+  p  { color: #6b7280; margin: 0 0 1.25rem; }
+  label { display: block; font-weight: 600; margin-bottom: .35rem; }
+  input {
+    width: 100%; padding: .55rem .65rem; font: inherit;
+    border: 1px solid #d1d5db; border-radius: 7px; background: transparent; color: inherit;
+  }
+  button {
+    margin-top: .85rem; padding: .55rem 1.1rem; font: inherit; font-weight: 600;
+    border: 0; border-radius: 7px; background: #2563eb; color: #fff; cursor: pointer;
+  }
+  button:hover { background: #1d4ed8; }
+  #msg { margin-top: .85rem; min-height: 1.5em; font-weight: 600; }
+  .ok  { color: #15803d; }
+  .bad { color: #b91c1c; }
+</style>
+</head>
+<body>
+  <h1>dmzs-mail</h1>
+  <p>Paste your bootstrap key once. It is exchanged for a token, and the key
+     itself is not stored.</p>
+
+  <label for="key">Bootstrap key</label>
+  <input id="key" type="password" autocomplete="off" spellcheck="false" />
+  <button id="save">Connect</button>
+  <div id="msg"></div>
+
+  <script src="options.js"></script>
+</body>
+</html>

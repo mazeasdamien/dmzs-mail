@@ -1,0 +1,16 @@
+node_modules/
+
+# Wrangler's local state: the miniflare D1/R2 emulation and build cache.
+.wrangler/
+
+# The agent runs on your PC and writes here. The log carries real addresses and
+# subjects, which is mail content and does not belong in a repository.
+agent/agent.log
+agent/__pycache__/
+
+# Secrets reach the Worker through `wrangler secret put`, never a file. These
+# patterns exist so a local override never becomes a commit.
+.dev.vars
+.dev.vars.*
+.env
+.env.*
