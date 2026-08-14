@@ -239,7 +239,15 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
 .ghost{color:var(--t2);font-size:13px;padding:5px 9px;border-radius:6px;flex:none}
 .ghost:active{background:var(--press2)}
 .afield{gap:8px}
-.flabel{color:var(--t3);font-size:13px;flex:none;min-width:24px}
+.flabel{color:var(--t3);font-size:13px;flex:none;min-width:34px}
+/* From reads as one of the address rows, because that is what it is. Without
+   a label it was two unexplained pills floating above To. */
+.fromrow{display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;min-height:34px}
+.fromrow .flabel{line-height:30px}
+.fromrow .chips{margin-bottom:0;flex:1;min-width:0}
+/* An address that only sends is drawn hollow: mail leaves from it, but nothing
+   arrives there, so it is not a mailbox and should not look like one. */
+.pill .dot.sendonly{background:transparent;border:2px solid var(--acc);box-sizing:border-box}
 .suggest{margin:-6px 0 8px;background:var(--elev2);border:1px solid var(--line-strong);
   border-radius:var(--r);overflow:hidden;display:none;max-height:190px;overflow-y:auto}
 .suggest.on{display:block}
@@ -494,6 +502,14 @@ html.busy #bar{opacity:1}
     display:none;transform:none;border-left:0;padding:18px 22px
   }
   #composeSheet.up{display:flex}
+  /* A message is a column of text, not a banner. Left to fill the pane, the
+     address fields ran past 1200px on a wide monitor — harder to read, and it
+     left the composer looking mostly empty. Capping the children rather than
+     wrapping them in another div keeps the flex column intact. */
+  #composeSheet > *{max-width:860px;width:100%}
+  /* Send stops being a full-width bar. It is one button, so it gets the width
+     of a button and sits under the message it sends. */
+  #composeSheet #cSend{width:auto;min-width:168px;align-self:flex-start;margin-top:14px}
   body.composing #reader{display:none}
   /* Nothing to dim: the composer is not covering anything. */
   body.composing #scrim{opacity:0;pointer-events:none}
@@ -674,7 +690,7 @@ html.busy #bar{opacity:1}
       <span style="display:flex;gap:4px"><button class="ghost" id="cCcToggle" title="Carbon copy: extra recipients who receive the message. Everyone can see who is on Cc.">+ Cc</button><button class="ghost" id="cBccToggle" title="Blind carbon copy: recipients who receive the message without anyone else knowing they did.">+ Bcc</button></span>
     </div>
   </div>
-  <div class="chips" id="cAccounts"></div>
+  <div class="fromrow"><span class="flabel">From</span><div class="chips" id="cAccounts"></div></div>
 
   <div class="field afield"><span class="flabel">To</span>
     <input id="cTo" type="text" inputmode="email" placeholder="name@example.com" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
@@ -1908,6 +1924,7 @@ function openCompose(opts = {}) {
   // accident, and the original's blind recipients were never ours to see.
   $("#cBcc").value = "";
   $("#cBccWrap").hidden = true;
+  for (const [btn, wrap, , name] of CC_TOGGLES) markToggle(btn, wrap, name);
   $("#cSubj").value = opts.subject || "";
   $("#cBody").innerHTML = opts.html || "";
   $("#cErr").classList.remove("show");
@@ -1943,8 +1960,8 @@ function renderFromPicker() {
   // anything coming back arrives in the mailbox above rather than here.
   const extra = identities.map(
     (e) => `<button class="pill${e === composeFrom ? " on" : ""}" data-cfrom="${esc(e)}"
-      title="Sends as ${esc(e)}. Replies arrive in your iCloud inbox.">
-      <span class="dot" style="background:var(--acc)"></span>${esc(e)}</button>`
+      title="Sends as ${esc(e)} — replies arrive in your iCloud inbox.">
+      <span class="dot sendonly"></span>${esc(e)}</button>`
   );
   $("#cAccounts").innerHTML = own.concat(extra).join("");
 }
@@ -1992,11 +2009,23 @@ $("#cSuggest").addEventListener("click", (e) => {
   suggestFor.focus();
 });
 
-for (const [btn, wrap, input] of [["#cCcToggle", "#cCcWrap", "#cCc"], ["#cBccToggle", "#cBccWrap", "#cBcc"]]) {
+/** Keeps a Cc/Bcc toggle's label honest about what pressing it will do. */
+function markToggle(btn, wrap, name) {
+  $(btn).textContent = ($(wrap).hidden ? "+ " : "− ") + name;
+}
+const CC_TOGGLES = [
+  ["#cCcToggle", "#cCcWrap", "#cCc", "Cc"],
+  ["#cBccToggle", "#cBccWrap", "#cBcc", "Bcc"],
+];
+for (const [btn, wrap, input, name] of CC_TOGGLES) {
   $(btn).addEventListener("click", () => {
     const w = $(wrap);
     w.hidden = !w.hidden;
-    if (!w.hidden) $(input).focus();
+    // Emptied on the way out, so a field you have closed cannot still be
+    // carrying an address when the message goes.
+    if (w.hidden) $(input).value = "";
+    else $(input).focus();
+    markToggle(btn, wrap, name);
   });
 }
 
