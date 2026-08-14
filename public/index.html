@@ -2075,15 +2075,41 @@ for (const id of ["#cTo", "#cCc", "#cBcc"]) {
   $(id).addEventListener("blur", () => setTimeout(() => $("#cSuggest").classList.remove("on"), 150));
   $(id).addEventListener("focus", (e) => showSuggest(e.target));
 }
+/** Puts a chosen address into the field being typed into. */
+function pickSuggestion(email) {
+  const input = suggestFor || $("#cTo");
+  // Replace only the fragment being typed, keeping earlier recipients intact.
+  const parts = input.value.split(",");
+  parts[parts.length - 1] = " " + email;
+  input.value = parts.join(",").replace(/^\s+/, "") + ", ";
+  $("#cSuggest").classList.remove("on");
+  input.focus();
+}
+
+/**
+ * Chosen on pointerdown, not click.
+ *
+ * Blurring the input starts a 150ms timer that hides this list, and pressing
+ * the mouse down is what blurs it — so holding the button for longer than that,
+ * which an ordinary deliberate click easily does, hid the list before mouseup
+ * and the click landed on nothing. Picking a contact simply failed, and failed
+ * more often the more carefully you aimed.
+ *
+ * preventDefault stops the input losing focus at all, so the race no longer
+ * exists rather than being run faster.
+ */
+$("#cSuggest").addEventListener("pointerdown", (e) => {
+  const b = e.target.closest("[data-pick]");
+  if (!b) return;
+  e.preventDefault();
+  pickSuggestion(b.dataset.pick);
+});
+// Keyboard: Enter on a focused suggestion fires click and never pointerdown.
+// It cannot double up, because the list is display:none by the time a click
+// would follow a pointerdown.
 $("#cSuggest").addEventListener("click", (e) => {
   const b = e.target.closest("[data-pick]");
-  if (!b || !suggestFor) return;
-  // Replace only the fragment being typed, keeping earlier recipients intact.
-  const parts = suggestFor.value.split(",");
-  parts[parts.length - 1] = " " + b.dataset.pick;
-  suggestFor.value = parts.join(",").replace(/^\s+/, "") + ", ";
-  $("#cSuggest").classList.remove("on");
-  suggestFor.focus();
+  if (b) pickSuggestion(b.dataset.pick);
 });
 
 /** Keeps a Cc/Bcc toggle's label honest about what pressing it will do. */
