@@ -245,6 +245,14 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
 
 /* composer */
 .sheet.lg{max-height:93vh}
+/* Below the scrim and below every other sheet.
+   The composer is a pane you work in, not an overlay, so anything opened on
+   top of it has to actually land on top. It inherits z-index:60 from .sheet
+   and sits last in the markup, so at equal z-index it won — and on a desktop
+   it is a flex item, where a z-index applies even though the position is
+   static. Opening Accounts while writing therefore did nothing visible: the
+   panel slid in exactly where it should, behind the composer. */
+#composeSheet{z-index:45}
 .crow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px}
 /* The toggles travel together on the right; space-between would otherwise
    push them to opposite ends of the row. */
@@ -551,8 +559,10 @@ html.busy #bar{opacity:1}
   }
   #composeSheet.up{display:flex}
   body.composing #reader{display:none}
-  /* Nothing to dim: the composer is not covering anything. */
-  body.composing #scrim{opacity:0;pointer-events:none}
+  /* Nothing to dim while you are only writing — but the moment a sheet opens
+     over the composer the scrim has to come back, or there is nothing to tap
+     to dismiss it. */
+  body.composing:not(.overlay) #scrim{opacity:0;pointer-events:none}
 }
 
 /* in-page dialogs, replacing confirm() and prompt()
@@ -1614,7 +1624,8 @@ function step(delta) {
 addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     // Escape peels one layer at a time rather than dismissing everything.
-    if (document.querySelector(".sheet.up")) closeSheets();
+    if (document.body.classList.contains("overlay")) closeOverlays();
+    else if (document.querySelector(".sheet.up")) closeSheets();
     else if ($("#reader").classList.contains("up")) closeReader();
     return;
   }
@@ -1897,17 +1908,40 @@ $("#rUnsub").addEventListener("click", async () => {
 });
 
 /* ── sheets ── */
-const openSheet = (s) => { $("#scrim").classList.add("up"); $(s).classList.add("up"); };
+const openSheet = (s) => {
+  $("#scrim").classList.add("up");
+  // Anything that is not the composer is an overlay *over* it, which is what
+  // brings the scrim back while a draft is open.
+  if (s !== "#composeSheet") document.body.classList.add("overlay");
+  $(s).classList.add("up");
+};
+
+/**
+ * Closes everything except the composer.
+ *
+ * Dismissing the Accounts panel should not throw away the message you were
+ * part-way through writing, which closeSheets() — closing every sheet there
+ * is — would do.
+ */
+function closeOverlays() {
+  document.querySelectorAll(".sheet.up").forEach((s) => {
+    if (s.id !== "composeSheet") s.classList.remove("up");
+  });
+  document.body.classList.remove("picking", "overlay");
+  if (!document.body.classList.contains("composing")) $("#scrim").classList.remove("up");
+}
+
 function closeSheets() {
   $("#scrim").classList.remove("up");
-  document.body.classList.remove("composing");
-  document.body.classList.remove("picking");
+  document.body.classList.remove("composing", "picking", "overlay");
   document.querySelectorAll(".sheet").forEach((s) => s.classList.remove("up"));
 }
 
 /** True once the composer holds something worth not throwing away. */
 const draftDirty = () => document.body.classList.contains("composing") && $("#cBody").innerText.trim().length > 0;
-$("#scrim").addEventListener("click", closeSheets);
+$("#scrim").addEventListener("click", () =>
+  document.body.classList.contains("overlay") ? closeOverlays() : closeSheets()
+);
 
 /* accounts sheet */
 $("#acctBtn").addEventListener("click", () => { renderAccounts(); refreshNotifyButton(); openSheet("#acctSheet"); });
