@@ -306,9 +306,46 @@ export function sanitizeHtml(input) {
   let blocked = 0;
 
   // Whole elements whose content must not survive.
-  html = html.replace(/<(script|style|iframe|object|embed|title)\b[\s\S]*?<\/\1\s*>/gi, "");
-  // Void/opening tags that have no business in a message.
-  html = html.replace(/<\/?(script|style|iframe|object|embed|form|input|button|link|meta|base|svg|math)\b[^>]*>/gi, "");
+  html = html.replace(/<(script|iframe|object|embed|title)\b[\s\S]*?<\/\1\s*>/gi, "");
+
+  /**
+   * <style> is kept, not deleted.
+   *
+   * It used to go the way of <script>, content and all. But mail is laid out
+   * in CSS as often as in tags, and a very common pattern ships a block
+   * hidden inline — `style="display:none"` — and reveals it from a rule in
+   * <style>. Delete the rule and the message does not merely lose its
+   * styling: it renders as an entirely blank white page, with the text
+   * sitting right there in the source, permanently hidden.
+   *
+   * The sandboxed iframe already denies CSS anything dangerous — no scripts,
+   * no same-origin, nothing to exfiltrate to. What CSS *can* still do is
+   * fetch, which is how a sender learns you opened their mail, so remote
+   * url() and @import are what actually gets removed here.
+   */
+  html = html.replace(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi, (_m, css) => {
+    const cleaned = String(css)
+      .replace(/@import[^;}]*;?/gi, () => {
+        blocked++;
+        return "";
+      })
+      .replace(/url\(\s*['"]?\s*(?:https?:)?\/\/[^)]*\)/gi, () => {
+        blocked++;
+        return "none";
+      });
+    return `<style>${cleaned}</style>`;
+  });
+  // An unclosed <style> makes everything after it CSS as far as a browser is
+  // concerned, so dropping the remainder is what actually renders, not a
+  // heavy-handed choice. The lookahead is what keeps this from eating the
+  // well-formed blocks the line above just rewrote — every one of those ends
+  // in a </style>, so only a genuinely unterminated one matches.
+  html = html.replace(/<style\b[^>]*>(?![\s\S]*?<\/style\s*>)[\s\S]*$/i, "");
+
+  // Void/opening tags that have no business in a message. `style` is absent
+  // deliberately — stripping the tags but not the rules would spill raw CSS
+  // into the message as visible text.
+  html = html.replace(/<\/?(script|iframe|object|embed|form|input|button|link|meta|base|svg|math)\b[^>]*>/gi, "");
   // Event handlers, style with url(), javascript: targets.
   //
   // `[\s/]` rather than `\s` throughout: browsers accept `<img/src=…>` as a

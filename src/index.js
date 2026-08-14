@@ -84,6 +84,17 @@ async function hashHex(s, len) {
 const bodyKey = (id) => `body/${id}.json`;
 
 /**
+ * Which pass of the defuser produced a stored body.
+ *
+ * Bumped whenever sanitizeHtml changes in a way that alters what a reader
+ * sees, so bodies cached under the old rules are re-fetched once on the next
+ * open rather than staying wrong forever. Version 2 keeps <style> blocks:
+ * everything stored before it has them stripped, which renders some messages
+ * as blank pages that no amount of re-reading the cached copy can recover.
+ */
+const BODY_VERSION = 2;
+
+/**
  * IMAP system flags, spelled once.
  *
  * Written inline as "\Seen" these are a trap: \S is not a JavaScript escape,
@@ -327,7 +338,10 @@ function rowFromRaw({ uid, flags, raw }, folder) {
   const from = parseAddress(h.from || "");
   const mid = String(h["message-id"] || "").trim();
   const defused = m.html ? sanitizeHtml(m.html) : sanitizeHtml(textToHtml(m.text || ""));
-  const snippet = (m.text || m.html.replace(/<[^>]+>/g, " "))
+  // htmlToText rather than a bare tag-strip: the latter leaves the contents of
+  // <style> behind, which is why list previews read "#outlook a { padding:0; }
+  // body { margin:0 …" instead of the first line of the message.
+  const snippet = (m.text || htmlToText(m.html))
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 280);
@@ -351,6 +365,7 @@ function rowFromRaw({ uid, flags, raw }, folder) {
       starred: /\\Flagged/i.test(flags) ? 1 : 0,
     },
     body: {
+      v: BODY_VERSION,
       html: defused.html,
       blocked: defused.blocked,
       // RFC 2369 / RFC 8058. Almost every list carries these and almost no
@@ -714,7 +729,10 @@ async function syncAccount(env, account) {
  * the Images button.
  */
 const bodyIsBlank = (body) => {
-  const html = String(body?.html || "");
+  // Style blocks go first: their contents are not inside angle brackets, so a
+  // plain tag-strip counts a stylesheet as text and calls an empty message
+  // full of content.
+  const html = String(body?.html || "").replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, "");
   if (/<(img|table|video|audio|picture)\b/i.test(html)) return false;
   if (/data-blocked-(src|srcset|background|poster)=/i.test(html)) return false;
   return !html.replace(/<[^>]*>/g, "").replace(/&nbsp;|&#160;|\s/gi, "").length;
@@ -745,6 +763,7 @@ async function fetchBodyNow(env, account, msg) {
       const head = await imapFetchHead(im, uid).catch(() => null);
       const h = head?.raw ? parseHeaders(head.raw) : {};
       out = {
+        v: BODY_VERSION,
         html: large.html,
         blocked: large.blocked,
         attachments: large.attachments,
@@ -782,17 +801,22 @@ async function ensureBody(env, account, msg) {
     // R2 lost nothing in practice; this is the "row said yes, bucket said no"
     // path, and it heals by refetching below.
   }
-  if (stored && !bodyIsBlank(stored)) return stored;
 
-  // Nothing readable stored. Go and get it, unless that has already been tried
-  // for this message and the message simply has no content.
-  let reached = false;
-  if (account?.provider === "icloud" && !stored?.refetched) {
+  // Two reasons to go back to Apple: there is nothing readable stored, or what
+  // is stored was defused under rules that have since changed.
+  const stale = !!stored && Number(stored.v || 1) < BODY_VERSION;
+  if (stored && !stale && !bodyIsBlank(stored)) return stored;
+
+  if (account?.provider === "icloud" && (stale || !stored?.refetched)) {
     const fresh = await fetchBodyNow(env, account, msg).catch(() => null);
-    reached = !!fresh;
     if (fresh && !bodyIsBlank(fresh)) return fresh;
     if (fresh) return { ...fresh, empty: true };
   }
+
+  // The re-fetch did not happen or did not help. An old copy that still reads
+  // is better than an apology, so it is only reported as empty when it truly
+  // has nothing in it.
+  if (stored && !bodyIsBlank(stored)) return stored;
 
   // Flags rather than a fake <p> spliced into the message: the client says this
   // in its own voice, instead of the placeholder arriving looking like
@@ -800,7 +824,7 @@ async function ensureBody(env, account, msg) {
   // "this message has no text" is a fact about the mail, "we could not get it"
   // is a fact about us, and telling someone the first when the second is true
   // is how a fetch failure gets mistaken for an empty message.
-  if (stored || reached) return { ...(stored || { html: "", blocked: 0 }), empty: true };
+  if (stored) return { ...stored, empty: true };
   return { html: "", blocked: 0, missing: true };
 }
 
@@ -966,6 +990,7 @@ async function handleInternal(request, env, path) {
       if (r.meta?.changes) {
         stored++;
         const defused = m.html ? sanitizeHtml(m.html) : sanitizeHtml(textToHtml(m.text || ""));
+        defused.v = BODY_VERSION;
         await env.MAIL.put(bodyKey(id), JSON.stringify(defused), {
           httpMetadata: { contentType: "application/json" },
         });

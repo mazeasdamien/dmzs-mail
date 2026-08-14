@@ -227,6 +227,43 @@ console.log("\n── pixels espions, formes non guillemetées ──");
   );
 }
 
+console.log("\n-- feuilles de style conservees ------------");
+{
+  // Le motif qui rendait des messages entierement blancs : contenu masque en
+  // ligne, revele par une regle dans <style>. En supprimant le <style>, le
+  // texte restait dans la source, invisible pour toujours.
+  const piege = `<html><head><style>.main{display:block !important}</style></head>
+<body><div class="main" style="display:none"><p>le vrai message</p></div></body></html>`;
+  const out = sanitizeHtml(piege).html;
+  ok(/<style>/i.test(out), "le bloc <style> survit");
+  ok(out.includes(".main{display:block !important}"), "la regle qui revele le contenu survit");
+  ok(out.includes("le vrai message"), "le texte est toujours la");
+
+  // Ce que le CSS ne doit plus pouvoir faire : aller chercher quelque chose.
+  const traceur = sanitizeHtml(
+    `<style>@import url("https://t.example/x.css");
+     body{background:url(https://t.example/p.gif)}
+     .a{background:url("//t.example/q.gif")}
+     .b{background:url(data:image/gif;base64,AA)}</style>`
+  );
+  ok(!/@import/i.test(traceur.html), "@import retire");
+  ok(!/t\.example/.test(traceur.html), "aucun chargement distant ne subsiste");
+  ok(traceur.html.includes("url(data:image/gif;base64,AA)"), "les url() data: restent");
+  eq(traceur.blocked, 3, "les trois chargements distants sont comptes");
+
+  // <script> continue de disparaitre entierement, contenu compris.
+  const js = sanitizeHtml(`<style>.x{color:red}</style><script>evil()</script><p>ok</p>`).html;
+  ok(!/evil\(\)/.test(js), "le contenu de <script> ne survit pas");
+  ok(js.includes(".x{color:red}"), "celui de <style> si");
+
+  // Un <style> jamais referme : tout ce qui suit est du CSS pour un
+  // navigateur, donc le supprimer est ce qui s'affiche vraiment.
+  const casse = sanitizeHtml(`<p>avant</p><style>.y{color:red} <p>apres</p>`).html;
+  ok(casse.includes("avant"), "ce qui precede un <style> non ferme reste");
+  ok(!casse.includes("apres"), "ce qui suit est traite comme du CSS, donc retire");
+  ok(!/\.y\{color:red\}/.test(casse), "et les regles orphelines ne fuient pas en texte");
+}
+
 console.log("\n── analyse MIME (rfc822) ───────────────────");
 {
   // En-têtes repliés : un Content-Type long arrive coupé sur deux lignes, et
