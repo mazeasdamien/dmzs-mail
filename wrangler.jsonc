@@ -28,6 +28,14 @@
     }
   ],
 
+  // Cloudflare Email Sending. The binding authenticates itself, so unlike the
+  // REST and SMTP routes there is no API token to mint, store or rotate — and
+  // no outbound socket, which is the part of the iCloud path most able to
+  // break. It takes structured fields rather than a raw message, but supports
+  // everything the composer can produce: cc, bcc, attachments, and the
+  // In-Reply-To / References headers that make a reply thread.
+  "send_email": [{ "name": "EMAIL" }],
+
   "routes": [
     { "pattern": "mail.agentxr.app", "custom_domain": true }
   ],
@@ -49,6 +57,17 @@
   "vars": {
     // Public address, used to build the activation link and absolute URLs.
     "APP_URL": "https://mail.agentxr.app",
+
+    // Addresses you may send as through Cloudflare Email Sending, comma
+    // separated. Each one's domain must be onboarded under Email Sending on
+    // this account, or Cloudflare answers "sender denied".
+    //
+    // Replies do not come back here — they go to the address itself, and reach
+    // you because Email Routing forwards damien.mazeas@agentxr.app on to
+    // damien.mazeas@icloud.com, where the usual sync picks them up. Adding an
+    // address here without a matching routing rule would give you an address
+    // that can send and never hear back.
+    "SEND_AS": "damien.mazeas@agentxr.app",
 
     // Model for the compose assistant. Flash tier on purpose: you are waiting
     // mid-sentence, and grammar does not need a frontier model.

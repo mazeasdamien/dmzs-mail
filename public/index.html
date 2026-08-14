@@ -734,6 +734,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 const hue = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
 
 let accounts = [];
+let identities = [];          // addresses you may send as, but cannot receive at
 let messages = [];
 let folders = [];             // [{folder, n, unread}] straight from the server
 let folder = "inbox";
@@ -933,7 +934,9 @@ async function loadAccounts() {
   try {
     const res = await api("/api/accounts");
     if (!res.ok) return;
-    accounts = (await res.json()).accounts || [];
+    const d = await res.json();
+    accounts = d.accounts || [];
+    identities = d.identities || [];
   } catch (e) { if (String(e.message) === "401") return; }
 
   // The default account leads the list and is preselected when composing.
@@ -1882,6 +1885,7 @@ $("#acctList").addEventListener("click", async (e) => {
 
 /* compose sheet */
 let composeAcct = "";
+let composeFrom = "";         // the address in From; may be a send-only identity
 let contacts = [];
 
 /** Addresses out of your own sent mail; loaded once, filtered as you type. */
@@ -1910,15 +1914,39 @@ function openCompose(opts = {}) {
   $("#cSuggest").classList.remove("on");
   attached = [];
   renderAtts();
-  $("#cAccounts").innerHTML = accounts.map((a) =>
-    `<button class="pill${a.id === composeAcct ? " on" : ""}" data-cacc="${a.id}">
-      <span class="dot" style="background:${acctColor(a)}"></span>${esc(a.email)}</button>`
-  ).join("");
+  // From: your mailboxes first, then the addresses that only send. With one
+  // of each this is the whole point of the row, so it is not hidden the way
+  // the account filter is.
+  // A reply goes back out of the mailbox it arrived in, so From resets to that
+  // account rather than inheriting whatever the last message was sent as —
+  // answering from a send-only address a previous draft happened to leave
+  // selected is not something anyone means to do.
+  composeFrom =
+    opts.from || (acctById(composeAcct) || {}).email || fromChoices()[0] || "";
+  renderFromPicker();
   document.body.classList.add("composing");
   openSheet("#composeSheet");
   loadContacts();
   // Straight to the body on a reply — the recipient is already decided.
   setTimeout(() => (replyTo ? $("#cBody") : $("#cTo")).focus(), 80);
+}
+
+/** Every address the composer may put in From. */
+const fromChoices = () => accounts.map((a) => a.email).concat(identities);
+
+function renderFromPicker() {
+  const own = accounts.map(
+    (a) => `<button class="pill${a.email === composeFrom ? " on" : ""}" data-cfrom="${esc(a.email)}">
+      <span class="dot" style="background:${acctColor(a)}"></span>${esc(a.email)}</button>`
+  );
+  // A different mark, because it behaves differently: mail leaves from it, and
+  // anything coming back arrives in the mailbox above rather than here.
+  const extra = identities.map(
+    (e) => `<button class="pill${e === composeFrom ? " on" : ""}" data-cfrom="${esc(e)}"
+      title="Sends as ${esc(e)}. Replies arrive in your iCloud inbox.">
+      <span class="dot" style="background:var(--acc)"></span>${esc(e)}</button>`
+  );
+  $("#cAccounts").innerHTML = own.concat(extra).join("");
 }
 
 /* ── contact autocomplete ── */
@@ -2289,10 +2317,15 @@ $("#composeBtn").addEventListener("click", () => {
   openCompose();
 });
 $("#cAccounts").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-cacc]");
+  const b = e.target.closest("[data-cfrom]");
   if (!b) return;
-  composeAcct = b.dataset.cacc;
-  document.querySelectorAll("#cAccounts .pill").forEach((p) => p.classList.toggle("on", p.dataset.cacc === composeAcct));
+  composeFrom = b.dataset.cfrom;
+  // A send-only address still needs a mailbox behind it: that is where the
+  // Sent copy is filed and where the reply context comes from, so the account
+  // only changes when you pick one of your own addresses.
+  const own = accounts.find((a) => a.email === composeFrom);
+  if (own) composeAcct = own.id;
+  renderFromPicker();
 });
 $("#cSend").addEventListener("click", async () => {
   const err = $("#cErr");
@@ -2306,6 +2339,7 @@ $("#cSend").addEventListener("click", async () => {
   }
   const body = {
     account_id: composeAcct,
+    from: composeFrom || undefined,
     to: $("#cTo").value.trim(),
     cc: $("#cCc").value.trim() || undefined,
     bcc: $("#cBcc").value.trim() || undefined,
