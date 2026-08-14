@@ -693,6 +693,12 @@ html.busy #bar{opacity:1}
     <button class="pill" data-theme="dark">Dark</button>
     <button class="pill" data-theme="system">System</button>
   </div>
+  <div class="sh-s" style="margin:14px 0 6px">Remote images</div>
+  <div class="chips" id="imgPick">
+    <button class="pill" data-images="auto">Load them</button>
+    <button class="pill" data-images="ask">Ask first</button>
+  </div>
+  <div class="sh-s" style="margin:2px 0 0;font-size:12px">A remote image is fetched from the sender's server as the message opens, which tells them you read it and when. Asking first holds them back behind the Images button. Either way, nothing is re-downloaded when you switch — the blocked form is what has always been stored.</div>
   <button class="cta" id="notifyBtn" style="background:var(--elev2);color:var(--t1)">Enable notifications</button>
 </div>
 
@@ -1377,7 +1383,9 @@ function renderList() {
 // Your choice: images load without asking. The cost is that tracking pixels
 // work again — a sender learns when and how often you open their mail. One
 // line to reverse, and the stored bodies never lost the blocked form.
-const AUTO_IMAGES = true;
+let autoImages = localStorage.getItem("dmzs-images") !== "ask";
+/** "Images" tapped for the message currently on screen. Per message, never stored. */
+let showImagesOnce = false;
 /**
  * Turns cid: references into something a browser can actually load.
  *
@@ -1503,6 +1511,42 @@ function frameDoc(body) {
 img{max-width:100%;height:auto}a{color:#1a63c9}</style></head><body>${body}</body></html>`;
 }
 
+/**
+ * Paints the open message, under whatever the image setting currently is.
+ *
+ * Separate from openMsg because it is called again when that setting changes,
+ * so the message on screen follows the switch instead of staying as it was
+ * rendered a moment earlier.
+ */
+function renderBody() {
+  if (!current) return;
+  const m = current.message;
+  const load = autoImages || showImagesOnce;
+  const note = (t) => `<p style="color:#6b6b73;font-style:italic">${t}</p>`;
+  // Two different failures, said in our own voice rather than spliced into the
+  // body where they would read as something the sender wrote.
+  const html = current.body.missing
+    ? note("This message could not be fetched from iCloud. It may have been deleted elsewhere, or the account needs reconnecting.")
+    : current.body.empty
+    ? note(
+        "This message has no readable text" +
+          ((current.body.attachments || []).length ? " — only the attachments below." : ".")
+      )
+    : load
+    ? unblockImages(current.body.html)
+    : current.body.html || "";
+  // Render immediately, then swap in inline images once fetched: a message
+  // should never wait on its pictures to become readable.
+  $("#rframe").srcdoc = frameDoc(html);
+  resolveInlineImages(html, m.id, current.body.attachments || []).then((withImages) => {
+    if (withImages !== html && current && current.message.id === m.id) {
+      $("#rframe").srcdoc = frameDoc(withImages);
+    }
+  });
+  // Offered only when there is something held back to load.
+  $("#rImages").hidden = load || !(current.body.blocked > 0);
+}
+
 async function openMsg(id) {
   // The composer now occupies the reading pane, so opening a message replaces
   // it. Never silently: a half-written reply is worth one question.
@@ -1521,33 +1565,12 @@ async function openMsg(id) {
   $("#rSubj").textContent = m.subject || "(no subject)";
   $("#rMeta").innerHTML =
     `<b>${esc(m.from_name || m.from_email)}</b> · ${esc(new Date(m.date).toLocaleString())} · to ${esc(m.to_line || "me")}`;
-  // Bodies are stored with remote loads neutralised either way; this decides
-  // whether they come back on render. Flip AUTO_IMAGES to false and the tap-to-
-  // load protection returns without re-fetching a single message.
   // Two different failures, said in our own voice rather than spliced into the
   // body where they would read as something the sender wrote. Neither is a
   // blank white pane, which is what this used to be and is indistinguishable
   // from the app being broken.
-  const note = (t) => `<p style="color:#6b6b73;font-style:italic">${t}</p>`;
-  const html = current.body.missing
-    ? note("This message could not be fetched from iCloud. It may have been deleted elsewhere, or the account needs reconnecting.")
-    : current.body.empty
-    ? note(
-        "This message has no readable text" +
-          ((current.body.attachments || []).length ? " — only the attachments below." : ".")
-      )
-    : AUTO_IMAGES
-    ? unblockImages(current.body.html)
-    : current.body.html || "";
-  // Render immediately, then swap in inline images once fetched: a message
-  // should never wait on its pictures to become readable.
-  $("#rframe").srcdoc = frameDoc(html);
-  resolveInlineImages(html, m.id, current.body.attachments || []).then((withImages) => {
-    if (withImages !== html && current && current.message.id === m.id) {
-      $("#rframe").srcdoc = frameDoc(withImages);
-    }
-  });
-  $("#rImages").hidden = AUTO_IMAGES || !(current.body.blocked > 0);
+  showImagesOnce = false; // a fresh message asks again
+  renderBody();
   $("#rStar").classList.toggle("on", !!Number(m.starred));
 
   // Unsubscribing is something you do to the message, not something attached
@@ -1681,9 +1704,8 @@ addEventListener("keydown", (e) => {
 });
 
 $("#rImages").addEventListener("click", () => {
-  const html = String(current?.body?.html || "").replace(/data-blocked-(src|srcset|background|poster)=/gi, "$1=");
-  $("#rframe").srcdoc = frameDoc(html);
-  $("#rImages").hidden = true;
+  showImagesOnce = true;
+  renderBody();
 });
 /** One filing call. Returns the server's reply, or null once it has complained. */
 async function fileMessage(id, target) {
@@ -2253,6 +2275,34 @@ $("#themePick").addEventListener("click", (e) => {
   if (b) applyTheme(b.dataset.theme);
 });
 
+/**
+ * Whether remote images load as a message opens.
+ *
+ * This was a constant in the source, so changing your mind meant editing the
+ * file and deploying. It is a judgement about privacy against convenience —
+ * exactly the kind that belongs to whoever is reading the mail, and the kind
+ * you want to change for an afternoon and change back.
+ *
+ * Nothing is re-fetched when it moves: bodies have always been stored with
+ * remote loads neutralised, and this only decides whether they are restored
+ * on render.
+ */
+function applyImages(choice) {
+  autoImages = choice !== "ask";
+  localStorage.setItem("dmzs-images", autoImages ? "auto" : "ask");
+  // Tapping Images was a decision about one message; changing the rule
+  // outright supersedes it.
+  showImagesOnce = false;
+  document.querySelectorAll("#imgPick [data-images]").forEach((b) =>
+    b.classList.toggle("on", b.dataset.images === (autoImages ? "auto" : "ask"))
+  );
+  renderBody(); // the message on screen was painted under the old rule
+}
+$("#imgPick").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-images]");
+  if (b) applyImages(b.dataset.images);
+});
+
 /* ── notifications ── */
 
 /** base64url VAPID key → the Uint8Array subscribe() insists on. */
@@ -2654,6 +2704,7 @@ addEventListener("online", () => refreshAll());
 /* ── init ── */
 (async function init() {
   applyTheme(localStorage.getItem("dmzs-theme") || "light");
+  applyImages(localStorage.getItem("dmzs-images") || "auto");
   try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch {}
 
   await refreshAll();

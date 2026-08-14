@@ -50,10 +50,12 @@ The old agent still sits in `agent/` and still works. Nothing points at it.
 - Message **bodies** are defused before storage — scripts, event handlers,
   iframes and `javascript:` links stripped, remote loads rewritten to
   `data-blocked-src` — then cached in R2 so the second read is instant.
-- **Remote images currently load automatically.** The stored form is still
-  the neutralized one; `AUTO_IMAGES` in `public/index.html` decides whether
-  they are restored on render. Setting it to `false` brings back tap-to-load
-  and with it the tracking-pixel protection, without refetching anything.
+- **Remote images are a setting**, under the account button: *Load them* or
+  *Ask first*, kept per device. Bodies are stored with remote loads
+  neutralised whichever you pick, so switching costs nothing and refetches
+  nothing — it only decides whether they are restored on render. *Ask first*
+  holds them behind the Images button and with it keeps tracking pixels from
+  firing.
 - The reading surface is a sandboxed iframe: even if something survived the
   server-side pass, it runs no scripts and shares nothing with the app.
 
