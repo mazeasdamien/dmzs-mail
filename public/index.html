@@ -24,6 +24,9 @@
   /* Darker blue than the dark theme's: #5aa7f0 on white fails contrast. */
   --acc:#1f6fd0; --red:#c8352f; --on-acc:#ffffff;
   --press:rgba(0,0,0,.045); --press2:#dedee6;
+  /* Addresses that send but never receive get their own hue, so From is
+     answerable at a glance rather than by reading two similar blue pills. */
+  --ident:#7139d4;
   --glass:rgba(255,255,255,.97); --sheet:#ffffff; --input:#ffffff;
   /* The toast inverts against the page, so its tokens flip with the theme. */
   --toast-bg:rgba(22,22,26,.96); --toast-fg:#f4f4f5; --undo:#7fbcff;
@@ -41,6 +44,7 @@
     --t1:#f4f4f5; --t2:#8b8b93; --t3:#56565e;
     --acc:#5aa7f0; --red:#f2615c; --on-acc:#06121f;
     --press:rgba(255,255,255,.045); --press2:#2a2a30;
+    --ident:#b18cf5;
     --glass:rgba(24,24,28,.97); --sheet:#17171b; --input:#0e0e11;
     --toast-bg:rgba(240,240,245,.96); --toast-fg:#101014; --undo:#0a58c2;
     --shadow:rgba(0,0,0,.4);
@@ -52,11 +56,18 @@
   --t1:#f4f4f5; --t2:#8b8b93; --t3:#56565e;
   --acc:#5aa7f0; --red:#f2615c; --on-acc:#06121f;
   --press:rgba(255,255,255,.045); --press2:#2a2a30;
+  --ident:#b18cf5;
   --glass:rgba(24,24,28,.97); --sheet:#17171b; --input:#0e0e11;
   --toast-bg:rgba(240,240,245,.96); --toast-fg:#101014; --undo:#0a58c2;
   --shadow:rgba(0,0,0,.4);
 }
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+/* `hidden` means hidden, whatever else says otherwise.
+   The browser's own rule is only [hidden]{display:none}, which any author rule
+   setting a display beats on the cascade — so `.field{display:flex}` quietly
+   made hiding Cc and Bcc impossible, and `.pills{display:flex}` did the same to
+   the account filter. Every `el.hidden = true` in the script depends on this. */
+[hidden]{display:none!important}
 html,body{height:100%;overflow:hidden}
 body{background:var(--bg);color:var(--t1);
   font:400 15px/1.35 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
@@ -85,7 +96,6 @@ svg{display:block;flex:none}
 #app{height:100%;display:flex;flex-direction:column}
 header{flex:none;padding:calc(var(--sat) + 14px) 16px 0;background:var(--bg)}
 .htop{display:flex;align-items:center;justify-content:space-between;gap:12px}
-h1{font-size:27px;font-weight:700;letter-spacing:-.021em;line-height:1.1}
 .meta{font-size:12.5px;color:var(--t3);margin-top:3px;min-height:16px}
 .meta .unread-n{color:var(--acc);font-weight:600}
 .htools{display:flex;align-items:center;gap:8px;flex:none}
@@ -191,6 +201,9 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
   .pill:hover{background:color-mix(in srgb,var(--acc) 12%,var(--elev));
     border-color:color-mix(in srgb,var(--acc) 40%,transparent);color:var(--t1)}
   .pill.on:hover{background:color-mix(in srgb,var(--acc) 26%,transparent);color:var(--acc)}
+  .pill.ident:hover{background:color-mix(in srgb,var(--ident) 12%,var(--elev));
+    border-color:color-mix(in srgb,var(--ident) 40%,transparent)}
+  .pill.ident.on:hover{background:color-mix(in srgb,var(--ident) 26%,transparent);color:var(--ident)}
 
   #folderBtn:hover{background:color-mix(in srgb,var(--acc) 14%,var(--elev));
     border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
@@ -235,7 +248,16 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
 .crow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px}
 /* The toggles travel together on the right; space-between would otherwise
    push them to opposite ends of the row. */
-.crow-actions{display:flex;align-items:center;gap:2px;flex:none}
+.crow-actions{display:flex;align-items:center;gap:4px;flex:none}
+/* Full screen on a phone means the scrim is behind the composer and cannot be
+   tapped, so the only way out has to be in the composer itself. On a desktop
+   the scrim, Escape and opening a message all still close it. */
+#cClose{display:none;width:30px;height:30px;margin-right:2px}
+@media (max-width:899px){ #cClose{display:flex} }
+/* Send lives up here with the title now. It is the one thing you press to
+   finish, so it sits where the eye already is rather than at the far end of a
+   message that can be any length. */
+.crow-actions .cta{width:auto;height:34px;min-width:92px;margin-top:0;padding:0 20px;font-size:14px}
 .ghost{color:var(--t2);font-size:13px;padding:5px 9px;border-radius:6px;flex:none}
 .ghost:active{background:var(--press2)}
 .afield{gap:8px}
@@ -247,20 +269,23 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
 .fromrow .chips{margin-bottom:0;flex:1;min-width:0}
 /* An address that only sends is drawn hollow: mail leaves from it, but nothing
    arrives there, so it is not a mailbox and should not look like one. */
-.pill .dot.sendonly{background:transparent;border:2px solid var(--acc);box-sizing:border-box}
+.pill .dot.sendonly{background:transparent;border:2px solid var(--ident);box-sizing:border-box}
+.pill.ident.on{background:color-mix(in srgb,var(--ident) 16%,transparent);color:var(--ident);
+  border-color:color-mix(in srgb,var(--ident) 38%,transparent)}
 .suggest{margin:-6px 0 8px;background:var(--elev2);border:1px solid var(--line-strong);
   border-radius:var(--r);overflow:hidden;display:none;max-height:190px;overflow-y:auto}
 .suggest.on{display:block}
 .suggest button{width:100%;justify-content:flex-start;padding:9px 12px;font-size:13.5px;gap:9px;text-align:left}
 .suggest button.hot{background:var(--press2)}
 .suggest .em{color:var(--t3);font-size:12px}
-.toolbar{display:flex;gap:3px;flex-wrap:wrap;align-items:center;padding:5px 0 7px;border-bottom:1px solid var(--line)}
+/* Under the message, so the rule that separates it from the text is above. */
+.toolbar{display:flex;gap:3px;flex-wrap:wrap;align-items:center;padding:7px 0 0;border-top:1px solid var(--line);flex:none}
 .toolbar button{height:30px;min-width:32px;padding:0 8px;border-radius:6px;color:var(--t2);font-size:13px}
 .toolbar button.on,.toolbar button:active{background:var(--press2);color:var(--t1)}
 .toolbar .spacer{flex:1}
 .toolbar .ai{color:var(--acc);font-weight:600}
 .toolbar button:disabled{opacity:.35;pointer-events:none}
-.editor{min-height:170px;max-height:42vh;overflow-y:auto;padding:12px 2px;font-size:14.5px;
+.editor{min-height:170px;max-height:42vh;overflow-y:auto;padding:12px 0;font-size:14.5px;
   line-height:1.5;outline:0;user-select:text;-webkit-user-select:text;word-break:break-word}
 .editor:empty:before{content:attr(data-ph);color:var(--t3)}
 .editor blockquote{margin:6px 0 6px 8px;padding-left:11px;border-left:2px solid var(--line-strong);color:var(--t2)}
@@ -397,7 +422,7 @@ html.busy #bar{opacity:1}
 /* pasted images */
 .editor img{max-width:100%;height:auto;border-radius:4px;cursor:pointer}
 .editor img.sel{outline:2px solid var(--acc);outline-offset:1px}
-#imgTools{display:flex;gap:4px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)}
+#imgTools{display:flex;gap:4px;align-items:center;padding:6px 0;border-top:1px solid var(--line);flex:none}
 #imgTools[hidden]{display:none}
 #imgTools span{color:var(--t3);font-size:12px;margin-right:4px}
 #imgTools button{height:28px;padding:0 10px;border-radius:6px;color:var(--t2);font-size:12.5px}
@@ -434,6 +459,19 @@ html.busy #bar{opacity:1}
 #grip{display:none}
 
 @media (max-width:899px){
+  /* Writing takes the whole screen on a phone. As a bottom sheet it stopped
+     at 93vh with the message list showing through above it, which is a strip
+     of something you are not doing sitting on top of the thing you are. */
+  #composeSheet{
+    top:0;height:100%;max-height:none;border-radius:0;border-top:0;
+    padding:calc(var(--sat) + 10px) 16px calc(var(--sab) + 10px);
+    display:flex;flex-direction:column;overflow:hidden
+  }
+  #composeSheet .grab{display:none}
+  /* The body scrolls, not the whole composer, so the address fields and the
+     toolbar stay where you left them. */
+  #composeSheet .editor{max-height:none;flex:1;min-height:120px}
+
   /* Narrow screens cannot spare 118px for a label next to six icons. */
   .rbar{gap:5px}
   .rbtn.ico{width:38px}
@@ -490,6 +528,8 @@ html.busy #bar{opacity:1}
   body.picking #scrim{opacity:0;pointer-events:none}
   .grab{display:none}
   /* The editor takes whatever height is left rather than a fixed slab. */
+  /* Takes every pixel the fields and the toolbar do not, so the message runs
+     to the bottom of the pane however tall the window is. */
   .editor{max-height:none;flex:1;min-height:220px}
   .suggest{max-height:240px}
 
@@ -497,19 +537,19 @@ html.busy #bar{opacity:1}
      you are writing. So it joins the flex row as a real column and the reader
      stands down, rather than a panel hovering over the thing you are
      replying to. */
+  /* Equal gutters all round: the writing area runs to the bottom edge with the
+     same 22px it has at the sides, rather than stopping short above a band of
+     dead space. */
   #composeSheet{
     position:static;flex:1;min-width:0;width:auto;
-    display:none;transform:none;border-left:0;padding:18px 22px
+    display:none;transform:none;border-left:0;padding:18px 22px 22px;
+    /* .sheet.lg caps a bottom sheet at 93vh so it never covers the whole
+       phone screen. In the two-pane layout the composer is not covering
+       anything, and that cap left 60-odd pixels of dead white below the
+       toolbar. */
+    max-height:none
   }
   #composeSheet.up{display:flex}
-  /* A message is a column of text, not a banner. Left to fill the pane, the
-     address fields ran past 1200px on a wide monitor — harder to read, and it
-     left the composer looking mostly empty. Capping the children rather than
-     wrapping them in another div keeps the flex column intact. */
-  #composeSheet > *{max-width:860px;width:100%}
-  /* Send stops being a full-width bar. It is one button, so it gets the width
-     of a button and sits under the message it sends. */
-  #composeSheet #cSend{width:auto;min-width:168px;align-self:flex-start;margin-top:14px}
   body.composing #reader{display:none}
   /* Nothing to dim: the composer is not covering anything. */
   body.composing #scrim{opacity:0;pointer-events:none}
@@ -546,7 +586,6 @@ html.busy #bar{opacity:1}
   <header>
     <div class="htop">
       <div style="min-width:0">
-        <h1>Mail</h1>
         <div class="meta" id="hmeta">Loading…</div>
       </div>
       <div class="htools">
@@ -685,9 +724,14 @@ html.busy #bar{opacity:1}
 <div class="sheet lg" id="composeSheet">
   <div class="grab"></div>
   <div class="crow">
+    <button class="iconbtn" id="cClose" aria-label="Close message" title="Close (Esc)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
     <div class="sh-t" id="cTitle">New message</div>
     <div class="crow-actions">
-      <span style="display:flex;gap:4px"><button class="ghost" id="cCcToggle" title="Carbon copy: extra recipients who receive the message. Everyone can see who is on Cc.">+ Cc</button><button class="ghost" id="cBccToggle" title="Blind carbon copy: recipients who receive the message without anyone else knowing they did.">+ Bcc</button></span>
+      <button class="ghost" id="cCcToggle" title="Carbon copy: extra recipients who receive the message. Everyone can see who is on Cc.">+ Cc</button>
+      <button class="ghost" id="cBccToggle" title="Blind carbon copy: recipients who receive the message without anyone else knowing they did.">+ Bcc</button>
+      <button class="cta" id="cSend">Send</button>
     </div>
   </div>
   <div class="fromrow"><span class="flabel">From</span><div class="chips" id="cAccounts"></div></div>
@@ -704,7 +748,16 @@ html.busy #bar{opacity:1}
 
 
   <div class="field" id="cSubjWrap"><input id="cSubj" type="text" placeholder="Subject" autocomplete="off"></div>
+  <div class="formerr" id="cErr"></div>
 
+  <div class="editor" id="cBody" contenteditable="true" data-ph="Write…"></div>
+  <div class="attbar" id="cAtts"></div>
+  <div id="imgTools" hidden><span>Image</span><button data-w="25%">25%</button><button data-w="50%">50%</button><button data-w="75%">75%</button><button data-w="100%">Full</button><button data-w="">Reset</button><button id="imgDel">Remove</button></div>
+
+  <!-- Below the message, not above it. Sitting between Subject and the body it
+       put eleven formatting buttons in the tab order, so tabbing out of the
+       last address field walked through the whole toolbar instead of landing
+       where you were about to type. -->
   <div class="toolbar" id="cTools">
     <button data-cmd="bold" title="Bold (Ctrl+B)"><b>B</b></button>
     <button data-cmd="italic" title="Italic (Ctrl+I)"><i>I</i></button>
@@ -720,12 +773,6 @@ html.busy #bar{opacity:1}
     <button class="ai" id="aiFix" title="Fix spelling and grammar">Fix</button>
     <button class="ai" id="aiImprove" title="Rewrite more clearly">Improve</button>
   </div>
-
-  <div id="imgTools" hidden><span>Image</span><button data-w="25%">25%</button><button data-w="50%">50%</button><button data-w="75%">75%</button><button data-w="100%">Full</button><button data-w="">Reset</button><button id="imgDel">Remove</button></div>
-  <div class="editor" id="cBody" contenteditable="true" data-ph="Write…"></div>
-  <div class="attbar" id="cAtts"></div>
-  <div class="formerr" id="cErr"></div>
-  <button class="cta" id="cSend">Send</button>
 </div>
 
 <div id="modal" hidden>
@@ -1539,6 +1586,14 @@ function closeReader() {
 
 // Back on a phone, × on a desktop — same function, two affordances. Binding
 // only one of them is how the desktop close button ended up inert.
+/** Leaving the composer, with the same question openMsg asks. */
+async function closeCompose() {
+  if (draftDirty() && !(await ask("Discard the message you are writing?",
+      "It has not been sent and will not be kept.", { ok: "Discard", danger: true }))) return;
+  closeSheets();
+}
+$("#cClose").addEventListener("click", closeCompose);
+
 $("#rBack").addEventListener("click", closeReader);
 $("#rClose").addEventListener("click", closeReader);
 
@@ -1757,12 +1812,33 @@ const addressesIn = (line) =>
  * minus yourself, because replying to your own address is how mail loops start.
  */
 function replyTargets(msg, all) {
-  const me = (acctById(msg.account_id) || {}).email?.toLowerCase();
+  // Every address that is you: the mailbox it arrived in, and any address you
+  // can send as. Without the second, replying all to a message addressed to
+  // your own domain would put that address in the Cc — writing to yourself.
+  const me = new Set(
+    [String((acctById(msg.account_id) || {}).email || ""), ...identities]
+      .map((e) => e.toLowerCase())
+      .filter(Boolean)
+  );
   const from = [String(msg.from_email || "").toLowerCase()];
   const rest = all ? [...addressesIn(msg.to_line), ...addressesIn(msg.cc_line)] : [];
   const seen = new Set();
-  const keep = (list) => list.filter((e) => e && e !== me && !seen.has(e) && seen.add(e));
+  const keep = (list) => list.filter((e) => e && !me.has(e) && !seen.has(e) && seen.add(e));
   return { to: keep(from), cc: keep(rest) };
+}
+
+/**
+ * The address a message was sent to, when that is one of yours.
+ *
+ * Mail to damien@agentxr.app is forwarded on to iCloud, so it lands in the
+ * same mailbox as everything else — but the original recipient survives in the
+ * headers. Answering from the address they actually wrote to is the difference
+ * between a conversation that stays on your domain and one that quietly moves
+ * to your iCloud address halfway through.
+ */
+function identityAddressedIn(msg) {
+  const addressed = [...addressesIn(msg.to_line), ...addressesIn(msg.cc_line)];
+  return identities.find((e) => addressed.includes(e.toLowerCase())) || null;
 }
 
 function startReply(all) {
@@ -1777,6 +1853,7 @@ function startReply(all) {
     title: all ? "Reply all" : "Reply",
     reply: m.id,
     account: m.account_id,
+    from: identityAddressedIn(m) || undefined,
     to: to.join(", "),
     cc: cc.join(", "),
     subject: /^re\s*:/i.test(m.subject || "") ? m.subject : `Re: ${m.subject || ""}`,
@@ -1959,7 +2036,7 @@ function renderFromPicker() {
   // A different mark, because it behaves differently: mail leaves from it, and
   // anything coming back arrives in the mailbox above rather than here.
   const extra = identities.map(
-    (e) => `<button class="pill${e === composeFrom ? " on" : ""}" data-cfrom="${esc(e)}"
+    (e) => `<button class="pill ident${e === composeFrom ? " on" : ""}" data-cfrom="${esc(e)}"
       title="Sends as ${esc(e)} — replies arrive in your iCloud inbox.">
       <span class="dot sendonly"></span>${esc(e)}</button>`
   );

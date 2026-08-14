@@ -63,11 +63,12 @@
     // this account, or Cloudflare answers "sender denied".
     //
     // Replies do not come back here — they go to the address itself, and reach
-    // you because Email Routing forwards damien.mazeas@agentxr.app on to
+    // you because Email Routing forwards damien@agentxr.app on to
     // damien.mazeas@icloud.com, where the usual sync picks them up. Adding an
     // address here without a matching routing rule would give you an address
-    // that can send and never hear back.
-    "SEND_AS": "damien.mazeas@agentxr.app",
+    // that can send and never hear back — the catch-all on this domain is set
+    // to Drop, so the failure would be silent.
+    "SEND_AS": "damien@agentxr.app",
 
     // Model for the compose assistant. Flash tier on purpose: you are waiting
     // mid-sentence, and grammar does not need a frontier model.
