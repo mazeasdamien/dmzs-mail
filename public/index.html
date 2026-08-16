@@ -24,9 +24,6 @@
   /* Darker blue than the dark theme's: #5aa7f0 on white fails contrast. */
   --acc:#1f6fd0; --red:#c8352f; --on-acc:#ffffff;
   --press:rgba(0,0,0,.045); --press2:#dedee6;
-  /* Addresses that send but never receive get their own hue, so From is
-     answerable at a glance rather than by reading two similar blue pills. */
-  --ident:#7139d4;
   --glass:rgba(255,255,255,.97); --sheet:#ffffff; --input:#ffffff;
   /* The toast inverts against the page, so its tokens flip with the theme. */
   --toast-bg:rgba(22,22,26,.96); --toast-fg:#f4f4f5; --undo:#7fbcff;
@@ -44,8 +41,7 @@
     --t1:#f4f4f5; --t2:#8b8b93; --t3:#56565e;
     --acc:#5aa7f0; --red:#f2615c; --on-acc:#06121f;
     --press:rgba(255,255,255,.045); --press2:#2a2a30;
-    --ident:#b18cf5;
-    --glass:rgba(24,24,28,.97); --sheet:#17171b; --input:#0e0e11;
+      --glass:rgba(24,24,28,.97); --sheet:#17171b; --input:#0e0e11;
     --toast-bg:rgba(240,240,245,.96); --toast-fg:#101014; --undo:#0a58c2;
     --shadow:rgba(0,0,0,.4);
   }
@@ -56,7 +52,6 @@
   --t1:#f4f4f5; --t2:#8b8b93; --t3:#56565e;
   --acc:#5aa7f0; --red:#f2615c; --on-acc:#06121f;
   --press:rgba(255,255,255,.045); --press2:#2a2a30;
-  --ident:#b18cf5;
   --glass:rgba(24,24,28,.97); --sheet:#17171b; --input:#0e0e11;
   --toast-bg:rgba(240,240,245,.96); --toast-fg:#101014; --undo:#0a58c2;
   --shadow:rgba(0,0,0,.4);
@@ -201,9 +196,6 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
   .pill:hover{background:color-mix(in srgb,var(--acc) 12%,var(--elev));
     border-color:color-mix(in srgb,var(--acc) 40%,transparent);color:var(--t1)}
   .pill.on:hover{background:color-mix(in srgb,var(--acc) 26%,transparent);color:var(--acc)}
-  .pill.ident:hover{background:color-mix(in srgb,var(--ident) 12%,var(--elev));
-    border-color:color-mix(in srgb,var(--ident) 40%,transparent)}
-  .pill.ident.on:hover{background:color-mix(in srgb,var(--ident) 26%,transparent);color:var(--ident)}
 
   #folderBtn:hover{background:color-mix(in srgb,var(--acc) 14%,var(--elev));
     border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
@@ -275,11 +267,6 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
 .fromrow{display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;min-height:34px}
 .fromrow .flabel{line-height:30px}
 .fromrow .chips{margin-bottom:0;flex:1;min-width:0}
-/* An address that only sends is drawn hollow: mail leaves from it, but nothing
-   arrives there, so it is not a mailbox and should not look like one. */
-.pill .dot.sendonly{background:transparent;border:2px solid var(--ident);box-sizing:border-box}
-.pill.ident.on{background:color-mix(in srgb,var(--ident) 16%,transparent);color:var(--ident);
-  border-color:color-mix(in srgb,var(--ident) 38%,transparent)}
 .suggest{margin:-6px 0 8px;background:var(--elev2);border:1px solid var(--line-strong);
   border-radius:var(--r);overflow:hidden;display:none;max-height:190px;overflow-y:auto}
 .suggest.on{display:block}
@@ -813,7 +800,6 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 const hue = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
 
 let accounts = [];
-let identities = [];          // addresses you may send as, but cannot receive at
 let messages = [];
 let folders = [];             // [{folder, n, unread}] straight from the server
 let folder = "inbox";
@@ -1013,9 +999,7 @@ async function loadAccounts() {
   try {
     const res = await api("/api/accounts");
     if (!res.ok) return;
-    const d = await res.json();
-    accounts = d.accounts || [];
-    identities = d.identities || [];
+    accounts = (await res.json()).accounts || [];
   } catch (e) { if (String(e.message) === "401") return; }
 
   // The default account leads the list and is preselected when composing.
@@ -1845,33 +1829,12 @@ const addressesIn = (line) =>
  * minus yourself, because replying to your own address is how mail loops start.
  */
 function replyTargets(msg, all) {
-  // Every address that is you: the mailbox it arrived in, and any address you
-  // can send as. Without the second, replying all to a message addressed to
-  // your own domain would put that address in the Cc — writing to yourself.
-  const me = new Set(
-    [String((acctById(msg.account_id) || {}).email || ""), ...identities]
-      .map((e) => e.toLowerCase())
-      .filter(Boolean)
-  );
+  const me = String((acctById(msg.account_id) || {}).email || "").toLowerCase();
   const from = [String(msg.from_email || "").toLowerCase()];
   const rest = all ? [...addressesIn(msg.to_line), ...addressesIn(msg.cc_line)] : [];
   const seen = new Set();
-  const keep = (list) => list.filter((e) => e && !me.has(e) && !seen.has(e) && seen.add(e));
+  const keep = (list) => list.filter((e) => e && e !== me && !seen.has(e) && seen.add(e));
   return { to: keep(from), cc: keep(rest) };
-}
-
-/**
- * The address a message was sent to, when that is one of yours.
- *
- * Mail to damien@agentxr.app is forwarded on to iCloud, so it lands in the
- * same mailbox as everything else — but the original recipient survives in the
- * headers. Answering from the address they actually wrote to is the difference
- * between a conversation that stays on your domain and one that quietly moves
- * to your iCloud address halfway through.
- */
-function identityAddressedIn(msg) {
-  const addressed = [...addressesIn(msg.to_line), ...addressesIn(msg.cc_line)];
-  return identities.find((e) => addressed.includes(e.toLowerCase())) || null;
 }
 
 function startReply(all) {
@@ -1886,7 +1849,6 @@ function startReply(all) {
     title: all ? "Reply all" : "Reply",
     reply: m.id,
     account: m.account_id,
-    from: identityAddressedIn(m) || undefined,
     to: to.join(", "),
     cc: cc.join(", "),
     subject: /^re\s*:/i.test(m.subject || "") ? m.subject : `Re: ${m.subject || ""}`,
@@ -2034,7 +1996,6 @@ $("#acctList").addEventListener("click", async (e) => {
 
 /* compose sheet */
 let composeAcct = "";
-let composeFrom = "";         // the address in From; may be a send-only identity
 let contacts = [];
 
 /** Addresses out of your own sent mail; loaded once, filtered as you type. */
@@ -2067,12 +2028,6 @@ function openCompose(opts = {}) {
   // From: your mailboxes first, then the addresses that only send. With one
   // of each this is the whole point of the row, so it is not hidden the way
   // the account filter is.
-  // A reply goes back out of the mailbox it arrived in, so From resets to that
-  // account rather than inheriting whatever the last message was sent as —
-  // answering from a send-only address a previous draft happened to leave
-  // selected is not something anyone means to do.
-  composeFrom =
-    opts.from || (acctById(composeAcct) || {}).email || fromChoices()[0] || "";
   renderFromPicker();
   document.body.classList.add("composing");
   openSheet("#composeSheet");
@@ -2081,22 +2036,14 @@ function openCompose(opts = {}) {
   setTimeout(() => (replyTo ? $("#cBody") : $("#cTo")).focus(), 80);
 }
 
-/** Every address the composer may put in From. */
-const fromChoices = () => accounts.map((a) => a.email).concat(identities);
-
+/** The mailboxes a message can be sent from. */
 function renderFromPicker() {
-  const own = accounts.map(
-    (a) => `<button class="pill${a.email === composeFrom ? " on" : ""}" data-cfrom="${esc(a.email)}">
+  $("#cAccounts").innerHTML = accounts
+    .map(
+      (a) => `<button class="pill${a.id === composeAcct ? " on" : ""}" data-cacc="${a.id}">
       <span class="dot" style="background:${acctColor(a)}"></span>${esc(a.email)}</button>`
-  );
-  // A different mark, because it behaves differently: mail leaves from it, and
-  // anything coming back arrives in the mailbox above rather than here.
-  const extra = identities.map(
-    (e) => `<button class="pill ident${e === composeFrom ? " on" : ""}" data-cfrom="${esc(e)}"
-      title="Sends as ${esc(e)} — replies arrive in your iCloud inbox.">
-      <span class="dot sendonly"></span>${esc(e)}</button>`
-  );
-  $("#cAccounts").innerHTML = own.concat(extra).join("");
+    )
+    .join("");
 }
 
 /* ── contact autocomplete ── */
@@ -2533,14 +2480,9 @@ $("#composeBtn").addEventListener("click", () => {
   openCompose();
 });
 $("#cAccounts").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-cfrom]");
+  const b = e.target.closest("[data-cacc]");
   if (!b) return;
-  composeFrom = b.dataset.cfrom;
-  // A send-only address still needs a mailbox behind it: that is where the
-  // Sent copy is filed and where the reply context comes from, so the account
-  // only changes when you pick one of your own addresses.
-  const own = accounts.find((a) => a.email === composeFrom);
-  if (own) composeAcct = own.id;
+  composeAcct = b.dataset.cacc;
   renderFromPicker();
 });
 $("#cSend").addEventListener("click", async () => {
@@ -2555,7 +2497,6 @@ $("#cSend").addEventListener("click", async () => {
   }
   const body = {
     account_id: composeAcct,
-    from: composeFrom || undefined,
     to: $("#cTo").value.trim(),
     cc: $("#cCc").value.trim() || undefined,
     bcc: $("#cBcc").value.trim() || undefined,

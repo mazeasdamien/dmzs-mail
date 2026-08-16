@@ -853,67 +853,6 @@ async function queueJob(env, accountId, kind, payload) {
 /** Buckets every provider has, under the names this app uses. */
 const SYSTEM_FOLDERS = new Set(["inbox", "archive", "spam", "trash", "sent", "drafts"]);
 
-/* ────────────────────────────────────────────────────────────────
-   Sending as your own domain, through Cloudflare Email Sending.
-   ──────────────────────────────────────────────────────────────── */
-
-/** The addresses SEND_AS permits, lowercased. Empty when unconfigured. */
-const sendAsList = (env) =>
-  String(env.SEND_AS || "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter((s) => s.includes("@"));
-
-/**
- * Whether this From address goes out over Cloudflare rather than Apple.
- *
- * Checked against the configured list rather than trusted from the request:
- * the envelope sender is the one field where being permissive means letting
- * the app be used to send as somebody else.
- */
-const isSendAs = (env, from) => sendAsList(env).includes(String(from || "").toLowerCase());
-
-/**
- * Hands one message to Cloudflare Email Sending.
- *
- * Structured fields rather than the raw message SMTP takes, so the parts are
- * mapped across by hand. Attachments arrive from the browser already base64,
- * which is exactly what `content` wants — no decode, no re-encode.
- */
-async function sendViaCloudflare(env, { from, to, cc, bcc, subject, text, html, attachments, inReplyTo }) {
-  if (!env.EMAIL) throw new Error("Email Sending is not bound to this Worker");
-
-  const headers = {};
-  if (inReplyTo) {
-    // What makes a reply attach to its conversation rather than starting a new
-    // one in the recipient's client.
-    headers["In-Reply-To"] = inReplyTo;
-    headers["References"] = inReplyTo;
-  }
-
-  const res = await env.EMAIL.send({
-    from,
-    to,
-    ...(cc.length ? { cc } : {}),
-    ...(bcc.length ? { bcc } : {}),
-    subject,
-    ...(text ? { text } : {}),
-    ...(html ? { html } : {}),
-    ...(attachments.length
-      ? {
-          attachments: attachments.map((a) => ({
-            content: a.data,
-            filename: a.filename,
-            type: a.type,
-            disposition: "attachment",
-          })),
-        }
-      : {}),
-    ...(Object.keys(headers).length ? { headers } : {}),
-  });
-  return res?.messageId || "";
-}
-
 async function moveAtProvider(env, acct, msg, target) {
   if (acct.provider === "icloud") {
     const done = await icloudAct(env, acct, msg.mid || msg.pid, msg.folder, async (im, boxes, _here, uid) => {
@@ -974,84 +913,6 @@ async function fileSentCopy(env, account, pass, raw) {
     await imapAppend(im, box.name, raw, FLAG_SEEN);
   } finally {
     await im.logout();
-  }
-}
-
-/* ────────────────────────────────────────────────────────────────
-   Mail arriving at your own domain: pushed, not polled.
-   ──────────────────────────────────────────────────────────────── */
-
-/**
- * Email Routing hands the message to this Worker at delivery time.
- *
- * The cron polls IMAP once a minute because Apple offers no push, so a
- * message is up to a minute old before it appears. That floor is Apple's, and
- * it does not apply to an address on a domain we run: here the message is
- * stored while the sending server is still connected.
- *
- * It is forwarded to iCloud all the same, so Apple keeps the canonical copy
- * and every other device still sees it. That is also what makes the storing
- * safe to fail — the next IMAP pass finds the message in the inbox and stores
- * it the usual way. Both routes key on the Message-ID, so the second one
- * updates the row the first wrote rather than adding a duplicate.
- *
- * Everything here is unauthenticated and attacker-controlled: anyone at all
- * may send to the address. Hence the recipient is checked against the
- * addresses we actually own, the size is bounded before anything is parsed,
- * and the body goes through the same defusing as synced mail.
- */
-async function handleEmail(message, env, ctx) {
-  const to = String(message.to || "").toLowerCase();
-
-  // Not an address we use. Rejecting says so out loud — the sender learns it
-  // bounced and it appears in Email Routing's activity log, where a silent
-  // catch-all drop left nothing to see.
-  if (!isSendAs(env, to)) {
-    message.setReject("This address is not in use");
-    return;
-  }
-
-  // Delivery first, and never made conditional on our own bookkeeping: the
-  // copy at Apple is the one that must not be lost.
-  const dest = String(env.FORWARD_TO || "").trim();
-  if (dest) await message.forward(dest);
-
-  try {
-    const acct = await env.DB.prepare(
-      "SELECT * FROM accounts WHERE provider='icloud' ORDER BY created_at LIMIT 1"
-    ).first();
-    if (!acct) return;
-
-    // Too big to hold and parse inside a Worker. It is already on its way to
-    // iCloud, so the ordinary sync will store it by the ordinary route.
-    if (Number(message.rawSize || 0) > MAX_BODY_BYTES) return;
-
-    // Raw bytes rather than text(): rfc822 works in latin1 and decides the
-    // real charset per part from that part's own headers. Decoding as UTF-8
-    // here would corrupt anything that is not.
-    const bytes = new Uint8Array(await new Response(message.raw).arrayBuffer());
-    const { row, body, attachments } = rowFromRaw({ uid: 0, flags: "", raw: bytes }, "inbox");
-    body.attachments = attachments;
-
-    const id = await hashHex(`msg|${acct.id}|${row.pid}`, 16);
-    await env.MAIL.put(bodyKey(id), JSON.stringify(body), {
-      httpMetadata: { contentType: "application/json" },
-    });
-    await storeRows(env, acct.id, [row]);
-    await env.DB.prepare("UPDATE messages SET has_body=1 WHERE account_id=? AND pid=?")
-      .bind(acct.id, row.pid)
-      .run();
-    await indexMessage(env, id, row, htmlToText(body.html || ""));
-
-    // Arriving early is only worth anything if it tells you early.
-    if (ctx) ctx.waitUntil(pushAll(env).catch(() => {}));
-  } catch (e) {
-    // Never fail a delivery over our own storage. The message has already gone
-    // to Apple; the cron picks it up from there within the minute.
-    await env.DB.prepare("UPDATE accounts SET last_error=? WHERE provider='icloud'")
-      .bind(`email-push: ${String(e.message || e)}`.slice(0, 300))
-      .run()
-      .catch(() => {});
   }
 }
 
@@ -1222,9 +1083,6 @@ async function handleApi(request, env, path, ctx) {
     const unread = Object.fromEntries((u.results ?? []).map((r) => [r.account_id, r.n]));
     return json({
       accounts: (a.results ?? []).map((r) => ({ ...r, unread: unread[r.id] || 0 })),
-      // Addresses you can put in From without them being a mailbox of their
-      // own. They send only; replies arrive wherever Email Routing points them.
-      identities: sendAsList(env),
     });
   }
 
@@ -2037,24 +1895,11 @@ async function handleApi(request, env, path, ctx) {
     return json({ text: out });
   }
 
-  // POST /api/send { account_id, from?, to, cc?, bcc?, subject, text, html?, reply_to? }
-  //
-  // `account_id` is always the iCloud account: it owns the reply context and
-  // the Sent mailbox the copy is filed into. `from` picks the transport — one
-  // of the SEND_AS addresses goes out over Cloudflare as your own domain,
-  // anything else leaves from Apple as before.
+  // POST /api/send { account_id, to, cc?, bcc?, subject, text, html?, reply_to? }
   if (path === "/api/send" && request.method === "POST") {
     const b = await request.json().catch(() => ({}));
     const acct = await accountById(env, String(b.account_id || ""));
     if (!acct) return json({ error: "Pick an account to send from" }, 400);
-
-    const from = String(b.from || acct.email).trim().toLowerCase();
-    const viaCloudflare = isSendAs(env, from);
-    // Anything not on the allow-list has to be the account's own address.
-    // Without this the From line is whatever the caller typed.
-    if (!viaCloudflare && from !== String(acct.email).toLowerCase()) {
-      return json({ error: `Not an address you can send from: ${from}` }, 400);
-    }
 
     const to = parseAddressList(String(b.to || ""));
     if (!to.length) return json({ error: "No valid recipient" }, 400);
@@ -2091,17 +1936,13 @@ async function handleApi(request, env, path, ctx) {
 
     // Apple advertises SIZE 28319744 and base64 is already counted here, so
     // this is the real wire size. Refuse up front rather than let the server
-    // reject it after the whole thing has been uploaded. Cloudflare's ceiling
-    // is far lower — 5 MiB for the whole message — so the limit follows
-    // whichever way the message is actually leaving.
+    // reject it after the whole thing has been uploaded.
     const totalBytes = html.length + text.length + attachments.reduce((n, a) => n + a.data.length, 0);
-    const MAX_TOTAL = viaCloudflare ? 5 * 1024 * 1024 : 20 * 1024 * 1024;
+    const MAX_TOTAL = 20 * 1024 * 1024;
     if (totalBytes > MAX_TOTAL) {
       return json(
         {
-          error: `Too big to send (${(totalBytes / 1048576).toFixed(1)} MB of an allowed ${Math.round(
-            MAX_TOTAL / 1048576
-          )} MB). Remove an attachment.`,
+          error: `Too big to send (${(totalBytes / 1048576).toFixed(1)} MB of an allowed 20 MB). Remove an attachment.`,
         },
         413
       );
@@ -2125,51 +1966,7 @@ async function handleApi(request, env, path, ctx) {
 
     try {
       const pass = await icloudPassword(env, acct);
-      if (viaCloudflare) {
-        // Cloudflare wants structured fields, but the Sent copy still wants a
-        // message, so `raw` is built either way. It is a faithful record of
-        // what was submitted rather than of what was delivered — Cloudflare
-        // adds its own DKIM signature downstream of this.
-        const raw = buildRfc822({
-          from,
-          to: to.map((a) => a.email).join(", "),
-          cc: cc.map((a) => a.email).join(", ") || undefined,
-          subject,
-          text,
-          html: html || undefined,
-          attachments,
-          inReplyTo: orig?.mid || undefined,
-          references: orig?.mid || undefined,
-          messageId: newMessageId(from),
-        });
-
-        await sendViaCloudflare(env, {
-          from,
-          to: to.map((a) => a.email),
-          cc: cc.map((a) => a.email),
-          bcc: bcc.map((a) => a.email),
-          subject,
-          text,
-          html,
-          attachments,
-          inReplyTo: orig?.mid || undefined,
-        });
-
-        // Filed into the iCloud Sent mailbox on purpose. There is no mailbox
-        // behind an Email Sending domain — it only sends — so without this a
-        // message from your own domain would leave no trace anywhere. One Sent
-        // folder for everything you have written beats two half-empty ones.
-        if (pass) {
-          try {
-            await fileSentCopy(env, acct, pass, raw);
-            filed = true;
-          } catch (e) {
-            filedError = String(e.message || e).slice(0, 200);
-          }
-        } else {
-          filedError = "no iCloud credential to file the copy with";
-        }
-      } else if (pass) {
+      if (pass) {
         // Built once, then used twice: this is both what goes out over SMTP
         // and what is appended to Sent, so the copy you keep is the message
         // that was actually delivered rather than a re-rendering of it.
@@ -2292,14 +2089,6 @@ export default {
 
     return env.ASSETS.fetch(request);
   },
-
-  // Delivery-time reception for the addresses on your own domain. Point the
-  // Email Routing rule at this Worker rather than at an address, and mail
-  // lands here before the sending server has hung up.
-  async email(message, env, ctx) {
-    return handleEmail(message, env, ctx);
-  },
-
   // Sync heartbeat. Two least-recently-synced API accounts per pass, a dozen
   // messages each — the free plan's subrequest allowance shapes everything.
   async scheduled(event, env, ctx) {

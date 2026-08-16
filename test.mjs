@@ -401,36 +401,6 @@ console.log("\n-- identite du message sortant -------------");
   ok(!!Date.parse(back.headers.date), "Date relue et analysable");
 }
 
-console.log("\n-- reception poussee (Email Worker) --------");
-{
-  // Le handler email() recoit un flux d'octets ; la synchro IMAP recoit du
-  // latin1. Les deux doivent lire le meme Message-ID, parce que le pid en
-  // derive : sinon la reception poussee creerait un doublon au lieu de mettre
-  // a jour la ligne que l'autre chemin ecrira une minute plus tard.
-  const raw =
-    "From: Lilyn <lilyn@cranfield.ac.uk>\r\n" +
-    "To: damien@agentxr.app\r\n" +
-    "Subject: =?utf-8?B?w4l0w6kgw6AgQnJlc3Q=?=\r\n" +
-    "Message-ID: <abc123@cranfield.ac.uk>\r\n" +
-    "Date: Fri, 14 Aug 2026 18:00:00 +0000\r\n" +
-    "Content-Type: text/plain; charset=utf-8\r\n" +
-    "Content-Transfer-Encoding: quoted-printable\r\n\r\n" +
-    "Bonjour Damien, =C3=A7a va ?";
-
-  const fromBytes = parseMessage(new TextEncoder().encode(raw));
-  const fromLatin1 = parseMessage(raw);
-
-  eq(fromBytes.headers["message-id"], "<abc123@cranfield.ac.uk>", "Message-ID lu depuis des octets");
-  eq(fromLatin1.headers["message-id"], fromBytes.headers["message-id"], "meme Message-ID par les deux chemins");
-  eq(fromBytes.text, fromLatin1.text, "meme corps par les deux chemins");
-  eq(fromBytes.text, "Bonjour Damien, ça va ?", "quoted-printable + utf-8 decodes correctement");
-  eq(decodeWords(fromBytes.headers.subject), "Été à Brest", "sujet encode decode");
-
-  // Le message arrive non lu : aucun drapeau \\Seen puisqu'il n'a jamais ete
-  // pose sur un serveur IMAP.
-  ok(!/\\Seen/i.test(""), "pas de drapeau Seen sur un message pousse");
-}
-
 console.log("\n-- message imbrique (transfert, rapport) ---");
 {
   // Un transfert : le message d'origine voyage en message/rfc822. Sans
