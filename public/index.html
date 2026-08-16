@@ -245,6 +245,16 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
    static. Opening Accounts while writing therefore did nothing visible: the
    panel slid in exactly where it should, behind the composer. */
 #composeSheet{z-index:45}
+/* Both of these used to live in the desktop media query, from when the
+   composer sat at z-index 60 and covered everything by itself. It sits at 45
+   now, below the scrim — so on a phone the scrim was dimming the very thing
+   you were writing in, and the reader's white body showed through beneath it.
+   Neither is width-dependent: a composer covers what it covers. */
+body.composing #reader{display:none}
+/* Nothing to dim while you are only writing. The moment a sheet opens over
+   the composer the scrim comes back, because then there is something to tap
+   to dismiss. */
+body.composing:not(.overlay) #scrim{opacity:0;pointer-events:none}
 .crow{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px}
 /* The toggles travel together on the right; space-between would otherwise
    push them to opposite ends of the row. */
@@ -458,7 +468,7 @@ html.busy #bar{opacity:1}
      at 93vh with the message list showing through above it, which is a strip
      of something you are not doing sitting on top of the thing you are. */
   #composeSheet{
-    top:0;height:100%;max-height:none;border-radius:0;border-top:0;
+    top:0;bottom:0;max-height:none;border-radius:0;border-top:0;
     padding:calc(var(--sat) + 10px) 16px calc(var(--sab) + 10px);
     display:flex;flex-direction:column;overflow:hidden
   }
@@ -545,11 +555,6 @@ html.busy #bar{opacity:1}
     max-height:none
   }
   #composeSheet.up{display:flex}
-  body.composing #reader{display:none}
-  /* Nothing to dim while you are only writing — but the moment a sheet opens
-     over the composer the scrim has to come back, or there is nothing to tap
-     to dismiss it. */
-  body.composing:not(.overlay) #scrim{opacity:0;pointer-events:none}
 }
 
 /* in-page dialogs, replacing confirm() and prompt()
