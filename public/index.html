@@ -109,6 +109,19 @@ header{flex:none;padding:calc(var(--sat) + 14px) 16px 0;background:var(--bg)}
 .pill .dot{width:7px;height:7px;border-radius:50%;flex:none}
 
 main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+/* Pull to refresh.
+   Installed, there is no browser chrome to pull against and overscroll-behavior
+   deliberately kills the rubber band, so the gesture has to be built. Sticky
+   with no height: it rides the top of the scroll viewport without taking a
+   single pixel of layout from the list. */
+#ptr{position:sticky;top:0;height:0;z-index:5;display:flex;justify-content:center;pointer-events:none}
+/* Two elements because the spinner animates `transform`: the lift owns the
+   translation, the ring owns the rotation, and neither overwrites the other. */
+#ptr .lift{display:block;transform:translateY(-34px);opacity:0}
+#ptr .ring{display:block;width:24px;height:24px;border-radius:50%;
+  border:2px solid var(--line-strong);border-top-color:var(--acc)}
+#ptr.snap .lift{transition:transform .28s cubic-bezier(.32,.72,0,1),opacity .2s}
+#ptr.spin .ring{animation:sp .7s linear infinite}
 .row{display:flex;gap:11px;padding:11px 16px;position:relative;align-items:flex-start;touch-action:pan-y}
 .row:active{background:var(--press)}
 /* Unread is the state you scan for, so it colours the whole row rather than
@@ -617,7 +630,10 @@ html.busy #bar{opacity:1}
       <button id="folderBtn"><span id="folderName">Inbox</span><span id="folderCount"></span><span class="caret">▾</span></button>
     </div>
   </header>
-  <main id="main"><div id="list"></div></main>
+  <main id="main">
+    <div id="ptr"><span class="lift"><span class="ring"></span></span></div>
+    <div id="list"></div>
+  </main>
 </div>
 
 <div id="grip" role="separator" aria-orientation="vertical" aria-label="Resize list"></div>
@@ -2581,7 +2597,14 @@ async function refreshAll(spin = false) {
     window.postMessage({ type: "dmzs-mail:changed" }, location.origin);
   } catch {}
 }
-$("#syncBtn").addEventListener("click", async () => {
+/**
+ * Ask the server to go and look at Apple, then repaint.
+ *
+ * Shared by the refresh button and the pull gesture, because they mean the
+ * same thing. Re-reading what is already stored would leave both of them
+ * looking like they had done nothing.
+ */
+async function syncNow() {
   const btn = $("#syncBtn");
   if (btn.classList.contains("busy")) return;
   btn.classList.add("busy");
@@ -2601,7 +2624,75 @@ $("#syncBtn").addEventListener("click", async () => {
   } finally {
     btn.classList.remove("busy");
   }
-});
+}
+$("#syncBtn").addEventListener("click", syncNow);
+
+/* ── pull to refresh ── */
+(function pullToRefresh() {
+  const main = $("#main");
+  const ptr = $("#ptr");
+  const lift = ptr.querySelector(".lift");
+  const TRIGGER = 64;   // how far to pull before it counts
+  const MAX = 96;       // and how far it will move at all
+  let startY = 0;
+  let pulling = false;
+  let dist = 0;
+  let running = false;
+
+  const show = (d) => {
+    dist = d;
+    lift.style.transform = `translateY(${Math.min(d, MAX) - 34}px)`;
+    lift.style.opacity = String(Math.min(1, d / TRIGGER));
+  };
+  const reset = () => {
+    ptr.classList.add("snap");
+    ptr.classList.remove("spin");
+    show(0);
+    setTimeout(() => ptr.classList.remove("snap"), 300);
+  };
+
+  main.addEventListener("touchstart", (e) => {
+    // Only from the very top, and only a single finger — a pinch or a
+    // two-finger scroll is not a pull.
+    if (running || main.scrollTop > 0 || e.touches.length !== 1) return;
+    startY = e.touches[0].clientY;
+    pulling = true;
+    ptr.classList.remove("snap");
+  }, { passive: true });
+
+  main.addEventListener("touchmove", (e) => {
+    if (!pulling) return;
+    const dy = e.touches[0].clientY - startY;
+    // Scrolling up, or the list has moved under the finger: this was a scroll
+    // after all. Hand it back rather than fighting it.
+    if (dy <= 0 || main.scrollTop > 0) {
+      if (dist) reset();
+      pulling = false;
+      return;
+    }
+    // Non-passive purely for this: without it the list scrolls or bounces
+    // underneath the gesture.
+    e.preventDefault();
+    show(dy * 0.55); // resistance, so the list feels tethered rather than loose
+  }, { passive: false });
+
+  const release = async () => {
+    if (!pulling) return;
+    pulling = false;
+    if (dist < TRIGGER) return reset();
+    running = true;
+    ptr.classList.add("snap", "spin");
+    show(TRIGGER);
+    try {
+      await syncNow();
+    } finally {
+      running = false;
+      reset();
+    }
+  };
+  main.addEventListener("touchend", release);
+  main.addEventListener("touchcancel", release);
+})();
 
 function schedulePoll() {
   clearTimeout(pollTimer);
