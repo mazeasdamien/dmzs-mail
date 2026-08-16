@@ -9,6 +9,7 @@
     "db:schema": "wrangler d1 execute dmzs-mail --remote --file=./schema.sql",
     "db:schema:local": "wrangler d1 execute dmzs-mail --local --file=./schema.sql",
     "secrets": "node scripts/secrets.mjs",
+    "icons": "node scripts/make-icons.mjs",
     "agent": "powershell -NoProfile -ExecutionPolicy Bypass -File agent/run.ps1",
     "tail": "wrangler tail",
     "test": "node test.mjs",

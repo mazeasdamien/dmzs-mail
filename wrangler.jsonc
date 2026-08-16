@@ -68,7 +68,11 @@
     // address here without a matching routing rule would give you an address
     // that can send and never hear back — the catch-all on this domain is set
     // to Drop, so the failure would be silent.
-    "SEND_AS": "damien@agentxr.app",
+    // Empty: no address on the domain is in use. The composer falls back to
+    // the iCloud pill alone, and the email() handler rejects everything,
+    // since an address nobody owns should bounce rather than be swallowed.
+    // Re-enabling is this one line plus a matching Email Routing rule.
+    "SEND_AS": "",
 
     // Where the email() handler forwards what it receives, once it has stored
     // it. Apple keeps the canonical copy, so every other device still sees the
