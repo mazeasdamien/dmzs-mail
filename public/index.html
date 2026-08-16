@@ -712,6 +712,7 @@ html.busy #bar{opacity:1}
   </div>
   <div class="sh-s" style="margin:2px 0 0;font-size:12px">A remote image is fetched from the sender's server as the message opens, which tells them you read it and when. Asking first holds them back behind the Images button. Either way, nothing is re-downloaded when you switch — the blocked form is what has always been stored.</div>
   <button class="cta" id="notifyBtn" style="background:var(--elev2);color:var(--t1)">Enable notifications</button>
+  <button class="ghost" id="notifyTest" style="width:100%;justify-content:center;min-height:34px">Send a test notification</button>
 </div>
 
 <div class="sheet" id="icloudSheet">
@@ -2300,6 +2301,24 @@ async function refreshNotifyButton() {
     : "Enable notifications";
   btn.disabled = Notification.permission === "denied" && !sub;
 }
+
+/**
+ * Fires the real push chain and says what came back.
+ *
+ * Reports where it stopped rather than leaving "I see no badge" to guesswork:
+ * no device means this one never subscribed, sent short of devices means a
+ * push service refused, and nothing unread means there is no number to show
+ * — the badge is cleared at zero, so an empty inbox looks identical to a
+ * broken one.
+ */
+$("#notifyTest").addEventListener("click", async () => {
+  const res = await api("/api/push/test", { method: "POST" }).catch(() => null);
+  const d = res && res.ok ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { toast("Could not send a test"); return; }
+  if (!d.devices) { toast("No device is registered — tap Enable notifications first"); return; }
+  if (!d.unread) { toast(`Pushed to ${d.sent}/${d.devices} — but nothing is unread, so there is no badge to show`); return; }
+  toast(`Pushed to ${d.sent}/${d.devices} device${d.devices > 1 ? "s" : ""} · badge should read ${d.unread}`);
+});
 
 $("#notifyBtn").addEventListener("click", async () => {
   const reg = await navigator.serviceWorker.ready;

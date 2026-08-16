@@ -7,7 +7,7 @@
 
 // Bump on every shell change. The activate handler deletes any cache whose
 // name is not this one, so an old index.html cannot outlive a deploy.
-const SHELL = "dmzs-mail-shell-v6";
+const SHELL = "dmzs-mail-shell-v7";
 
 const SHELL_FILES = [
   "/",
@@ -89,7 +89,7 @@ self.addEventListener("fetch", (event) => {
 self.addEventListener("push", (event) => {
   event.waitUntil(
     (async () => {
-      let state = { unread: 0, from: "", subject: "" };
+      let state = { unread: 0, total: 0, from: "", subject: "" };
       try {
         const res = await fetch("/api/push/state", { credentials: "same-origin" });
         if (res.ok) state = await res.json();
@@ -101,8 +101,11 @@ self.addEventListener("push", (event) => {
       // Chrome and Edge on Windows honour it for an installed PWA; elsewhere
       // it simply does not exist, which is why this never throws upward.
       try {
+        // `total`, not `unread`: the badge should say the same number the app
+        // says, and the app counts every folder rather than the inbox alone.
+        const badge = Number(state.total ?? state.unread) || 0;
         if (self.navigator?.setAppBadge) {
-          if (state.unread > 0) await self.navigator.setAppBadge(state.unread);
+          if (badge > 0) await self.navigator.setAppBadge(badge);
           else await self.navigator.clearAppBadge?.();
         }
       } catch {

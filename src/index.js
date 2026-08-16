@@ -1201,11 +1201,35 @@ async function handleApi(request, env, path, ctx) {
                  ORDER BY date DESC LIMIT 1) AS subject
          FROM messages WHERE folder='inbox' AND unread=1`
     ).first();
+    // The badge counts every unread message, the same total the header shows.
+    // Counting only the inbox here made the badge mean one thing on a push and
+    // another the moment the app was opened and recomputed it.
+    const all = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM messages WHERE unread=1"
+    ).first();
     return json({
       unread: row?.unread || 0,
+      total: all?.n || 0,
       from: row?.who || row?.who_email || "",
       subject: row?.subject || "",
     });
+  }
+
+  // POST /api/push/test — fire the real thing on demand.
+  //
+  // "I see no badge" has four possible causes and they are indistinguishable
+  // from the outside: no device registered, the push service refusing the
+  // subscription, the platform having no Badging API, or simply nothing being
+  // unread. This reports the first two as numbers and the last one outright,
+  // which leaves only the third to conclude.
+  if (path === "/api/push/test" && request.method === "POST") {
+    const [subs, unread] = await env.DB.batch([
+      env.DB.prepare("SELECT COUNT(*) AS n FROM push_subs"),
+      env.DB.prepare("SELECT COUNT(*) AS n FROM messages WHERE unread=1"),
+    ]);
+    const devices = subs.results?.[0]?.n || 0;
+    const sent = devices ? await pushAll(env) : 0;
+    return json({ devices, sent, unread: unread.results?.[0]?.n || 0 });
   }
 
   // POST /api/folders { name } — create a mailbox.
