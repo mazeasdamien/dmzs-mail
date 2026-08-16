@@ -64,3 +64,41 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at);
+
+-- Key/value, for the things that are per-install rather than per-account:
+-- the VAPID pair the push subscriptions are signed with, and the last unread
+-- count a notification was sent for.
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS push_subs (
+  endpoint   TEXT PRIMARY KEY,
+  sub        TEXT NOT NULL,               -- the whole PushSubscription, JSON
+  created_at INTEGER NOT NULL
+);
+
+-- Contacts are read out of sent mail rather than kept, so the only two things
+-- worth storing are the corrections: someone you never want suggested, and
+-- someone you have never written to but want anyway.
+CREATE TABLE IF NOT EXISTS contacts_hidden (
+  email      TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS contacts_added (
+  email      TEXT PRIMARY KEY,
+  name       TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+
+-- Full-text search. `id` is carried along to join back to messages, not
+-- searched; diacritics are folded so "releve" finds "relevé".
+CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(
+  id UNINDEXED,
+  subject,
+  sender,
+  body,
+  tokenize = 'unicode61 remove_diacritics 2'
+);

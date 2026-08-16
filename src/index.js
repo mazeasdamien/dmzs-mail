@@ -1433,16 +1433,25 @@ async function handleApi(request, env, path, ctx) {
 
   // GET /api/contacts — who you actually write to, most-written-to first.
   // Read out of your own sent mail, so it needs no extra permission and no
-  // address book: if you have mailed someone, they are here.
+  // address book: if you have mailed someone, they are here. Plus the ones you
+  // kept by hand, which is the only way a sender you have never answered can
+  // become a contact at all.
   if (path === "/api/contacts" && request.method === "GET") {
-    const [sent, hidden] = await env.DB.batch([
+    const [sent, hidden, added] = await env.DB.batch([
       env.DB.prepare(
         "SELECT to_line, cc_line FROM messages WHERE folder='sent' ORDER BY date DESC LIMIT 800"
       ),
       env.DB.prepare("SELECT email FROM contacts_hidden"),
+      env.DB.prepare("SELECT email, name FROM contacts_added"),
     ]);
     const skip = new Set((hidden.results ?? []).map((r) => r.email));
     const seen = new Map();
+    // Kept-by-hand first, so the name you saved is the one that survives even
+    // when your own sent mail spells the address differently.
+    for (const r of added.results ?? []) {
+      if (skip.has(r.email)) continue;
+      seen.set(r.email, { email: r.email, name: r.name || "", n: 0, added: 1 });
+    }
     for (const r of sent.results ?? []) {
       for (const a of parseAddressList(`${r.to_line || ""},${r.cc_line || ""}`)) {
         if (skip.has(a.email)) continue;
@@ -1452,7 +1461,33 @@ async function handleApi(request, env, path, ctx) {
         seen.set(a.email, cur);
       }
     }
-    return json({ contacts: [...seen.values()].sort((a, b) => b.n - a.n).slice(0, 400) });
+    return json({
+      contacts: [...seen.values()]
+        .sort((a, b) => b.n - a.n || a.email.localeCompare(b.email))
+        .slice(0, 400),
+    });
+  }
+
+  // POST /api/contacts { email, name } — keeps someone you have never written
+  // to. Deriving contacts from sent mail means a sender who has only ever
+  // written *to* you cannot be kept at all, which is exactly the address you
+  // want after fishing a real message out of Spam.
+  if (path === "/api/contacts" && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const email = String(b.email || "").trim().toLowerCase().slice(0, 200);
+    const name = String(b.name || "").trim().slice(0, 200);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: "Not an address" }, 400);
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO contacts_added (email, name, created_at) VALUES (?,?,?)
+           ON CONFLICT(email) DO UPDATE SET name=excluded.name`
+      ).bind(email, name, Date.now()),
+      // Adding is also how a Remove is undone. Suppression wins over everything
+      // when the list is read, so leaving that row would store the contact and
+      // hide it in the same breath.
+      env.DB.prepare("DELETE FROM contacts_hidden WHERE email=?").bind(email),
+    ]);
+    return json({ ok: true, contact: { email, name, n: 0, added: 1 } });
   }
 
   // DELETE /api/contacts/:email — hides it from autocomplete. Nothing is
@@ -1461,9 +1496,13 @@ async function handleApi(request, env, path, ctx) {
   const ctDel = path.match(/^\/api\/contacts\/(.+)$/);
   if (ctDel && request.method === "DELETE") {
     const email = decodeURIComponent(ctDel[1]).toLowerCase().slice(0, 200);
-    await env.DB.prepare("INSERT OR IGNORE INTO contacts_hidden (email, created_at) VALUES (?,?)")
-      .bind(email, Date.now())
-      .run();
+    await env.DB.batch([
+      env.DB.prepare("INSERT OR IGNORE INTO contacts_hidden (email, created_at) VALUES (?,?)")
+        .bind(email, Date.now()),
+      // A hand-added contact is removed outright rather than suppressed: it
+      // exists only because it was added, so there is nothing left to suppress.
+      env.DB.prepare("DELETE FROM contacts_added WHERE email=?").bind(email),
+    ]);
     return json({ ok: true });
   }
 

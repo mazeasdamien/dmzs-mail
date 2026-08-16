@@ -12,7 +12,10 @@
  * writing to a single fixed key would create on every run.
  */
 
-const TABLES = ["accounts", "messages", "jobs", "settings", "contacts_hidden", "push_subs"];
+const TABLES = [
+  "accounts", "messages", "jobs", "settings",
+  "contacts_hidden", "contacts_added", "push_subs",
+];
 
 // Rebuildable from the messages themselves, and by far the largest table.
 // Restoring re-indexes rather than reloading it.
