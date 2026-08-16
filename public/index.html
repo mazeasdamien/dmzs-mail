@@ -160,7 +160,11 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
    message reads as blank white space. */
 #rframe{flex:1;width:100%;min-height:0;border:0;display:block;background:#fff}
 .rbar{flex:none;display:flex;gap:7px;align-items:center;
-  padding:10px 16px calc(var(--sab) + 10px);border-top:1px solid var(--line-strong);
+  /* max(), not +. The inset already is the clearance the home indicator
+     needs; adding to it stacks a second gap on top and turns the bar into
+     a slab of empty background. In a browser the inset is 0 and the 10px
+     floor applies, which is why this only ever looked wrong installed. */
+  padding:10px 16px max(var(--sab), 10px);border-top:1px solid var(--line-strong);
   background:var(--glass);-webkit-backdrop-filter:blur(22px);backdrop-filter:blur(22px)}
 /* Nothing stretches. Reply used to be flex:1.5 while the icons were fixed, so
    it absorbed every spare pixel and ended up a metre wide on a desktop. */
@@ -301,7 +305,7 @@ body.composing:not(.overlay) #scrim{opacity:0;pointer-events:none}
 #scrim{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:opacity .25s}
 #scrim.up{opacity:1;pointer-events:auto}
 .sheet{position:fixed;left:0;right:0;bottom:0;z-index:60;background:var(--sheet);border-radius:15px 15px 0 0;
-  border-top:1px solid var(--line-strong);padding:8px 16px calc(var(--sab) + 14px);
+  border-top:1px solid var(--line-strong);padding:8px 16px max(var(--sab), 14px);
   transform:translateY(101%);transition:transform .3s cubic-bezier(.32,.72,0,1);max-height:86vh;overflow-y:auto}
 .sheet.up{transform:translateY(0)}
 .grab{width:35px;height:4px;border-radius:2px;background:rgba(255,255,255,.2);margin:0 auto 14px}
@@ -469,7 +473,7 @@ html.busy #bar{opacity:1}
      of something you are not doing sitting on top of the thing you are. */
   #composeSheet{
     top:0;bottom:0;max-height:none;border-radius:0;border-top:0;
-    padding:calc(var(--sat) + 10px) 16px calc(var(--sab) + 10px);
+    padding:calc(var(--sat) + 10px) 16px max(var(--sab), 10px);
     display:flex;flex-direction:column;overflow:hidden
   }
   #composeSheet .grab{display:none}
