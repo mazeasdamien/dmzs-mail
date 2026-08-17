@@ -1477,6 +1477,15 @@ function renderList() {
           ? `<b>No match.</b>Nothing anywhere for &ldquo;${esc(query)}&rdquo;.`
           : folder === "inbox"
           ? "<b>Inbox zero.</b>Nothing here right now."
+          : // A draft this browser is holding but Apple never took has no row
+            // to click, and until now the only way back to it was a toast on
+            // startup — gone in six seconds, and unreachable until the next
+            // reload. This is where someone looks for a draft, so it is where
+            // it has to be, reason included.
+            folder === "drafts" && keptDraft()
+          ? `<b>Not saved here.</b>One unfinished message is being held in this browser${
+              keptDraft().why ? `, because ${esc(keptDraft().why)}` : ""
+            }.<button class="morebtn" id="resumeKeptBtn">Resume it</button>`
           : `<b>Empty.</b>Nothing in ${esc(pretty(folder))}.`
       }</div>`;
 }
@@ -2263,6 +2272,8 @@ let draftTimer = null;
 let draftLocalOk = true;
 /** Nothing has been typed since the last save, so closing has nothing to do. */
 let draftClean = true;
+/** Why the last attempt to reach Apple failed, "" while it is working. */
+let draftWhy = "";
 /** The save in flight. Two at once would each replace the other's predecessor. */
 let draftSaving = null;
 /**
@@ -2318,7 +2329,10 @@ function saveDraftLocal() {
     return;
   }
   try {
-    localStorage.setItem(DRAFT_KEY, JSON.stringify(d));
+    // Why the copy at Apple did not happen, carried with the draft rather than
+    // announced once and forgotten. A save that failed at midnight is still
+    // failing at nine, and a toast nobody caught is not a diagnosis.
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ ...d, why: draftWhy }));
     draftLocalOk = true;
     setSaved("Kept");
   } catch {
@@ -2335,6 +2349,57 @@ const queueDraftSave = () => {
   clearTimeout(draftTimer);
   draftTimer = setTimeout(saveDraftLocal, 700);
 };
+
+/**
+ * Annotates the stored copy with why Apple would not take it.
+ *
+ * Written straight into what is already in localStorage rather than by taking
+ * a fresh snapshot: by the time a save fails the composer is usually closed,
+ * and the DOM is no longer something to read a draft out of.
+ */
+function rememberWhy(why) {
+  try {
+    const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+    if (d) localStorage.setItem(DRAFT_KEY, JSON.stringify({ ...d, why }));
+  } catch {
+    /* nothing stored to annotate */
+  }
+}
+
+/** The draft this browser is holding that never reached Apple, if any. */
+function keptDraft() {
+  try {
+    const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+    return draftEmpty(d) ? null : d;
+  } catch {
+    localStorage.removeItem(DRAFT_KEY);
+    return null;
+  }
+}
+
+/** Puts a kept draft back in the composer it came out of. */
+function resumeKept(d) {
+  openCompose({
+    title: d.title || "Draft",
+    account: d.account_id,
+    to: d.to,
+    cc: d.cc,
+    subject: d.subject,
+    html: d.html,
+    reply: d.reply_to || null,
+    pid: d.pid || "",
+  });
+  // Bcc is cleared by openCompose on purpose, so it is put back here rather
+  // than by teaching that function to inherit blind recipients.
+  if (d.bcc) {
+    $("#cBcc").value = d.bcc;
+    $("#cBccWrap").hidden = false;
+  }
+  draftWhy = d.why || "";
+  // Not clean: this copy never reached Apple, and closing must try again.
+  draftClean = false;
+  setSaved(d.why ? `Not saved to Drafts: ${d.why}` : "Kept", !!d.why);
+}
 for (const id of ["#cTo", "#cCc", "#cBcc", "#cSubj", "#cBody"]) {
   $(id).addEventListener("input", queueDraftSave);
 }
@@ -2432,8 +2497,13 @@ function keepDraft() {
     .then((why) => {
       toast(why ? `Draft kept in this browser only — ${why}` : "Draft saved");
       // A failed save leaves the local copy as the only one, so it must not be
-      // treated as settled the next time round.
-      if (why && draftSession === session) draftClean = false;
+      // treated as settled the next time round — and the reason has to survive
+      // with it, because the local copy is now the only record that it failed.
+      if (why && draftSession === session) {
+        draftClean = false;
+        draftWhy = why;
+        rememberWhy(why);
+      }
       refreshAll();
     })
     .finally(() => {
@@ -2463,34 +2533,14 @@ addEventListener("pagehide", () => {
  * the mailbox is its own kind of data loss.
  */
 function resumeKeptDraft() {
-  let d = null;
-  try {
-    d = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
-  } catch {
-    localStorage.removeItem(DRAFT_KEY);
-  }
-  if (draftEmpty(d)) return;
+  const d = keptDraft();
+  if (!d) return;
+  // The reason travels with the offer. A draft that is still here on the third
+  // reload is not being kept on purpose — something is refusing it, and the
+  // toast is where you already are.
   toast(
-    "An unfinished message was kept",
-    () => {
-      openCompose({
-        title: d.title || "Draft",
-        account: d.account_id,
-        to: d.to,
-        cc: d.cc,
-        subject: d.subject,
-        html: d.html,
-        reply: d.reply_to || null,
-        pid: d.pid || "",
-      });
-      // Bcc is cleared by openCompose on purpose, so it is put back here
-      // rather than by teaching that function to inherit blind recipients.
-      if (d.bcc) {
-        $("#cBcc").value = d.bcc;
-        $("#cBccWrap").hidden = false;
-      }
-      setSaved("Kept");
-    },
+    d.why ? `Unfinished message — not saved to Drafts: ${d.why}` : "An unfinished message was kept",
+    () => resumeKept(d),
     "Resume"
   );
 }
@@ -3150,6 +3200,11 @@ $("#accPills").addEventListener("click", (e) => {
 
 $("#list").addEventListener("click", (e) => {
   if (e.target.closest("#moreBtn")) { loadList(true); return; }
+  if (e.target.closest("#resumeKeptBtn")) {
+    const d = keptDraft();
+    if (d) resumeKept(d);
+    return;
+  }
   // The count opens the conversation without opening a message: clicking it
   // must not also count as clicking the row it sits in.
   const c = e.target.closest("[data-thread]");
