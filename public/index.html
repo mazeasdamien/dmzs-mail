@@ -1652,9 +1652,8 @@ function renderBody() {
 
 async function openMsg(id) {
   // The composer occupies the reading pane, so opening a message replaces it.
-  // What was being written is kept rather than queried: reading your mail is
-  // not a decision about the reply you had started.
-  await keepDraft();
+  // What was being written is kept rather than queried — closeSheets does it —
+  // because reading your mail is not a decision about the reply you started.
   closeSheets();
   const row = messages.find((m) => m.id === id);
   try {
@@ -1738,8 +1737,7 @@ function closeReader() {
 // Back on a phone, × on a desktop — same function, two affordances. Binding
 // only one of them is how the desktop close button ended up inert.
 /** Leaving the composer keeps what is in it. Discard is its own button. */
-async function closeCompose() {
-  await keepDraft();
+function closeCompose() {
   closeSheets();
 }
 $("#cClose").addEventListener("click", closeCompose);
@@ -2233,6 +2231,14 @@ function closeOverlays() {
 }
 
 function closeSheets() {
+  // The one place every exit from the composer passes through: the × button,
+  // Escape, a click on the scrim, and opening a message. Saving from the
+  // button alone kept the draft on one of those four and lost it on the other
+  // three — which is the same mistake as binding Back without binding ×.
+  //
+  // Not awaited, and it does not need to be: keepDraft reads the composer
+  // before it yields, so the fields being cleared next changes nothing.
+  if (document.body.classList.contains("composing")) keepDraft();
   $("#scrim").classList.remove("up");
   document.body.classList.remove("composing", "picking", "overlay");
   document.querySelectorAll(".sheet").forEach((s) => s.classList.remove("up"));
@@ -2255,6 +2261,17 @@ let draftPid = "";
 let draftTimer = null;
 /** False once localStorage has refused, which a pasted screenshot can do. */
 let draftLocalOk = true;
+/** Nothing has been typed since the last save, so closing has nothing to do. */
+let draftClean = true;
+/** The save in flight. Two at once would each replace the other's predecessor. */
+let draftSaving = null;
+/**
+ * Bumped whenever the composer changes what it is holding.
+ *
+ * A save that finishes after you have moved on must not write its id, or clear
+ * the local copy, over a draft it knows nothing about.
+ */
+let draftSession = 0;
 
 function draftSnapshot() {
   return {
@@ -2314,6 +2331,7 @@ function saveDraftLocal() {
 }
 
 const queueDraftSave = () => {
+  draftClean = false;
   clearTimeout(draftTimer);
   draftTimer = setTimeout(saveDraftLocal, 700);
 };
@@ -2322,41 +2340,50 @@ for (const id of ["#cTo", "#cCc", "#cBcc", "#cSubj", "#cBody"]) {
 }
 
 /**
- * The copy at Apple. Returns false only when there was something to keep and
- * keeping it failed, which is the one case a caller has to react to.
+ * The copy at Apple.
+ *
+ * The snapshot is passed in rather than read here: by the time this resolves
+ * the composer may hold a different message entirely, and a draft that saves
+ * whatever happens to be on screen when the network gets back is not a draft.
+ *
+ * Returns the reason it failed, or "" when it worked.
  */
-async function saveDraftRemote() {
-  const d = draftSnapshot();
-  if (draftEmpty({ ...d, attachments: attached.length })) return true;
+async function saveDraftRemote(d, files, session) {
   setSaved("Saving…");
-
   const res = await api("/api/draft", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ...d,
-      replaces: draftPid || undefined,
+      replaces: d.pid || undefined,
       reply_to: d.reply_to || undefined,
-      attachments: attached.map(({ filename, type, data }) => ({ filename, type, data })),
+      attachments: files,
     }),
   }).catch(() => null);
   const body = res ? await res.json().catch(() => ({})) : {};
 
+  // Everything below writes to state the composer owns, and the composer may
+  // have moved on to another message while this was in flight.
+  const current = draftSession === session;
+
   if (!res || !res.ok) {
-    setSaved(body.error || "Could not save", true);
-    return false;
+    const why = body.error || "the server refused it";
+    if (current) setSaved(why, true);
+    return why;
   }
-  draftPid = body.pid || draftPid;
+  if (current) draftPid = body.pid || draftPid;
   if (!body.filed) {
-    // It is safe here but not on the phone, and the reason travels rather than
-    // being buried where nothing reads it.
-    setSaved(`Kept here — Apple refused a copy: ${body.filedError || "unknown"}`, true);
-    return false;
+    const why = `Apple would not keep a copy: ${body.filedError || "unknown reason"}`;
+    if (current) setSaved(why, true);
+    return why;
   }
-  // Apple has it now, so the local copy has nothing left to protect.
-  localStorage.removeItem(DRAFT_KEY);
-  setSaved("Saved to Drafts");
-  return true;
+  // Apple has it now, so the local copy has nothing left to protect — unless
+  // that copy is already a different draft.
+  if (current) {
+    localStorage.removeItem(DRAFT_KEY);
+    setSaved("Saved to Drafts");
+  }
+  return "";
 }
 
 /** Throws the draft away for good, both copies. */
@@ -2365,25 +2392,54 @@ async function dropDraft() {
   localStorage.removeItem(DRAFT_KEY);
   const pid = draftPid;
   draftPid = "";
+  // Closing runs keepDraft, and the composer still holds every word of what
+  // was just thrown away. Without this it would be saved straight back.
+  draftClean = true;
+  draftSession++;
   setSaved("");
   if (pid) await api(`/api/draft/${encodeURIComponent(pid)}`, { method: "DELETE" }).catch(() => null);
 }
 
 /**
- * Leaving the composer keeps what is in it. Closing used to ask whether to
- * throw the message away, which is a question with only one sensible answer
- * and no way to take it back.
+ * Leaving the composer keeps what is in it.
+ *
+ * Called from closeSheets rather than from the close button, because the
+ * button is one of four ways out — Escape, the scrim and opening a message
+ * are the others — and hanging the save on one of them means silently losing
+ * the draft on the other three.
+ *
+ * Everything that reads the composer runs before the first await, so the
+ * caller is free not to wait: what is on screen at this instant is what gets
+ * saved, whatever happens to the screen next.
  */
-async function keepDraft() {
+function keepDraft() {
   if (!draftDirty()) {
     localStorage.removeItem(DRAFT_KEY);
-    return;
+    return Promise.resolve();
   }
+  // Nothing has changed since the last save, so there is nothing to repeat.
+  if (draftClean) return Promise.resolve();
+  if (draftSaving) return draftSaving;
+
   clearTimeout(draftTimer);
   saveDraftLocal();
-  const ok = await saveDraftRemote();
-  toast(ok ? "Draft saved" : "Draft kept in this browser only");
-  refreshAll();
+  const snap = draftSnapshot();
+  const files = attached.map(({ filename, type, data }) => ({ filename, type, data }));
+  const session = draftSession;
+  draftClean = true;
+
+  draftSaving = saveDraftRemote(snap, files, session)
+    .then((why) => {
+      toast(why ? `Draft kept in this browser only — ${why}` : "Draft saved");
+      // A failed save leaves the local copy as the only one, so it must not be
+      // treated as settled the next time round.
+      if (why && draftSession === session) draftClean = false;
+      refreshAll();
+    })
+    .finally(() => {
+      draftSaving = null;
+    });
+  return draftSaving;
 }
 
 $("#cDiscard").addEventListener("click", async () => {
@@ -2543,7 +2599,9 @@ function openCompose(opts = {}) {
   // Carrying the previous draft's id into a new message would make the first
   // save delete a draft this composer has nothing to do with.
   clearTimeout(draftTimer);
+  draftSession++;
   draftPid = opts.pid || "";
+  draftClean = true;
   setSaved(opts.pid ? "Saved to Drafts" : "");
   // From: your mailboxes first, then the addresses that only send. With one
   // of each this is the whole point of the row, so it is not hidden the way
@@ -3127,7 +3185,6 @@ async function toggleThread(key) {
 
 /** Loads a saved draft back into the composer it came out of. */
 async function resumeDraft(id) {
-  await keepDraft();
   closeSheets();
   const res = await api(`/api/messages/${id}`).catch(() => null);
   if (!res || !res.ok) return toast("Could not open this draft");
