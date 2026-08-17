@@ -1753,8 +1753,40 @@ async function handleApi(request, env, path, ctx) {
     const before = Number(p.get("before")) || 0;
     const limit = Math.min(100, Number(p.get("limit")) || 50);
 
-    let sql =
-      "SELECT id, account_id, thread_key, from_name, from_email, subject, snippet, date, unread, starred, folder, has_body FROM messages WHERE 1=1";
+    // One conversation, oldest first — the shape you read it in. Not filtered
+    // by folder: a reply you sent is part of the exchange, and it lives in
+    // Sent. Trash is the exception, because a message you threw away
+    // reappearing inside a thread is not a feature.
+    const thread = (p.get("thread") || "").slice(0, 300);
+    if (thread) {
+      const { results } = await env.DB.prepare(
+        `SELECT id, account_id, thread_key, from_name, from_email, subject, snippet,
+                date, unread, starred, folder, has_body
+           FROM messages
+          WHERE thread_key=? AND thread_key<>'' AND folder<>'trash'
+          ORDER BY date ASC LIMIT 100`
+      )
+        .bind(thread)
+        .all();
+      return json({ messages: results ?? [] });
+    }
+
+    // Grouped by conversation, except while searching: a search is a question
+    // about individual messages, and collapsing the answer hides the one that
+    // matched behind whichever is newest.
+    //
+    // COUNT and the two SUMs are safe alongside the bare columns; a second
+    // min()/max() would not be. SQLite fills bare columns from the row that
+    // produced the max, but only guarantees it when there is exactly one such
+    // aggregate — so `starred` is summed rather than maxed, and `id` is
+    // reliably the newest message's.
+    const grouped = !term;
+    let sql = grouped
+      ? `SELECT id, account_id, thread_key, from_name, from_email, subject, snippet,
+                MAX(date) AS date, SUM(unread) AS unread, SUM(starred) AS starred,
+                folder, has_body, COUNT(*) AS n
+           FROM messages WHERE 1=1`
+      : "SELECT id, account_id, thread_key, from_name, from_email, subject, snippet, date, unread, starred, folder, has_body, 1 AS n FROM messages WHERE 1=1";
     const vals = [];
     if (folder !== "all") {
       sql += " AND folder=?";
@@ -1778,7 +1810,20 @@ async function handleApi(request, env, path, ctx) {
         vals.push(like, like, like);
       }
     }
-    if (before) {
+    if (grouped) {
+      // Messages with no References and a subject that normalizes to nothing
+      // all share the empty key. Grouping on it would file every one of them
+      // into a single conversation, so those fall back to their own id and
+      // stay the separate messages they are.
+      sql += " GROUP BY CASE WHEN thread_key='' THEN id ELSE thread_key END";
+      // The cursor has to run on the group, not the row: filtering rows first
+      // would drop a thread's older half and let the same thread come back on
+      // the next page.
+      if (before) {
+        sql += " HAVING MAX(date)<?";
+        vals.push(before);
+      }
+    } else if (before) {
       sql += " AND date<?";
       vals.push(before);
     }

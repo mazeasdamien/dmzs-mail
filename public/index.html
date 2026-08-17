@@ -145,6 +145,17 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
 .acc-dot{width:8px;height:8px;border-radius:2.5px;margin-top:6px;flex:none}
 .mi-info{flex:1;min-width:0}
 .l1{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+/* How many messages are in the exchange, and the control that opens them.
+   Sits between the sender and the date, where the eye already travels, and
+   pushes nothing off the row because it is two characters wide. */
+.count{flex:none;margin-left:auto;min-width:19px;height:17px;padding:0 5px;border-radius:9px;
+       background:var(--elev2);color:var(--t2);font-size:11px;font-weight:600;line-height:17px}
+.count.on{background:var(--acc);color:var(--on-acc)}
+/* The rest of the conversation, indented under the row that summarised it.
+   No subject line: it is the same subject, said once at the top. */
+.thread{background:var(--elev)}
+.thread .row{padding-left:32px}
+.thread .row::after{left:32px}
 .from{font-size:14.5px;font-weight:600;letter-spacing:-.007em}
 .row:not(.unread) .from{font-weight:400;color:var(--t2)}
 .when{font-size:11.5px;color:var(--t3);flex:none}
@@ -1401,29 +1412,59 @@ async function loadList(more = false) {
   renderList();
 }
 
+/* ── conversations ──
+   The list is one row per exchange, not per message. thread_key has been
+   computed and stored for every message since the first commit and read by
+   nothing, so the grouping costs a GROUP BY and gives back the difference
+   between a mailbox and a pile.
+
+   The row still opens the newest message in one tap, because that is what you
+   came for. The count beside the date is what opens the rest — expanded in
+   place rather than in the reader, so you can see the shape of the exchange
+   without losing where you were. */
+let openThread = "";
+let threadRows = [];
+
+function rowHtml(m, sub = false) {
+  const a = acctById(m.account_id);
+  const open = current && current.message && current.message.id === m.id;
+  const n = Number(m.n || 1);
+  return `<div class="row${m.unread ? " unread" : ""}${open ? " sel" : ""}${sub ? " sub" : ""}" data-id="${m.id}">
+    ${
+      // Which account a message arrived on is only worth a swatch when
+      // there is more than one of them, the same rule the account pills
+      // follow. On a single mailbox it marked every row identically.
+      accounts.length > 1
+        ? `<span class="acc-dot" style="background:${a ? acctColor(a) : "var(--t3)"}"></span>`
+        : ""
+    }
+    <div class="mi-info">
+      <div class="l1"><span class="from tr">${esc(m.from_name || m.from_email || "—")}</span>
+      ${
+        n > 1
+          ? `<button class="count${openThread === m.thread_key ? " on" : ""}" data-thread="${esc(m.thread_key)}"
+               title="${n} messages in this conversation">${n}</button>`
+          : ""
+      }
+      <span class="when num">${fmtWhen(m.date)}</span></div>
+      ${sub ? "" : `<div class="subj tr">${esc(m.subject || "(no subject)")}</div>`}
+      <div class="snip tr">${esc(m.snippet || "")}</div>
+    </div>
+  </div>`;
+}
+
 function renderList() {
   const rows = messages;
   $("#list").innerHTML = rows.length
-    ? rows.map((m) => {
-        const a = acctById(m.account_id);
-        const open = current && current.message && current.message.id === m.id;
-        return `<div class="row${m.unread ? " unread" : ""}${open ? " sel" : ""}" data-id="${m.id}">
-          ${
-            // Which account a message arrived on is only worth a swatch when
-            // there is more than one of them, the same rule the account pills
-            // follow. On a single mailbox it marked every row identically.
-            accounts.length > 1
-              ? `<span class="acc-dot" style="background:${a ? acctColor(a) : "var(--t3)"}"></span>`
-              : ""
-          }
-          <div class="mi-info">
-            <div class="l1"><span class="from tr">${esc(m.from_name || m.from_email || "—")}</span>
-            <span class="when num">${fmtWhen(m.date)}</span></div>
-            <div class="subj tr">${esc(m.subject || "(no subject)")}</div>
-            <div class="snip tr">${esc(m.snippet || "")}</div>
-          </div>
-        </div>`;
-      }).join("") + (rows._more ? `<button class="morebtn" id="moreBtn">Load older</button>` : "")
+    ? rows
+        .map(
+          (m) =>
+            rowHtml(m) +
+            (openThread && m.thread_key === openThread
+              ? `<div class="thread">${threadRows.map((t) => rowHtml(t, true)).join("")}</div>`
+              : "")
+        )
+        .join("") + (rows._more ? `<button class="morebtn" id="moreBtn">Load older</button>` : "")
     : `<div class="empty">${
         !accounts.length
           ? "<b>Welcome.</b>Tap the account button up top to connect iCloud."
@@ -3046,6 +3087,10 @@ $("#accPills").addEventListener("click", (e) => {
 
 $("#list").addEventListener("click", (e) => {
   if (e.target.closest("#moreBtn")) { loadList(true); return; }
+  // The count opens the conversation without opening a message: clicking it
+  // must not also count as clicking the row it sits in.
+  const c = e.target.closest("[data-thread]");
+  if (c) { toggleThread(c.dataset.thread); return; }
   const r = e.target.closest(".row");
   if (!r) return;
   // A draft is not something to read. Opening one in the reader showed you
@@ -3054,6 +3099,26 @@ $("#list").addEventListener("click", (e) => {
   if (row && row.folder === "drafts") resumeDraft(r.dataset.id);
   else openMsg(r.dataset.id);
 });
+
+/**
+ * Shows or hides the rest of a conversation, under the row that summarises it.
+ *
+ * Fetched every time rather than cached: a thread grows, and a stale copy of
+ * it is worse than a second request nobody waits on.
+ */
+async function toggleThread(key) {
+  if (!key || openThread === key) {
+    openThread = "";
+    threadRows = [];
+    renderList();
+    return;
+  }
+  const res = await api(`/api/messages?thread=${encodeURIComponent(key)}`).catch(() => null);
+  if (!res || !res.ok) return toast("Could not open this conversation");
+  threadRows = (await res.json()).messages || [];
+  openThread = key;
+  renderList();
+}
 
 /** Loads a saved draft back into the composer it came out of. */
 async function resumeDraft(id) {
