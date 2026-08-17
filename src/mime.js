@@ -141,8 +141,10 @@ export function isBlockPattern(s) {
   if (p.length < 4 || p.length > 200 || /\s/.test(p)) return false;
   if (p.includes("@")) return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(p);
   // At least two labels, so a bare TLD cannot become a rule that eats
-  // everything from .com.
-  return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}$/.test(p);
+  // everything from .com. Written without a quantifier inside a quantifier:
+  // the nested form backtracks exponentially on a near-miss, and this runs on
+  // a string that arrived over the wire.
+  return /^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*\.[a-z]{2,}$/.test(p);
 }
 
 /* ── subjects and threading ── */
