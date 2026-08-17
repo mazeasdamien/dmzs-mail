@@ -1048,14 +1048,29 @@ function busy(delta) {
   document.documentElement.classList.toggle("busy", inflight > 0);
 }
 
+/**
+ * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
+ * Worker; every API call says it, and every reply says what it should be.
+ */
+const CLIENT = "v13";
+
 async function api(path, opts = {}) {
   busy(1);
   let res;
   try {
-    res = await fetch(path, { credentials: "same-origin", ...opts });
+    res = await fetch(path, {
+      credentials: "same-origin",
+      ...opts,
+      headers: { ...(opts.headers || {}), "X-Client": CLIENT },
+    });
   } finally {
     busy(-1);
   }
+  // A tab open across a deploy runs old code against a new server, and every
+  // symptom of that looks like a bug in whatever shipped. Said once, plainly,
+  // with the one action that fixes it.
+  const want = res.headers.get("X-Shell");
+  if (want && want !== CLIENT) staleClient(want);
   if (res.status === 401) {
     document.body.innerHTML =
       `<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;color:var(--t2)">
@@ -1064,6 +1079,19 @@ async function api(path, opts = {}) {
     throw new Error("401");
   }
   return res;
+}
+
+/**
+ * Says the page is out of date, once, and offers the only fix.
+ *
+ * Not an auto-reload: doing that to someone mid-sentence in the composer
+ * would throw away exactly what this app has spent the day learning to keep.
+ */
+let staleSaid = false;
+function staleClient(want) {
+  if (staleSaid) return;
+  staleSaid = true;
+  toast(`This tab is running ${CLIENT}, the server is on ${want}`, () => location.reload(), "Reload");
 }
 
 /* ── time ── */

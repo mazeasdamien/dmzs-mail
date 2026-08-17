@@ -86,6 +86,15 @@ async function hashHex(s, len) {
 const bodyKey = (id) => `body/${id}.json`;
 
 /**
+ * The client this Worker was deployed alongside.
+ *
+ * Kept in step with SHELL in public/sw.js and CLIENT in public/index.html by
+ * hand — three constants, but the alternative is a build step for a project
+ * whose whole point is that it has none.
+ */
+const CLIENT_SHELL = "v13";
+
+/**
  * Which pass of the defuser produced a stored body.
  *
  * Bumped whenever sanitizeHtml changes in a way that alters what a reader
@@ -2516,9 +2525,20 @@ export default {
     if (path.startsWith("/api/")) {
       const res = await handleApi(request, env, path, ctx);
       const fresh = await renewedCookie(session, env);
-      if (!fresh) return res;
       const out = new Response(res.body, res);
-      out.headers.append("Set-Cookie", fresh);
+      if (fresh) out.headers.append("Set-Cookie", fresh);
+
+      // Which client is on the other end, and which one it ought to be.
+      //
+      // A tab left open across a deploy runs old code against a new server,
+      // and every symptom of that looks like a bug in the feature you just
+      // shipped. Three separate diagnoses here have gone that way, so the
+      // answer travels with every response instead of being guessed at.
+      const said = request.headers.get("X-Client") || "";
+      out.headers.set("X-Shell", CLIENT_SHELL);
+      if (said !== CLIENT_SHELL) {
+        console.log(`stale client: ${said || "(pre-versioning)"} against ${CLIENT_SHELL} on ${path}`);
+      }
       return out;
     }
 
