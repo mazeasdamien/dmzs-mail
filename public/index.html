@@ -339,6 +339,8 @@ textarea.field{width:100%;padding:11px 12px;font-size:14.5px;line-height:1.45;mi
   font-size:15px;font-weight:600;gap:8px;transition:opacity .12s,transform .08s}
 .cta:active{transform:scale(.99);opacity:.85}
 .cta:disabled{opacity:.28;pointer-events:none}
+/* Reserved for the one action in the app that destroys mail outright. */
+.cta.danger{background:var(--red);color:#fff}
 .formerr{display:none;font-size:13px;color:var(--red);margin-top:10px;line-height:1.45}
 .formerr.show{display:block}
 .mi{display:flex;align-items:center;gap:13px;min-height:50px;font-size:15px;width:100%;justify-content:flex-start;border-bottom:1px solid var(--line);text-align:left}
@@ -713,6 +715,7 @@ html.busy #bar{opacity:1}
   <div id="acctList"></div>
   <button class="cta" id="addIcloud" style="background:var(--elev2);color:var(--t1)">Connect iCloud</button>
   <button class="cta" id="openContacts" style="background:var(--elev2);color:var(--t1)">Contacts</button>
+  <button class="cta" id="openBlocked" style="background:var(--elev2);color:var(--t1)">Blocked senders</button>
   <div class="sh-s" style="margin:14px 0 6px">Appearance</div>
   <div class="chips" id="themePick">
     <button class="pill" data-theme="light">Light</button>
@@ -762,6 +765,16 @@ html.busy #bar{opacity:1}
   <div class="sh-s" id="sdAddr" style="user-select:text;-webkit-user-select:text;word-break:break-all"></div>
   <button class="cta" id="sdAdd">Add to contacts</button>
   <div class="sh-s" style="margin:10px 0 0">Kept here only, in your own database. It changes nothing at iCloud, and it does not stop mail from anyone else landing in Spam.</div>
+  <button class="cta danger" id="sdBlock">Block and delete&hellip;</button>
+  <div class="sh-s" style="margin:10px 0 0">Blocking destroys their mail at iCloud as it arrives: nothing is stored here, nothing is counted, and no notification fires. Everything they have already sent goes with it. There is no undo.</div>
+</div>
+
+<div class="sheet" id="blockedSheet">
+  <div class="grab"></div>
+  <div class="sh-t">Blocked senders</div>
+  <div class="sh-s">Mail from these is expunged at iCloud on the sync that finds it, so it never reaches this app at all. The count is the only trace kept &mdash; without it, a rule that has quietly stopped matching looks exactly like one that is working.</div>
+  <div id="blockedList"></div>
+  <button class="ghost" id="blockedAdd">+ Block an address or domain</button>
 </div>
 
 <div class="sheet" id="contactsSheet">
@@ -1948,6 +1961,125 @@ $("#sdAdd").addEventListener("click", async () => {
   closeSheets();
   toast(`Added ${email}`);
 });
+
+/* ── blocked senders ── */
+
+/**
+ * The domain worth offering, one label up from the host that sent it.
+ *
+ * Mail from a company arrives from whichever subdomain the campaign ran on —
+ * shop.tiktok.com today, notifications.tiktok.com tomorrow — so blocking the
+ * exact host blocks nothing much. The two-label default is wrong for the
+ * `co.uk` shape, and getting it wrong there means offering to destroy every
+ * message from an entire country's registrar, so those keep a third label.
+ */
+const SECOND_LEVEL = new Set(["co", "com", "org", "net", "ac", "gov", "edu", "gouv", "asso"]);
+function parentDomain(host) {
+  const parts = String(host || "").toLowerCase().split(".").filter(Boolean);
+  if (parts.length <= 2) return parts.join(".");
+  const last = parts[parts.length - 1];
+  const under = parts[parts.length - 2];
+  return parts.slice(last.length <= 2 && SECOND_LEVEL.has(under) ? -3 : -2).join(".");
+}
+
+/**
+ * Blocking, with the rule shown before it is applied rather than after.
+ *
+ * The field is prefilled and editable on purpose: this is the one action that
+ * destroys mail with no undo, and "block this sender" reads the same whether
+ * it means one address or a whole domain. Seeing the exact string is the only
+ * way to know which one you asked for.
+ */
+async function blockSender(prefill) {
+  const pattern = await askText("Block and delete", prefill, {
+    detail:
+      "Everything from this address or domain is destroyed at iCloud — what arrives from now on, and what is already there. It cannot be undone.",
+    placeholder: "example.com",
+    ok: "Block and delete",
+    danger: true,
+  });
+  if (!pattern) return;
+
+  closeSheets();
+  const res = await api("/api/blocked", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pattern }),
+  }).catch(() => null);
+  const d = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) return toast(d.error || "Could not block this sender");
+
+  // The reader may be showing a message that no longer exists.
+  if (current && blockedHere(current.message.from_email, d.pattern)) closeReader();
+  toast(d.removed ? `Blocked ${d.pattern} — ${d.removed} deleted` : `Blocked ${d.pattern}`);
+  refreshAll();
+}
+
+/** The client's half of the server's matcher, for deciding what to repaint. */
+function blockedHere(email, pattern) {
+  const e = String(email || "").toLowerCase();
+  const p = String(pattern || "").toLowerCase().replace(/^@/, "");
+  if (!e || !p) return false;
+  if (p.includes("@")) return e === p;
+  const host = e.slice(e.lastIndexOf("@") + 1);
+  return host === p || host.endsWith("." + p);
+}
+
+$("#sdBlock").addEventListener("click", () => {
+  if (!current) return;
+  const email = String(current.message.from_email || "").toLowerCase();
+  if (!email) return toast("This message carries no sender address");
+  blockSender(parentDomain(email.slice(email.lastIndexOf("@") + 1)) || email);
+});
+
+let blocked = [];
+
+async function openBlocked() {
+  closeSheets();
+  try {
+    const res = await api("/api/blocked");
+    blocked = res.ok ? (await res.json()).blocked || [] : [];
+  } catch {
+    blocked = [];
+  }
+  renderBlocked();
+  openSheet("#blockedSheet");
+}
+$("#openBlocked").addEventListener("click", openBlocked);
+$("#blockedAdd").addEventListener("click", () => blockSender(""));
+
+function renderBlocked() {
+  $("#blockedList").innerHTML = blocked.length
+    ? blocked
+        .map(
+          (b) => `<div class="mi">
+            <span class="grow"><div class="tr">${esc(b.pattern)}</div>
+            <div class="sub">${
+              b.n ? `${b.n} deleted${b.last_at ? `, last ${esc(new Date(b.last_at).toLocaleDateString())}` : ""}` : "nothing yet"
+            }</div></span>
+            <button class="side" data-unblock="${esc(b.pattern)}" style="color:var(--acc)">Remove</button>
+          </div>`
+        )
+        .join("")
+    : `<div class="sh-s">Nothing blocked. Mail from everyone reaches you.</div>`;
+}
+
+$("#blockedList").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-unblock]");
+  if (!b) return;
+  const pattern = b.dataset.unblock;
+  b.disabled = true;
+  const res = await api(`/api/blocked/${encodeURIComponent(pattern)}`, { method: "DELETE" }).catch(() => null);
+  if (!res || !res.ok) {
+    b.disabled = false;
+    return toast("Could not remove this rule");
+  }
+  blocked = blocked.filter((x) => x.pattern !== pattern);
+  renderBlocked();
+  // Said plainly: removing a rule brings back nothing it already destroyed.
+  toast(`${pattern} unblocked — their next message arrives`);
+});
+
 /** Every address in a header line, lowercased. */
 const addressesIn = (line) =>
   (String(line || "").match(/[^\s<>,"();]+@[^\s<>,"();]+/g) || []).map((s) => s.toLowerCase());

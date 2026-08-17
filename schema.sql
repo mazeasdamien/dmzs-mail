@@ -93,6 +93,20 @@ CREATE TABLE IF NOT EXISTS contacts_added (
   created_at INTEGER NOT NULL
 );
 
+-- Senders whose mail is destroyed on sight.
+--
+-- Not a folder and not a filter: a match is expunged at the provider during
+-- the sync that finds it, so no row is ever written, no body reaches R2 and
+-- no notification fires. `n` is the only trace kept — the rule is invisible
+-- by design, and a rule that silently eats mail with no way to tell how much
+-- is not one you can ever audit.
+CREATE TABLE IF NOT EXISTS blocked_senders (
+  pattern    TEXT PRIMARY KEY,             -- lowercase: a whole address, or a bare domain
+  n          INTEGER NOT NULL DEFAULT 0,   -- messages destroyed by this rule
+  last_at    INTEGER,                      -- ms, when it last matched
+  created_at INTEGER NOT NULL
+);
+
 -- Full-text search. `id` is carried along to join back to messages, not
 -- searched; diacritics are folded so "releve" finds "relevé".
 CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(

@@ -34,6 +34,8 @@ import {
   sanitizeHtml,
   textToHtml,
   newMessageId,
+  blockMatches,
+  isBlockPattern,
 } from "./mime.js";
 import {
   parseMessage,
@@ -559,6 +561,11 @@ async function syncIcloud(env, account) {
     const ordered = boxes.slice(start).concat(boxes.slice(0, start));
     let advanced = 0;
 
+    // Read once for the whole pass, not once per message: the list is tiny and
+    // never changes mid-sync.
+    const blocked = await loadBlocked(env);
+    const destroyed = new Map();
+
     for (const mb of ordered) {
       if (stored >= IMAP_CAP) break;
       advanced++;
@@ -609,6 +616,17 @@ async function syncIcloud(env, account) {
         const { row, body, attachments } = rowFromRaw(msg, app);
         body.attachments = attachments;
 
+        // A blocked sender never becomes a message here. Expunged where it
+        // sits, before the body reaches R2 and before the row exists, so
+        // there is no unread count to raise and nothing to notify about —
+        // which is the whole point of blocking rather than filtering.
+        const rule = blockedBy(row.from_email, blocked);
+        if (rule) {
+          await imapPurge(im, uid);
+          destroyed.set(rule, (destroyed.get(rule) || 0) + 1);
+          continue;
+        }
+
         // A big message is almost always a small message with a big file
         // stapled to it. Read its structure, pull only the readable part, and
         // leave the attachment on the server — the same trick that lets an
@@ -645,6 +663,7 @@ async function syncIcloud(env, account) {
       };
     }
     state.cursor = (start + Math.max(1, advanced)) % Math.max(1, boxes.length);
+    await countDestroyed(env, destroyed);
 
     // Existing mail predates the index, so each pass also indexes a handful of
     // messages that are not in it yet. Spread over passes rather than done in
@@ -700,6 +719,99 @@ async function icloudAct(env, account, mid, hintFolder, fn) {
   } finally {
     await im.logout();
   }
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Blocked senders: mail destroyed on sight rather than filed.
+   ──────────────────────────────────────────────────────────────── */
+
+/** Every rule, lowercase. */
+async function loadBlocked(env) {
+  const { results } = await env.DB.prepare("SELECT pattern FROM blocked_senders").all();
+  return (results ?? []).map((r) => r.pattern);
+}
+
+/** The rule that catches this sender, or "" when none does. */
+const blockedBy = (email, patterns) => patterns.find((p) => blockMatches(email, p)) || "";
+
+/**
+ * The running count under each rule.
+ *
+ * The only thing a block leaves behind. Without it "nothing from them ever
+ * arrives" and "the rule stopped matching six weeks ago" look identical from
+ * the outside, and one of those is a rule quietly doing nothing.
+ */
+async function countDestroyed(env, hits) {
+  if (!hits.size) return;
+  const now = Date.now();
+  await env.DB.batch(
+    [...hits].map(([pattern, n]) =>
+      env.DB
+        .prepare("UPDATE blocked_senders SET n=n+?, last_at=? WHERE pattern=?")
+        .bind(n, now, pattern)
+    )
+  );
+}
+
+/**
+ * Destroys what a new rule should already have caught.
+ *
+ * A rule only bites during a sync, and sync never walks backwards — so without
+ * this, blocking someone leaves everything they have already sent sitting in
+ * the mailbox, which is not what anyone means by "block".
+ *
+ * IMAP SEARCH FROM is a substring test over the whole header, so it is used to
+ * narrow the field and never to decide: every candidate's From is re-read and
+ * put back through the same matcher before anything is expunged. Over-matching
+ * here would destroy mail permanently, and there is no undo at the far end.
+ */
+async function purgeBlockedAtProvider(env, account, pattern, cap = 100) {
+  const pass = await icloudPassword(env, account);
+  if (!pass) return 0;
+
+  const needle = String(pattern).replace(/"/g, "");
+  let killed = 0;
+  const im = await imapOpen({ user: account.email, pass });
+  try {
+    for (const mb of await imapList(im)) {
+      if (killed >= cap) break;
+      await imapSelect(im, mb.name);
+      const uids = await imapSearch(im, `FROM "${needle}"`).catch(() => []);
+      for (const uid of uids.slice(0, cap - killed)) {
+        const head = await imapFetchHead(im, uid).catch(() => null);
+        if (!head?.raw) continue;
+        const h = parseHeaders(head.raw);
+        if (!blockMatches(parseAddress(h.from || "").email, pattern)) continue;
+        await imapPurge(im, uid);
+        killed++;
+      }
+    }
+  } finally {
+    await im.logout();
+  }
+  return killed;
+}
+
+/** Forgets everything a rule matches on this side: rows, bodies and index. */
+async function forgetBlockedLocally(env, pattern) {
+  // LIKE only narrows — `_` and `%` in a pattern can widen the candidate set
+  // but never shrink it, and every candidate is checked properly below.
+  const tail = pattern.includes("@") ? pattern : `%${pattern}`;
+  const { results } = await env.DB.prepare(
+    "SELECT id, from_email FROM messages WHERE from_email=? OR from_email LIKE ? LIMIT 2000"
+  )
+    .bind(pattern, tail)
+    .all();
+
+  const ids = (results ?? []).filter((r) => blockMatches(r.from_email, pattern)).map((r) => r.id);
+  if (!ids.length) return 0;
+
+  for (const id of ids) await env.MAIL.delete(bodyKey(id)).catch(() => {});
+  await env.DB.batch([
+    ...ids.map((id) => env.DB.prepare("DELETE FROM messages WHERE id=?").bind(id)),
+    ...ids.map((id) => env.DB.prepare("DELETE FROM search WHERE id=?").bind(id)),
+  ]);
+  return ids.length;
 }
 
 /* ────────────────────────────────────────────────────────────────
@@ -958,8 +1070,13 @@ async function handleInternal(request, env, path) {
     if (!acct) return json({ error: "unknown account, call hello first" }, 400);
 
     let stored = 0;
+    // The agent has already taken these off the server, so blocking here can
+    // only refuse to write them down — the expunge belongs to whoever holds
+    // the IMAP connection, which on this path is not us.
+    const blocked = await loadBlocked(env);
     for (const m of (b.messages || []).slice(0, 25)) {
       if (!m.pid) continue;
+      if (blockedBy(String(m.from_email || "").toLowerCase(), blocked)) continue;
       const id = await hashHex(`msg|${acct.id}|${m.pid}`, 16);
       const r = await env.DB.prepare(
         `INSERT OR IGNORE INTO messages
@@ -1503,6 +1620,62 @@ async function handleApi(request, env, path, ctx) {
       // exists only because it was added, so there is nothing left to suppress.
       env.DB.prepare("DELETE FROM contacts_added WHERE email=?").bind(email),
     ]);
+    return json({ ok: true });
+  }
+
+  // GET /api/blocked — the rules, and what each one has destroyed.
+  if (path === "/api/blocked" && request.method === "GET") {
+    const { results } = await env.DB.prepare(
+      "SELECT pattern, n, last_at, created_at FROM blocked_senders ORDER BY created_at DESC"
+    ).all();
+    return json({ blocked: results ?? [] });
+  }
+
+  // POST /api/blocked { pattern } — starts destroying their mail, and clears
+  // out what they have already sent. Both halves matter: a rule that only
+  // applies to future mail leaves the mailbox exactly as full as it was.
+  if (path === "/api/blocked" && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const pattern = String(b.pattern || "").trim().toLowerCase().replace(/^@/, "").slice(0, 200);
+    if (!isBlockPattern(pattern)) return json({ error: "Not an address or a domain" }, 400);
+
+    // A rule matching one of your own addresses would expunge your sent mail
+    // on the next pass, one mailbox at a time, with nothing to stop it.
+    const mine = await env.DB.prepare("SELECT email FROM accounts").all();
+    if ((mine.results ?? []).some((a) => blockMatches(a.email, pattern))) {
+      return json({ error: "That rule would block your own address" }, 400);
+    }
+
+    await env.DB
+      .prepare("INSERT OR IGNORE INTO blocked_senders (pattern, created_at) VALUES (?,?)")
+      .bind(pattern, Date.now())
+      .run();
+
+    // Best effort at the provider: a credential that has gone stale should not
+    // leave the rule half-applied and unrecorded.
+    let removed = 0;
+    const { results: accts } = await env.DB.prepare(
+      "SELECT * FROM accounts WHERE provider='icloud'"
+    ).all();
+    for (const acct of accts ?? []) {
+      try {
+        removed += await purgeBlockedAtProvider(env, acct, pattern);
+      } catch (e) {
+        if (e.reauth) await flagAccount(env, acct, e);
+      }
+    }
+    const forgotten = await forgetBlockedLocally(env, pattern);
+    await countDestroyed(env, new Map([[pattern, Math.max(removed, forgotten)]]));
+
+    return json({ ok: true, pattern, removed: Math.max(removed, forgotten) });
+  }
+
+  // DELETE /api/blocked/:pattern — stops the rule. What it already destroyed
+  // is gone; this only decides what happens next.
+  const blockDel = path.match(/^\/api\/blocked\/(.+)$/);
+  if (blockDel && request.method === "DELETE") {
+    const pattern = decodeURIComponent(blockDel[1]).toLowerCase().slice(0, 200);
+    await env.DB.prepare("DELETE FROM blocked_senders WHERE pattern=?").bind(pattern).run();
     return json({ ok: true });
   }
 

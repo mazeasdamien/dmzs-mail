@@ -13,6 +13,8 @@ import {
   buildRfc822,
   sanitizeHtml,
   textToHtml,
+  blockMatches,
+  isBlockPattern,
   b64encode,
   b64decode,
   htmlToText,
@@ -225,6 +227,32 @@ console.log("\n── pixels espions, formes non guillemetées ──");
     !/url\s*\(/i.test(sanitizeHtml("<div style=background:url(https://t.example/p.png)>x</div>").html),
     "style nu contenant url() retiré"
   );
+}
+
+console.log("\n-- expediteurs bloques ---------------------");
+{
+  // Une regle de domaine doit couvrir les sous-domaines : c'est de la que part
+  // le courrier d'une entreprise, et changer de sous-domaine suffirait sinon a
+  // passer au travers.
+  ok(blockMatches("sellersupport@shop.tiktok.com", "tiktok.com"), "le domaine prend ses sous-domaines");
+  ok(blockMatches("a@tiktok.com", "tiktok.com"), "le domaine prend le domaine nu");
+  ok(blockMatches("a@TikTok.COM", "tiktok.com"), "insensible a la casse");
+  ok(blockMatches("a@tiktok.com", "@tiktok.com"), "une regle ecrite avec @ vaut le domaine");
+
+  // Le point est ce qui empeche la regle de deborder. Ces trois-la detruiraient
+  // du courrier legitime, et il n'y a pas de retour en arriere.
+  ok(!blockMatches("a@nottiktok.com", "tiktok.com"), "un suffixe colle ne correspond pas");
+  ok(!blockMatches("a@tiktok.com.evil.net", "tiktok.com"), "un domaine parent usurpe ne correspond pas");
+  ok(!blockMatches("tiktok.com@gmail.com", "tiktok.com"), "le nom local ne compte pas");
+
+  // Une regle d'adresse ne vaut que pour elle-meme.
+  ok(blockMatches("a@x.fr", "a@x.fr"), "l'adresse exacte correspond");
+  ok(!blockMatches("b@x.fr", "a@x.fr"), "une autre adresse du meme domaine ne correspond pas");
+  ok(!blockMatches("", "x.fr") && !blockMatches("a@x.fr", ""), "rien ne correspond a rien");
+
+  ok(isBlockPattern("tiktok.com") && isBlockPattern("a@x.fr"), "domaine et adresse sont des motifs");
+  ok(!isBlockPattern("com"), "un TLD nu n'est pas un motif");
+  ok(!isBlockPattern("tiktok com") && !isBlockPattern(""), "ni un espace ni le vide");
 }
 
 console.log("\n-- feuilles de style conservees ------------");

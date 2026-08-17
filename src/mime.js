@@ -108,6 +108,43 @@ export function parseAddressList(input) {
   return parts.map(parseAddress).filter((a) => a.email);
 }
 
+/* ── blocked senders ── */
+
+/**
+ * Whether one sender address falls under one blocking rule.
+ *
+ * A rule is either a whole address, which matches only itself, or a bare
+ * domain, which takes its subdomains with it — `tiktok.com` has to cover
+ * `sellersupport@shop.tiktok.com`, because a sender who owns a domain owns
+ * every name under it and would otherwise only have to move one label left.
+ *
+ * The dot in `.` + pattern is what keeps that from over-reaching: without it
+ * `tiktok.com` would also match `nottiktok.com`, and the rule destroys mail
+ * permanently, so a near-miss is not a cosmetic error.
+ */
+export function blockMatches(email, pattern) {
+  const e = String(email ?? "").trim().toLowerCase();
+  // A rule written "@tiktok.com" means the domain, not a nameless address.
+  const p = String(pattern ?? "").trim().toLowerCase().replace(/^@/, "");
+  if (!e || !p) return false;
+  if (p.includes("@")) return e === p;
+
+  const at = e.lastIndexOf("@");
+  if (at === -1) return false;
+  const host = e.slice(at + 1);
+  return host === p || host.endsWith("." + p);
+}
+
+/** True for something that can safely become a rule: an address, or a domain. */
+export function isBlockPattern(s) {
+  const p = String(s ?? "").trim().toLowerCase().replace(/^@/, "");
+  if (p.length < 4 || p.length > 200 || /\s/.test(p)) return false;
+  if (p.includes("@")) return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(p);
+  // At least two labels, so a bare TLD cannot become a rule that eats
+  // everything from .com.
+  return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}$/.test(p);
+}
+
 /* ── subjects and threading ── */
 
 /** Strips any pile of Re:/Fwd:/RE :/Tr: prefixes, for thread grouping. */
