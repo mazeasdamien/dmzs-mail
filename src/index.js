@@ -1028,6 +1028,70 @@ async function fileSentCopy(env, account, pass, raw) {
   }
 }
 
+/**
+ * Forgets one message here, by its Message-ID rather than its row id.
+ *
+ * A draft is identified by the id it was written with, because that is the
+ * only handle the client keeps between saves.
+ */
+async function forgetLocal(env, accountId, pid) {
+  if (!pid) return;
+  const id = await hashHex(`msg|${accountId}|${pid}`, 16);
+  await env.MAIL.delete(bodyKey(id)).catch(() => {});
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM messages WHERE id=?").bind(id),
+    env.DB.prepare("DELETE FROM search WHERE id=?").bind(id),
+  ]);
+}
+
+/**
+ * Keeps one draft at Apple, and drops the copy it supersedes.
+ *
+ * A draft is saved over and over as it is written, and IMAP has no notion of
+ * replacing a message — APPEND only ever adds. Without the purge, one letter
+ * written over a morning leaves a Drafts folder with forty copies of itself in
+ * it, on every device.
+ *
+ * The local row goes in first and unconditionally, for the same reason the
+ * Sent copy does: what you have written must be recoverable even when Apple
+ * is having a bad minute.
+ */
+async function fileDraftCopy(env, account, pass, raw, replaces) {
+  const { row, body, attachments } = rowFromRaw({ uid: 0, flags: FLAG_SEEN, raw }, "drafts");
+  body.attachments = attachments;
+  const id = await hashHex(`msg|${account.id}|${row.pid}`, 16);
+  await env.MAIL.put(bodyKey(id), JSON.stringify(body), {
+    httpMetadata: { contentType: "application/json" },
+  });
+  await storeRows(env, account.id, [row]);
+  await env.DB.prepare("UPDATE messages SET has_body=1 WHERE account_id=? AND pid=?")
+    .bind(account.id, row.pid)
+    .run();
+  await indexMessage(env, id, row, htmlToText(body.html || ""));
+  if (replaces && replaces !== row.pid) await forgetLocal(env, account.id, replaces);
+
+  const im = await imapOpen({ user: account.email, pass });
+  try {
+    const boxes = await imapList(im);
+    const box = boxes.find((mb) => folderNameFor(mb) === "drafts");
+    if (!box) throw new Error(`no Drafts mailbox — server has: ${mailboxList(boxes)}`);
+    await imapSelect(im, box.name);
+
+    // The old copy goes before the new one lands, so a failure halfway leaves
+    // one draft rather than none.
+    if (replaces && replaces !== row.pid) {
+      const uids = await imapSearch(im, `HEADER "Message-ID" "${String(replaces).replace(/"/g, "")}"`);
+      for (const uid of uids) await imapPurge(im, uid);
+    }
+    // \Draft is what tells Mail on a phone this is unfinished rather than
+    // received, and \Seen keeps Drafts from wearing an unread badge.
+    await imapAppend(im, box.name, raw, `${FLAG_SEEN} \\Draft`);
+  } finally {
+    await im.logout();
+  }
+  return row.pid;
+}
+
 /* ────────────────────────────────────────────────────────────────
    Internal endpoints — bearer token, called only by the agent.
    ──────────────────────────────────────────────────────────────── */
@@ -2132,6 +2196,96 @@ async function handleApi(request, env, path, ctx) {
   }
 
   // POST /api/send { account_id, to, cc?, bcc?, subject, text, html?, reply_to? }
+  // POST /api/draft — keeps what is half-written, here and at Apple, so it
+  // survives a reload and shows up on the phone. `replaces` is the id of the
+  // save this one supersedes; without it Drafts fills with one copy per
+  // keystroke-pause.
+  if (path === "/api/draft" && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const acct = await accountById(env, String(b.account_id || ""));
+    if (!acct) return json({ error: "Pick an account to save from" }, 400);
+
+    const html = String(b.html || "");
+    const text = String(b.text || "") || htmlToText(html);
+    const subject = String(b.subject || "").slice(0, 500);
+    const to = parseAddressList(String(b.to || ""));
+    const cc = parseAddressList(String(b.cc || ""));
+
+    // A draft is allowed to be incomplete — that is what makes it a draft — so
+    // nothing here insists on a recipient or a body. Only on there being
+    // something at all, because an empty composer is not a draft.
+    if (!text.trim() && !html.trim() && !subject && !to.length && !cc.length) {
+      return json({ error: "Nothing to save" }, 400);
+    }
+    if (html.length > 8 * 1024 * 1024) {
+      return json({ error: "Too large to keep as a draft. Remove or shrink an image." }, 413);
+    }
+
+    const attachments = (Array.isArray(b.attachments) ? b.attachments : [])
+      .filter((a) => a && a.filename && a.data)
+      .slice(0, 20)
+      .map((a) => ({
+        filename: String(a.filename).slice(0, 200),
+        type: String(a.type || "application/octet-stream").slice(0, 100),
+        data: String(a.data),
+      }));
+
+    const pass = await icloudPassword(env, acct);
+    if (!pass) return json({ error: "This account cannot keep drafts" }, 400);
+
+    const orig = b.reply_to
+      ? await env.DB.prepare("SELECT * FROM messages WHERE id=?").bind(String(b.reply_to)).first()
+      : null;
+
+    // Generated here rather than inside buildRfc822 so the id can be handed
+    // back even when Apple refuses the copy: the client needs it to know what
+    // its next save supersedes, and a failed append is exactly when a stale
+    // handle would start leaving duplicates behind.
+    const messageId = newMessageId(acct.email);
+    const raw = buildRfc822({
+      from: acct.email,
+      to: to.map((a) => a.email).join(", "),
+      cc: cc.map((a) => a.email).join(", ") || undefined,
+      subject,
+      text,
+      html: html || undefined,
+      attachments,
+      inReplyTo: orig?.mid || undefined,
+      references: orig?.mid || undefined,
+      messageId,
+    });
+
+    let filed = true;
+    let filedError = "";
+    try {
+      await fileDraftCopy(env, acct, pass, raw, String(b.replaces || ""));
+    } catch (e) {
+      if (e.reauth) await flagAccount(env, acct, e);
+      filed = false;
+      filedError = String(e.message || e).slice(0, 200);
+    }
+    return json({ ok: true, pid: messageId, filed, filedError });
+  }
+
+  // DELETE /api/draft/:pid — the draft was sent, or thrown away.
+  const draftDel = path.match(/^\/api\/draft\/(.+)$/);
+  if (draftDel && request.method === "DELETE") {
+    const pid = decodeURIComponent(draftDel[1]).slice(0, 300);
+    const { results } = await env.DB.prepare(
+      "SELECT * FROM accounts WHERE provider='icloud'"
+    ).all();
+    for (const acct of results ?? []) {
+      await forgetLocal(env, acct.id, pid);
+      try {
+        await icloudAct(env, acct, pid, "drafts", (im, _b, _mb, uid) => imapPurge(im, uid));
+      } catch {
+        // Already gone, or never got there. Either way the draft is not
+        // coming back, and failing here would block sending.
+      }
+    }
+    return json({ ok: true });
+  }
+
   if (path === "/api/send" && request.method === "POST") {
     const b = await request.json().catch(() => ({}));
     const acct = await accountById(env, String(b.account_id || ""));

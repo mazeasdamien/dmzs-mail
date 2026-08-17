@@ -341,6 +341,10 @@ textarea.field{width:100%;padding:11px 12px;font-size:14.5px;line-height:1.45;mi
 .cta:disabled{opacity:.28;pointer-events:none}
 /* Reserved for the one action in the app that destroys mail outright. */
 .cta.danger{background:var(--red);color:#fff}
+/* Whether what you are writing is safe yet. Quiet on purpose: it is a
+   reassurance, not an instruction, and it sits where the eye already is. */
+.dstate{font-size:12px;color:var(--t3);align-self:center;padding:0 4px;white-space:nowrap}
+.dstate.warn{color:var(--red)}
 .formerr{display:none;font-size:13px;color:var(--red);margin-top:10px;line-height:1.45}
 .formerr.show{display:block}
 .mi{display:flex;align-items:center;gap:13px;min-height:50px;font-size:15px;width:100%;justify-content:flex-start;border-bottom:1px solid var(--line);text-align:left}
@@ -833,6 +837,8 @@ html.busy #bar{opacity:1}
     <button data-cmd="removeFormat" title="Clear formatting">Clear</button>
     <button id="cAttach" title="Attach a file">&#128206; Attach</button>
     <input type="file" id="cFile" multiple hidden>
+    <button id="cDiscard" title="Throw this draft away">Discard</button>
+    <span class="dstate" id="cSaved"></span>
     <span class="spacer"></span>
     <button class="ai" id="aiFix" title="Fix spelling and grammar">Fix</button>
     <button class="ai" id="aiImprove" title="Rewrite more clearly">Improve</button>
@@ -993,8 +999,14 @@ $("#modalInput").addEventListener("keydown", (e) => {
 });
 
 let toastTimer;
-/** `undo` turns the toast into the safety net for a destructive action. */
-function toast(msg, undo) {
+/**
+ * `undo` turns the toast into the safety net for a destructive action.
+ *
+ * `label` is for the one case that is not an undo: an unfinished message
+ * found on startup, where the button offers to pick it back up. Calling it
+ * "Undo" there would be asking someone to reverse something they did not do.
+ */
+function toast(msg, undo, label = "Undo") {
   const el = $("#toast");
   // Built as a text node, never innerHTML: these strings carry folder names and
   // sometimes subjects, and a subject is attacker-controlled.
@@ -1003,7 +1015,7 @@ function toast(msg, undo) {
   if (undo) {
     const b = document.createElement("button");
     b.className = "undo";
-    b.textContent = "Undo";
+    b.textContent = label;
     b.onclick = () => {
       clearTimeout(toastTimer);
       el.classList.remove("up");
@@ -1593,10 +1605,10 @@ function renderBody() {
 }
 
 async function openMsg(id) {
-  // The composer now occupies the reading pane, so opening a message replaces
-  // it. Never silently: a half-written reply is worth one question.
-  if (draftDirty() && !(await ask("Discard the message you are writing?",
-      "It has not been sent and will not be kept.", { ok: "Discard", danger: true }))) return;
+  // The composer occupies the reading pane, so opening a message replaces it.
+  // What was being written is kept rather than queried: reading your mail is
+  // not a decision about the reply you had started.
+  await keepDraft();
   closeSheets();
   const row = messages.find((m) => m.id === id);
   try {
@@ -1679,10 +1691,9 @@ function closeReader() {
 
 // Back on a phone, × on a desktop — same function, two affordances. Binding
 // only one of them is how the desktop close button ended up inert.
-/** Leaving the composer, with the same question openMsg asks. */
+/** Leaving the composer keeps what is in it. Discard is its own button. */
 async function closeCompose() {
-  if (draftDirty() && !(await ask("Discard the message you are writing?",
-      "It has not been sent and will not be kept.", { ok: "Discard", danger: true }))) return;
+  await keepDraft();
   closeSheets();
 }
 $("#cClose").addEventListener("click", closeCompose);
@@ -2181,8 +2192,206 @@ function closeSheets() {
   document.querySelectorAll(".sheet").forEach((s) => s.classList.remove("up"));
 }
 
+/* ── drafts ──
+   Two places, for two different failures. localStorage catches the browser
+   going away without warning — a reload, a crash, the service worker
+   updating under you — and costs nothing to write on every keystroke. The
+   Drafts mailbox at Apple catches everything else and is the only copy your
+   phone can see, but an APPEND per keystroke would be absurd, so it happens
+   when you close the composer.
+
+   Neither is a "save" button, because a half-written message is not something
+   anyone should have to remember to keep. */
+
+const DRAFT_KEY = "dmzs-draft";
+/** What the copy at Apple is called, so the next save knows what it replaces. */
+let draftPid = "";
+let draftTimer = null;
+/** False once localStorage has refused, which a pasted screenshot can do. */
+let draftLocalOk = true;
+
+function draftSnapshot() {
+  return {
+    account_id: composeAcct,
+    to: $("#cTo").value.trim(),
+    cc: $("#cCc").value.trim(),
+    bcc: $("#cBcc").value.trim(),
+    subject: $("#cSubj").value.trim(),
+    html: $("#cBody").innerHTML.trim(),
+    text: $("#cBody").innerText.trim(),
+    reply_to: replyTo || "",
+    title: $("#cTitle").textContent,
+    pid: draftPid,
+    at: Date.now(),
+  };
+}
+
+/** Nothing anyone would mind losing: no words, no recipient, no subject. */
+const draftEmpty = (d) =>
+  !d || !(d.text || d.subject || d.to || d.cc || d.bcc || (d.attachments || 0));
+
 /** True once the composer holds something worth not throwing away. */
-const draftDirty = () => document.body.classList.contains("composing") && $("#cBody").innerText.trim().length > 0;
+const draftDirty = () =>
+  document.body.classList.contains("composing") &&
+  !draftEmpty({ ...draftSnapshot(), attachments: attached.length });
+
+const setSaved = (msg, warn = false) => {
+  const el = $("#cSaved");
+  el.textContent = msg;
+  el.classList.toggle("warn", warn);
+};
+
+/**
+ * The local copy. Attachments are deliberately left out: they are already
+ * base64 in memory and one photo would blow the whole origin's quota, taking
+ * the words down with it — and the words are the part that cannot be redone.
+ */
+function saveDraftLocal() {
+  if (!document.body.classList.contains("composing")) return;
+  const d = draftSnapshot();
+  if (draftEmpty(d)) {
+    localStorage.removeItem(DRAFT_KEY);
+    setSaved("");
+    return;
+  }
+  try {
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(d));
+    draftLocalOk = true;
+    setSaved("Kept");
+  } catch {
+    // Out of quota. Said out loud rather than swallowed: silently stopping is
+    // how someone finds out at the worst possible moment.
+    draftLocalOk = false;
+    localStorage.removeItem(DRAFT_KEY);
+    setSaved("Too large to keep here — saved on close", true);
+  }
+}
+
+const queueDraftSave = () => {
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(saveDraftLocal, 700);
+};
+for (const id of ["#cTo", "#cCc", "#cBcc", "#cSubj", "#cBody"]) {
+  $(id).addEventListener("input", queueDraftSave);
+}
+
+/**
+ * The copy at Apple. Returns false only when there was something to keep and
+ * keeping it failed, which is the one case a caller has to react to.
+ */
+async function saveDraftRemote() {
+  const d = draftSnapshot();
+  if (draftEmpty({ ...d, attachments: attached.length })) return true;
+  setSaved("Saving…");
+
+  const res = await api("/api/draft", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...d,
+      replaces: draftPid || undefined,
+      reply_to: d.reply_to || undefined,
+      attachments: attached.map(({ filename, type, data }) => ({ filename, type, data })),
+    }),
+  }).catch(() => null);
+  const body = res ? await res.json().catch(() => ({})) : {};
+
+  if (!res || !res.ok) {
+    setSaved(body.error || "Could not save", true);
+    return false;
+  }
+  draftPid = body.pid || draftPid;
+  if (!body.filed) {
+    // It is safe here but not on the phone, and the reason travels rather than
+    // being buried where nothing reads it.
+    setSaved(`Kept here — Apple refused a copy: ${body.filedError || "unknown"}`, true);
+    return false;
+  }
+  // Apple has it now, so the local copy has nothing left to protect.
+  localStorage.removeItem(DRAFT_KEY);
+  setSaved("Saved to Drafts");
+  return true;
+}
+
+/** Throws the draft away for good, both copies. */
+async function dropDraft() {
+  clearTimeout(draftTimer);
+  localStorage.removeItem(DRAFT_KEY);
+  const pid = draftPid;
+  draftPid = "";
+  setSaved("");
+  if (pid) await api(`/api/draft/${encodeURIComponent(pid)}`, { method: "DELETE" }).catch(() => null);
+}
+
+/**
+ * Leaving the composer keeps what is in it. Closing used to ask whether to
+ * throw the message away, which is a question with only one sensible answer
+ * and no way to take it back.
+ */
+async function keepDraft() {
+  if (!draftDirty()) {
+    localStorage.removeItem(DRAFT_KEY);
+    return;
+  }
+  clearTimeout(draftTimer);
+  saveDraftLocal();
+  const ok = await saveDraftRemote();
+  toast(ok ? "Draft saved" : "Draft kept in this browser only");
+  refreshAll();
+}
+
+$("#cDiscard").addEventListener("click", async () => {
+  if (draftDirty() && !(await ask("Throw this draft away?", "It is not kept anywhere after this.", { ok: "Discard", danger: true }))) return;
+  await dropDraft();
+  closeSheets();
+  refreshAll();
+});
+
+// The tab closing is the one exit with no time to reach the network, so only
+// the local copy is attempted — and it has to be synchronous to land at all.
+addEventListener("pagehide", () => {
+  if (document.body.classList.contains("composing")) saveDraftLocal();
+});
+
+/**
+ * A message that outlived the page it was being written in.
+ *
+ * Offered rather than reopened: the reason the page reloaded is usually that
+ * you wanted to do something else, and having the composer spring open over
+ * the mailbox is its own kind of data loss.
+ */
+function resumeKeptDraft() {
+  let d = null;
+  try {
+    d = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+  } catch {
+    localStorage.removeItem(DRAFT_KEY);
+  }
+  if (draftEmpty(d)) return;
+  toast(
+    "An unfinished message was kept",
+    () => {
+      openCompose({
+        title: d.title || "Draft",
+        account: d.account_id,
+        to: d.to,
+        cc: d.cc,
+        subject: d.subject,
+        html: d.html,
+        reply: d.reply_to || null,
+        pid: d.pid || "",
+      });
+      // Bcc is cleared by openCompose on purpose, so it is put back here
+      // rather than by teaching that function to inherit blind recipients.
+      if (d.bcc) {
+        $("#cBcc").value = d.bcc;
+        $("#cBccWrap").hidden = false;
+      }
+      setSaved("Kept");
+    },
+    "Resume"
+  );
+}
 $("#scrim").addEventListener("click", () =>
   document.body.classList.contains("overlay") ? closeOverlays() : closeSheets()
 );
@@ -2285,6 +2494,11 @@ function openCompose(opts = {}) {
   $("#cSuggest").classList.remove("on");
   attached = [];
   renderAtts();
+  // Carrying the previous draft's id into a new message would make the first
+  // save delete a draft this composer has nothing to do with.
+  clearTimeout(draftTimer);
+  draftPid = opts.pid || "";
+  setSaved(opts.pid ? "Saved to Drafts" : "");
   // From: your mailboxes first, then the addresses that only send. With one
   // of each this is the whole point of the row, so it is not hidden the way
   // the account filter is.
@@ -2803,6 +3017,9 @@ $("#cSend").addEventListener("click", async () => {
     return;
   }
   const d = await res.json().catch(() => ({}));
+  // It has gone, so the draft of it has no reason to survive — in this browser
+  // or in the Drafts folder on every device.
+  await dropDraft();
   closeSheets();
   toast(
     d.queued
@@ -2830,8 +3047,39 @@ $("#accPills").addEventListener("click", (e) => {
 $("#list").addEventListener("click", (e) => {
   if (e.target.closest("#moreBtn")) { loadList(true); return; }
   const r = e.target.closest(".row");
-  if (r) openMsg(r.dataset.id);
+  if (!r) return;
+  // A draft is not something to read. Opening one in the reader showed you
+  // your own unfinished sentence behind glass, with no way back to writing it.
+  const row = messages.find((m) => m.id === r.dataset.id);
+  if (row && row.folder === "drafts") resumeDraft(r.dataset.id);
+  else openMsg(r.dataset.id);
 });
+
+/** Loads a saved draft back into the composer it came out of. */
+async function resumeDraft(id) {
+  await keepDraft();
+  closeSheets();
+  const res = await api(`/api/messages/${id}`).catch(() => null);
+  if (!res || !res.ok) return toast("Could not open this draft");
+  const d = await res.json();
+
+  openCompose({
+    title: "Draft",
+    account: d.message.account_id,
+    to: d.message.to_line || "",
+    cc: d.message.cc_line || "",
+    subject: d.message.subject || "",
+    html: d.body.html || "",
+    // Saving again supersedes this copy rather than adding a second one.
+    pid: d.message.mid || "",
+  });
+
+  // Said rather than hidden: the files are still on the draft at Apple, but
+  // they are not in this composer, and sending from here would quietly leave
+  // them behind.
+  const n = (d.body.attachments || []).length;
+  if (n) toast(`${n} attachment${n > 1 ? "s" : ""} not carried over — attach again before sending`);
+}
 
 async function refreshAll(spin = false) {
   if (spin) $("#syncBtn").classList.add("busy");
@@ -3003,6 +3251,7 @@ addEventListener("online", () => refreshAll());
 
   await refreshAll();
   schedulePoll();
+  resumeKeptDraft();
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
