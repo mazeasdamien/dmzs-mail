@@ -1218,8 +1218,13 @@ function renderFolders() {
   // Folders come from the messages that exist, so an empty one disappears —
   // and an empty inbox with no way back to it is a trap. The standard set is
   // always present, at zero if that is the truth.
+  //
+  // Drafts belongs here for a reason the others do not: it is the only folder
+  // you reach *before* it has anything in it. Left out, it appeared only once
+  // a draft existed — and the way you make a draft is to open the folder and
+  // find out that drafts are kept at all.
   const known = new Set(folders.map((f) => f.folder));
-  for (const name of ["inbox", "archive", "sent", "spam", "trash"]) {
+  for (const name of ["inbox", "archive", "sent", "drafts", "spam", "trash"]) {
     if (!known.has(name)) folders.push({ folder: name, n: 0, unread: 0 });
   }
   folders.sort(
