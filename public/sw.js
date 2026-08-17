@@ -91,7 +91,13 @@ self.addEventListener("push", (event) => {
     (async () => {
       let state = { unread: 0, total: 0, from: "", subject: "" };
       try {
-        const res = await fetch("/api/push/state", { credentials: "same-origin" });
+        // Says which shell is asking, the same way the page does. Without it
+        // every push logged as a client too old to identify itself, which is
+        // the one signal that has to stay trustworthy.
+        const res = await fetch("/api/push/state", {
+          credentials: "same-origin",
+          headers: { "X-Client": SHELL.replace("dmzs-mail-shell-", "") },
+        });
         if (res.ok) state = await res.json();
       } catch {
         /* offline: still worth ringing, just without the detail */

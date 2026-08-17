@@ -2542,7 +2542,24 @@ export default {
       return out;
     }
 
-    return env.ASSETS.fetch(request);
+    // The shell, never from the browser's own cache without asking first.
+    //
+    // A tab reloaded onto a stale index.html runs old code against a new
+    // Worker, and every symptom of that looks like a bug in whatever shipped
+    // last. It did, three times in one day, and no amount of reloading fixed
+    // it because reloading was being answered from disk.
+    //
+    // no-cache is not "do not store": the copy is kept and revalidated, so an
+    // unchanged page still costs one conditional request and nothing more.
+    // Set here rather than in a _headers file because run_worker_first means
+    // every asset is served through this call, where it can be seen to happen.
+    const asset = await env.ASSETS.fetch(request);
+    if (/^\/(|index\.html|sw\.js|manifest\.webmanifest)$/.test(path)) {
+      const out = new Response(asset.body, asset);
+      out.headers.set("Cache-Control", "no-cache");
+      return out;
+    }
+    return asset;
   },
   // Sync heartbeat. Two least-recently-synced API accounts per pass, a dozen
   // messages each — the free plan's subrequest allowance shapes everything.
