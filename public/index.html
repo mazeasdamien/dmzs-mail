@@ -151,6 +151,11 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
 .count{flex:none;margin-left:auto;min-width:19px;height:17px;padding:0 5px;border-radius:9px;
        background:var(--elev2);color:var(--t2);font-size:11px;font-weight:600;line-height:17px}
 .count.on{background:var(--acc);color:var(--on-acc)}
+/* Delete, on the row, for the one folder whose rows never reach the reader
+   and so never get its action bar. */
+.rowdel{flex:none;margin-left:auto;width:24px;height:20px;border-radius:5px;color:var(--t3)}
+.rowdel:hover{background:var(--press2);color:var(--red)}
+.count + .rowdel{margin-left:6px}
 /* The rest of the conversation, indented under the row that summarised it.
    No subject line: it is the same subject, said once at the top. */
 .thread{background:var(--elev)}
@@ -217,7 +222,12 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
   font:inherit;font-size:12px;line-height:1;min-width:18px;height:18px;padding:0 4px;
   background:var(--elev2);border:1px solid var(--line-strong);
   border-radius:4px;color:var(--t2);vertical-align:-0.28em}
-#toast .undo{display:inline;margin-left:11px;color:var(--undo);font-weight:700;font-size:13.5px;
+/* The toast itself stays click-through, so it never swallows a tap meant for
+   the list underneath it. The button inside does not: a child may take back
+   pointer events its parent gave up, and without this line every action a
+   toast has ever offered — Undo after Archive, Move, Not spam and Delete, and
+   Resume for a kept draft — was decoration. */
+#toast .undo{pointer-events:auto;display:inline;margin-left:11px;color:var(--undo);font-weight:700;font-size:13.5px;
   background:none;border:0;padding:0;cursor:pointer}
 
 /* ── hover ───────────────────────────────────────────────────────
@@ -810,6 +820,12 @@ html.busy #bar{opacity:1}
     <div class="crow-actions">
       <button class="ghost" id="cCcToggle" title="Carbon copy: extra recipients who receive the message. Everyone can see who is on Cc.">+ Cc</button>
       <button class="ghost" id="cBccToggle" title="Blind carbon copy: recipients who receive the message without anyone else knowing they did.">+ Bcc</button>
+      <!-- Beside Send, where the actions on the message are. It used to sit in
+           the formatting toolbar between "Clear formatting" and "Fix", which
+           is nobody's idea of where a delete lives. -->
+      <button class="iconbtn" id="cDiscard" aria-label="Discard draft" title="Throw this draft away">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+      </button>
       <button class="cta" id="cSend">Send</button>
     </div>
   </div>
@@ -848,7 +864,6 @@ html.busy #bar{opacity:1}
     <button data-cmd="removeFormat" title="Clear formatting">Clear</button>
     <button id="cAttach" title="Attach a file">&#128206; Attach</button>
     <input type="file" id="cFile" multiple hidden>
-    <button id="cDiscard" title="Throw this draft away">Discard</button>
     <span class="dstate" id="cSaved"></span>
     <span class="spacer"></span>
     <button class="ai" id="aiFix" title="Fix spelling and grammar">Fix</button>
@@ -1052,7 +1067,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v13";
+const CLIENT = "v14";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -1477,6 +1492,16 @@ function rowHtml(m, sub = false) {
         n > 1
           ? `<button class="count${openThread === m.thread_key ? " on" : ""}" data-thread="${esc(m.thread_key)}"
                title="${n} messages in this conversation">${n}</button>`
+          : ""
+      }
+      ${
+        // A draft opens the composer rather than the reader, so it never had
+        // the reader's action bar — and therefore no way to be deleted at all
+        // short of opening it and hunting for Discard.
+        m.folder === "drafts" && !sub
+          ? `<button class="rowdel" data-drop="${m.id}" aria-label="Delete draft" title="Delete this draft">
+               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+             </button>`
           : ""
       }
       <span class="when num">${fmtWhen(m.date)}</span></div>
@@ -2311,6 +2336,8 @@ let draftSaving = null;
  * the local copy, over a draft it knows nothing about.
  */
 let draftSession = 0;
+/** The list row the open draft came from, so deleting it can disarm the save. */
+let draftRowId = "";
 
 function draftSnapshot() {
   return {
@@ -2679,6 +2706,7 @@ function openCompose(opts = {}) {
   clearTimeout(draftTimer);
   draftSession++;
   draftPid = opts.pid || "";
+  draftRowId = opts.rowId || "";
   draftClean = true;
   setSaved(opts.pid ? "Saved to Drafts" : "");
   // From: your mailboxes first, then the addresses that only send. With one
@@ -3233,6 +3261,9 @@ $("#list").addEventListener("click", (e) => {
     if (d) resumeKept(d);
     return;
   }
+  // Deleting the row must not also open it.
+  const del = e.target.closest("[data-drop]");
+  if (del) { dropDraftRow(del.dataset.drop); return; }
   // The count opens the conversation without opening a message: clicking it
   // must not also count as clicking the row it sits in.
   const c = e.target.closest("[data-thread]");
@@ -3266,6 +3297,36 @@ async function toggleThread(key) {
   renderList();
 }
 
+/**
+ * Deletes one draft from the list, without opening it first.
+ *
+ * Reuses purge rather than the draft endpoint: it is the operation that
+ * removes a message everywhere — the copy at Apple, the row, the body and the
+ * search entry — and a draft is a message like any other in that respect.
+ *
+ * No Undo offered, because there is nothing to undo it with: the message is
+ * expunged at Apple, and IMAP has no way back.
+ */
+async function dropDraftRow(id) {
+  if (!(await ask("Delete this draft?", "It is removed here and at iCloud. This cannot be undone.", { ok: "Delete", danger: true }))) return;
+  const res = await api(`/api/messages/${id}/purge`, { method: "POST" }).catch(() => null);
+  const d = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) return toast(d.error || "Could not delete this draft");
+
+  // The composer may be holding the very draft that no longer exists, and
+  // closing it runs the save — which would write it straight back, under a new
+  // id, replacing nothing.
+  if (draftRowId === id) {
+    draftPid = "";
+    draftClean = true;
+    draftSession++;
+    if (document.body.classList.contains("composing")) closeSheets();
+  }
+  toast("Draft deleted");
+  refreshAll();
+  refreshCounts();
+}
+
 /** Loads a saved draft back into the composer it came out of. */
 async function resumeDraft(id) {
   closeSheets();
@@ -3282,6 +3343,7 @@ async function resumeDraft(id) {
     html: d.body.html || "",
     // Saving again supersedes this copy rather than adding a second one.
     pid: d.message.mid || "",
+    rowId: id,
   });
 
   // Said rather than hidden: the files are still on the draft at Apple, but
