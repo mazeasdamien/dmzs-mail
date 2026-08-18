@@ -235,11 +235,23 @@ const newBoundary = (tag) =>
  * loaded foot-gun for whoever next passes it in good faith.
  */
 export function buildRfc822({
-  from, to, cc, subject, text, html, attachments, inReplyTo, references,
+  from, to, cc, draftBcc, subject, text, html, attachments, inReplyTo, references,
   messageId, date,
 }) {
   const lines = [`From: ${from}`, `To: ${to}`];
   if (cc) lines.push(`Cc: ${cc}`);
+  // Deliberately not called `bcc`.
+  //
+  // A `bcc` handed to this function is ignored and always has been, because
+  // blind recipients belong in the SMTP envelope and nowhere else — writing
+  // them into the bytes is precisely how a Bcc stops being blind, and a caller
+  // passing the field by mistake must not be able to cause that. There are
+  // tests holding that line.
+  //
+  // A draft is the one message that is sent to nobody, and its Bcc header is
+  // how the field survives the composer being closed and reopened. That needs
+  // a name no one reaches for by accident.
+  if (draftBcc) lines.push(`Bcc: ${draftBcc}`);
   // Date and Message-ID are not optional decoration: a message without them is
   // scored as spam by most receivers, threads nowhere, and — because the local
   // id is derived from the Message-ID — cannot be told apart from every other

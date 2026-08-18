@@ -92,7 +92,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * hand — three constants, but the alternative is a build step for a project
  * whose whole point is that it has none.
  */
-const CLIENT_SHELL = "v14";
+const CLIENT_SHELL = "v15";
 
 /**
  * Which pass of the defuser produced a stored body.
@@ -136,8 +136,8 @@ async function storeRows(env, accountId, rows) {
       env.DB.prepare(
         `INSERT INTO messages
            (id, account_id, pid, mid, thread_key, folder, from_name, from_email,
-            to_line, cc_line, subject, snippet, date, unread, starred, has_body, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
+            to_line, cc_line, bcc_line, subject, snippet, date, unread, starred, has_body, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
          ON CONFLICT(account_id, pid) DO UPDATE SET
            unread=excluded.unread,
            starred=excluded.starred,
@@ -156,6 +156,7 @@ async function storeRows(env, accountId, rows) {
         (r.from_email || "").slice(0, 200),
         (r.to_line || "").slice(0, 500),
         (r.cc_line || "").slice(0, 500),
+        (r.bcc_line || "").slice(0, 500),
         (r.subject || "").slice(0, 500),
         (r.snippet || "").slice(0, 300),
         r.date || now,
@@ -369,6 +370,9 @@ function rowFromRaw({ uid, flags, raw }, folder) {
       from_email: from.email,
       to_line: decodeWords(h.to || ""),
       cc_line: decodeWords(h.cc || ""),
+      // Only ever set on a draft: nothing that arrives carries a Bcc, and
+      // nothing that leaves is allowed to.
+      bcc_line: decodeWords(h.bcc || ""),
       subject: decodeWords(h.subject || ""),
       snippet,
       date: Date.parse(h.date || "") || Date.now(),
@@ -1003,7 +1007,7 @@ async function moveAtProvider(env, acct, msg, target) {
  * and a row here so it appears in Sent the moment the composer closes rather
  * than whenever the next sync happens to reach that mailbox.
  */
-async function fileSentCopy(env, account, pass, raw) {
+async function fileSentCopy(env, account, pass, raw, bccLine = "") {
   // The local row first, and unconditionally. A message you have sent should
   // appear in Sent whatever the server then makes of the copy — tying the two
   // together meant one IMAP hiccup left you with no record of having written
@@ -1013,6 +1017,10 @@ async function fileSentCopy(env, account, pass, raw) {
   // from the form fields, so what Sent shows is the message as it went.
   const { row, body, attachments } = rowFromRaw({ uid: 0, flags: FLAG_SEEN, raw }, "sent");
   body.attachments = attachments;
+  // The bytes carry no Bcc — that is the point of one — so it is added to the
+  // row here. Sent is your own record, and "who else got this" is exactly what
+  // you go back to Sent to find out.
+  row.bcc_line = bccLine;
   const id = await hashHex(`msg|${account.id}|${row.pid}`, 16);
   await env.MAIL.put(bodyKey(id), JSON.stringify(body), {
     httpMetadata: { contentType: "application/json" },
@@ -2264,11 +2272,12 @@ async function handleApi(request, env, path, ctx) {
     const subject = String(b.subject || "").slice(0, 500);
     const to = parseAddressList(String(b.to || ""));
     const cc = parseAddressList(String(b.cc || ""));
+    const bcc = parseAddressList(String(b.bcc || ""));
 
     // A draft is allowed to be incomplete — that is what makes it a draft — so
     // nothing here insists on a recipient or a body. Only on there being
     // something at all, because an empty composer is not a draft.
-    if (!text.trim() && !html.trim() && !subject && !to.length && !cc.length) {
+    if (!text.trim() && !html.trim() && !subject && !to.length && !cc.length && !bcc.length) {
       return json({ error: "Nothing to save" }, 400);
     }
     if (html.length > 8 * 1024 * 1024) {
@@ -2300,6 +2309,10 @@ async function handleApi(request, env, path, ctx) {
       from: acct.email,
       to: to.map((a) => a.email).join(", "),
       cc: cc.map((a) => a.email).join(", ") || undefined,
+      // A draft keeps its blind recipients in the message, which is how they
+      // survive the composer being closed. Named draftBcc because `bcc` is
+      // ignored by design on anything that will actually be sent.
+      draftBcc: bcc.map((a) => a.email).join(", ") || undefined,
       subject,
       text,
       html: html || undefined,
@@ -2441,7 +2454,7 @@ async function handleApi(request, env, path, ctx) {
         // The message has gone. Everything past this point is bookkeeping, and
         // none of it is allowed to turn a successful send into an error.
         try {
-          await fileSentCopy(env, acct, pass, raw);
+          await fileSentCopy(env, acct, pass, raw, bcc.map((a) => a.email).join(", "));
           filed = true;
         } catch (e) {
           filedError = String(e.message || e).slice(0, 200);

@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS messages (
   from_email  TEXT NOT NULL DEFAULT '',
   to_line     TEXT NOT NULL DEFAULT '',     -- human-readable recipients
   cc_line     TEXT NOT NULL DEFAULT '',     -- copied recipients; reply-all needs them
+  -- Blind recipients. Never present on mail you receive, and deliberately
+  -- absent from the bytes of anything sent — a Bcc written into the message
+  -- is not blind. Kept here for the two copies that are only ever yours: the
+  -- draft you are still writing, and your own record of what you sent.
+  bcc_line    TEXT NOT NULL DEFAULT '',
   subject     TEXT NOT NULL DEFAULT '',
   snippet     TEXT NOT NULL DEFAULT '',
   date        INTEGER NOT NULL DEFAULT 0,   -- ms

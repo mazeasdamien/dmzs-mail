@@ -185,7 +185,8 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
    sits in rather than becoming a flex box that refuses to. */
 .rmeta .who{display:inline;height:auto;padding:0;background:0;border:0;font:inherit;color:inherit}
 .rmeta .addr{color:var(--t2)}
-.rmeta .who:hover .addr{text-decoration:underline}
+button.who:hover .addr{text-decoration:underline}
+button.who{cursor:pointer}
 /* White in both themes on purpose: mail HTML is authored assuming a
    white page, and forcing it dark turns dark-on-white text invisible.
    Every mail client does this. */
@@ -364,6 +365,10 @@ textarea.field{width:100%;padding:11px 12px;font-size:14.5px;line-height:1.45;mi
 .cta.danger{background:var(--red);color:#fff}
 /* Whether what you are writing is safe yet. Quiet on purpose: it is a
    reassurance, not an instruction, and it sits where the eye already is. */
+/* The line introducing a quoted message, outside the blockquote so it does
+   not inherit its indent. */
+.editor .quote-head{color:var(--t2);font-size:13px;margin:0 0 4px}
+.editor blockquote{border-left:2px solid var(--line);margin:0;padding-left:12px;color:var(--t2)}
 .dstate{font-size:12px;color:var(--t3);align-self:center;padding:0 4px;white-space:nowrap}
 .dstate.warn{color:var(--red)}
 .formerr{display:none;font-size:13px;color:var(--red);margin-top:10px;line-height:1.45}
@@ -1005,6 +1010,9 @@ function openModal({ title, detail = "", input = false, value = "", placeholder 
   return new Promise((resolve) => (modalDone = resolve));
 }
 
+/** A newline, named, so a template literal never has to carry one. */
+const NL = String.fromCharCode(10);
+
 /** Confirmation. Resolves true only on an explicit yes. */
 const ask = (title, detail, opts = {}) =>
   openModal({ title, detail, ...opts }).then((v) => v !== null);
@@ -1067,7 +1075,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v14";
+const CLIENT = "v15";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -1735,9 +1743,23 @@ async function openMsg(id) {
   const who = m.from_name
     ? `<b>${esc(m.from_name)}</b> <span class="addr">${esc(m.from_email || "no address")}</span>`
     : `<b>${esc(m.from_email || "Unknown sender")}</b>`;
+  // On your own mail — a draft, or anything in Sent — the sender is you, and
+  // everything the sender sheet offers is nonsense pointed at yourself: adding
+  // yourself to your contacts, or blocking your own address, which the server
+  // refuses outright. So it stays a label rather than becoming a dead end.
+  const mine = accounts.some(
+    (a) => String(a.email || "").toLowerCase() === String(m.from_email || "").toLowerCase()
+  );
+  // Cc and Bcc alongside To. Who else received a message changes what a reply
+  // should say, and reading that off the To line alone gets it wrong — a Cc
+  // you cannot see is one you will forget to keep.
+  const also =
+    (m.cc_line ? ` · cc ${esc(m.cc_line)}` : "") +
+    // Only ever present on your own copies: a draft, and what you have sent.
+    (m.bcc_line ? ` · bcc ${esc(m.bcc_line)}` : "");
   $("#rMeta").innerHTML =
-    `<button class="who" data-sender="1" title="About this sender">${who}</button>` +
-    ` · ${esc(new Date(m.date).toLocaleString())} · to ${esc(m.to_line || "me")}`;
+    (mine ? `<span class="who">${who}</span>` : `<button class="who" data-sender="1" title="About this sender">${who}</button>`) +
+    ` · ${esc(new Date(m.date).toLocaleString())} · to ${esc(m.to_line || "me")}${also}`;
   // Two different failures, said in our own voice rather than spliced into the
   // body where they would read as something the sender wrote. Neither is a
   // blank white pane, which is what this used to be and is indistinguishable
@@ -2214,14 +2236,30 @@ function replyTargets(msg, all) {
   return { to: keep(from), cc: keep(rest) };
 }
 
+/**
+ * The conversation so far, quoted under the reply.
+ *
+ * It used to be the 280-character snippet with an ellipsis on the end, which
+ * is not a quote of anything — the recipient sees a sentence cut off
+ * mid-word where the discussion should be. The whole defused body goes in
+ * instead, and because a received message already carries the exchange that
+ * preceded it, that is the discussion, in the order it happened.
+ *
+ * The body is the sanitized copy the reader is showing, so nothing that was
+ * defused on the way in is armed again on the way back out.
+ */
+function quotedHistory(m, body) {
+  const head =
+    `On ${esc(new Date(m.date).toLocaleString())}, ` +
+    `${esc(m.from_name || m.from_email || "someone")} wrote:`;
+  const inner = (body && body.html) || `<p>${esc(m.snippet || "")}</p>`;
+  return `<p><br></p><div class="quote-head">${head}</div><blockquote>${inner}</blockquote>`;
+}
+
 function startReply(all) {
   if (!current) return;
   const m = current.message;
   const { to, cc } = replyTargets(m, all);
-  // The original, quoted, so a reply carries its own context.
-  const quoted =
-    `<p><br></p><blockquote>On ${esc(new Date(m.date).toLocaleString())}, ` +
-    `${esc(m.from_name || m.from_email)} wrote:<br>${esc(m.snippet || "")}…</blockquote>`;
   openCompose({
     title: all ? "Reply all" : "Reply",
     reply: m.id,
@@ -2229,7 +2267,7 @@ function startReply(all) {
     to: to.join(", "),
     cc: cc.join(", "),
     subject: /^re\s*:/i.test(m.subject || "") ? m.subject : `Re: ${m.subject || ""}`,
-    html: quoted,
+    html: quotedHistory(m, current.body),
   });
 }
 
@@ -2449,6 +2487,7 @@ function resumeKept(d) {
   if (d.bcc) {
     $("#cBcc").value = d.bcc;
     $("#cBccWrap").hidden = false;
+    markToggle("#cBccToggle", "#cBccWrap", "Bcc");
   }
   draftWhy = d.why || "";
   // Not clean: this copy never reached Apple, and closing must try again.
@@ -2512,12 +2551,18 @@ async function dropDraft() {
   localStorage.removeItem(DRAFT_KEY);
   const pid = draftPid;
   draftPid = "";
+  draftRowId = "";
   // Closing runs keepDraft, and the composer still holds every word of what
   // was just thrown away. Without this it would be saved straight back.
   draftClean = true;
   draftSession++;
   setSaved("");
-  if (pid) await api(`/api/draft/${encodeURIComponent(pid)}`, { method: "DELETE" }).catch(() => null);
+  if (!pid) return true;
+  // Said out loud when it fails. A sent message whose draft is still sitting in
+  // Drafts reads as "it did not send", and answering that by sending again is
+  // how somebody ends up mailing the same thing twice.
+  const res = await api(`/api/draft/${encodeURIComponent(pid)}`, { method: "DELETE" }).catch(() => null);
+  return !!(res && res.ok);
 }
 
 /**
@@ -3210,6 +3255,15 @@ $("#cSend").addEventListener("click", async () => {
     html,
     reply_to: replyTo || undefined,
   };
+  // The last chance to notice the wrong recipient. Listed rather than counted,
+  // and Bcc named too — a blind copy is the one that costs most to get wrong,
+  // and it is the one nothing else on screen shows.
+  const lines = [`To: ${body.to || "(nobody)"}`];
+  if (body.cc) lines.push(`Cc: ${body.cc}`);
+  if (body.bcc) lines.push(`Bcc: ${body.bcc}`);
+  if (attached.length) lines.push(`${attached.length} attachment${attached.length > 1 ? "s" : ""}`);
+  if (!(await ask(body.subject ? `Send “${body.subject}”?` : "Send this message?", lines.join(NL), { ok: "Send" }))) return;
+
   const btn = $("#cSend");
   btn.disabled = true;
   btn.textContent = "Sending…";
@@ -3229,8 +3283,9 @@ $("#cSend").addEventListener("click", async () => {
   const d = await res.json().catch(() => ({}));
   // It has gone, so the draft of it has no reason to survive — in this browser
   // or in the Drafts folder on every device.
-  await dropDraft();
+  const dropped = await dropDraft();
   closeSheets();
+  if (!dropped) toast("Sent — but its draft could not be removed from Drafts");
   toast(
     d.queued
       ? "Queued — the agent sends it in under a minute"
@@ -3345,6 +3400,14 @@ async function resumeDraft(id) {
     pid: d.message.mid || "",
     rowId: id,
   });
+  // Kept on the row rather than read back out of the body, and put back here
+  // because openCompose clears Bcc on purpose: a reply must never inherit
+  // blind recipients, but reopening your own draft must never lose them.
+  if (d.message.bcc_line) {
+    $("#cBcc").value = d.message.bcc_line;
+    $("#cBccWrap").hidden = false;
+    markToggle("#cBccToggle", "#cBccWrap", "Bcc");
+  }
 
   // Said rather than hidden: the files are still on the draft at Apple, but
   // they are not in this composer, and sending from here would quietly leave

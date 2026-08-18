@@ -106,6 +106,18 @@ console.log("\n── copies cachées ──────────────
   ok(!force.includes("secret@y.fr"), "un bcc passé par erreur ne fuit pas");
   ok(!/^Bcc:/im.test(force), "un bcc passé par erreur n'écrit pas d'en-tête");
 
+  // Le brouillon est le seul message qui n'est envoye a personne : son en-tete
+  // Bcc est ce qui fait survivre le champ a la fermeture du compositeur. Il
+  // porte un autre nom pour qu'on ne puisse pas l'obtenir par megarde.
+  const brouillon = buildRfc822({
+    from: "d@x.fr", to: "a@y.fr", draftBcc: "cache@y.fr", subject: "Salut", text: "corps",
+  });
+  ok(/^Bcc: cache@y\.fr$/im.test(brouillon), "un brouillon garde ses destinataires caches");
+  const envoye = buildRfc822({
+    from: "d@x.fr", to: "a@y.fr", bcc: "cache@y.fr", subject: "Salut", text: "corps",
+  });
+  ok(!envoye.includes("cache@y.fr"), "le meme champ sous le nom bcc reste ignore");
+
   // Idem en multipart, où l'en-tête se glisserait dans une autre section.
   const rich = buildRfc822({ from: "d@x.fr", to: "a@y.fr", html: "<p>x</p>", bcc: "secret@z.fr" });
   ok(!/^Bcc:/im.test(rich), "pas de Bcc fantôme en multipart");
