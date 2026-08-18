@@ -92,7 +92,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * hand — three constants, but the alternative is a build step for a project
  * whose whole point is that it has none.
  */
-const CLIENT_SHELL = "v15";
+const CLIENT_SHELL = "v16";
 
 /**
  * Which pass of the defuser produced a stored body.

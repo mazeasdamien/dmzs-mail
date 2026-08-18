@@ -1075,7 +1075,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v15";
+const CLIENT = "v16";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -1720,18 +1720,48 @@ function renderBody() {
   $("#rImages").hidden = load || !(current.body.blocked > 0);
 }
 
+/**
+ * The list holds messages in two places once a conversation is open: the rows
+ * themselves, and the messages expanded underneath one of them. Anything that
+ * repaints a row after an action has to look in both, or reading a message
+ * inside a conversation leaves it looking unread until the next poll.
+ */
+const listRow = (id) => messages.find((m) => m.id === id) || threadRows.find((m) => m.id === id);
+
+/**
+ * Takes one message out of the unread count the list is showing.
+ *
+ * A grouped row carries the count for the whole conversation, so reading one
+ * message takes one off it rather than clearing the lot — three unread
+ * replies do not stop being unread because you opened the newest.
+ */
+function markReadLocally(id) {
+  const sub = threadRows.find((m) => m.id === id);
+  const row = messages.find((m) => m.id === id);
+  if (!sub && !row) return;
+  const key = (sub || row).thread_key || "";
+  const parent = row || (key ? messages.find((m) => m.thread_key === key) : null);
+  const wasUnread = Number((sub || row).unread || 0) > 0;
+
+  if (sub) sub.unread = 0;
+  if (parent && wasUnread) {
+    parent.unread =
+      Number(parent.n || 1) > 1 ? Math.max(0, Number(parent.unread || 0) - 1) : 0;
+  }
+  renderList();
+}
+
 async function openMsg(id) {
   // The composer occupies the reading pane, so opening a message replaces it.
   // What was being written is kept rather than queried — closeSheets does it —
   // because reading your mail is not a decision about the reply you started.
   closeSheets();
-  const row = messages.find((m) => m.id === id);
   try {
     const res = await api(`/api/messages/${id}`);
     if (!res.ok) { toast("Could not open this message"); return; }
     current = await res.json();
   } catch { return; }
-  if (row) { row.unread = 0; renderList(); }
+  markReadLocally(id);
 
   const m = current.message;
   $("#rSubj").textContent = m.subject || "(no subject)";
@@ -1991,8 +2021,10 @@ $("#rStar").addEventListener("click", async () => {
   const on = !Number(current.message.starred);
   current.message.starred = on ? 1 : 0;
   $("#rStar").classList.toggle("on", on);
-  const row = messages.find((m) => m.id === current.message.id);
-  if (row) row.starred = on ? 1 : 0;
+  for (const r of [messages, threadRows]) {
+    const hit = r.find((m) => m.id === current.message.id);
+    if (hit) hit.starred = on ? 1 : 0;
+  }
   renderList();
   await api(`/api/messages/${current.message.id}/flag`, {
     method: "POST",
@@ -2005,8 +2037,12 @@ $("#rUnread").addEventListener("click", async () => {
   if (!current) return;
   const id = current.message.id;
   closeReader();
-  const row = messages.find((m) => m.id === id);
-  if (row) row.unread = 1;
+  const sub = threadRows.find((m) => m.id === id);
+  if (sub) sub.unread = 1;
+  const key = (sub || {}).thread_key || "";
+  const parent = messages.find((m) => m.id === id || (key && m.thread_key === key));
+  // Putting it back is the same sum, the other way round.
+  if (parent) parent.unread = Number(parent.n || 1) > 1 ? Number(parent.unread || 0) + 1 : 1;
   renderList();
   await api(`/api/messages/${id}/flag`, {
     method: "POST",
@@ -3327,7 +3363,7 @@ $("#list").addEventListener("click", (e) => {
   if (!r) return;
   // A draft is not something to read. Opening one in the reader showed you
   // your own unfinished sentence behind glass, with no way back to writing it.
-  const row = messages.find((m) => m.id === r.dataset.id);
+  const row = listRow(r.dataset.id);
   if (row && row.folder === "drafts") resumeDraft(r.dataset.id);
   else openMsg(r.dataset.id);
 });
