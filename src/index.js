@@ -92,7 +92,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * hand — three constants, but the alternative is a build step for a project
  * whose whole point is that it has none.
  */
-const CLIENT_SHELL = "v16";
+const CLIENT_SHELL = "v17";
 
 /**
  * Which pass of the defuser produced a stored body.
@@ -732,6 +732,63 @@ async function icloudAct(env, account, mid, hintFolder, fn) {
   } finally {
     await im.logout();
   }
+}
+
+/**
+ * One operation, every message of a conversation, one connection.
+ *
+ * Doing this a message at a time is what the client used to do by hand: each
+ * one opened its own IMAP session, logged in, listed the mailboxes and hunted
+ * for a Message-ID. On a five-message thread that is five logins to accomplish
+ * one obvious thing, and you watch it happen row by row.
+ *
+ * Grouped by the folder each message is filed under, so a mailbox is selected
+ * once rather than once per message.
+ */
+async function threadAct(env, account, rows, fn) {
+  const pass = await icloudPassword(env, account);
+  if (!pass) return 0;
+
+  const byFolder = new Map();
+  for (const r of rows) {
+    const k = r.folder || "inbox";
+    if (!byFolder.has(k)) byFolder.set(k, []);
+    byFolder.get(k).push(r);
+  }
+
+  let done = 0;
+  const im = await imapOpen({ user: account.email, pass });
+  try {
+    const boxes = await imapList(im);
+    for (const [folder, list] of byFolder) {
+      const mb = resolveMailbox(boxes, folder);
+      if (!mb) continue;
+      await imapSelect(im, mb.name);
+      for (const r of list) {
+        const needle = String(r.mid || r.pid).replace(/"/g, "");
+        if (!needle) continue;
+        const uids = await imapSearch(im, `HEADER "Message-ID" "${needle}"`).catch(() => []);
+        for (const uid of uids) {
+          await fn(im, boxes, uid);
+          done++;
+        }
+      }
+    }
+  } finally {
+    await im.logout();
+  }
+  return done;
+}
+
+/** The messages of one conversation, as they are filed right now. */
+async function threadRowsIn(env, key, folder) {
+  const { results } = await env.DB.prepare(
+    `SELECT id, account_id, mid, pid, folder FROM messages
+      WHERE thread_key=? AND thread_key<>'' AND folder=? LIMIT 200`
+  )
+    .bind(key, folder)
+    .all();
+  return results ?? [];
 }
 
 /* ────────────────────────────────────────────────────────────────
@@ -1702,6 +1759,61 @@ async function handleApi(request, env, path, ctx) {
       env.DB.prepare("DELETE FROM contacts_added WHERE email=?").bind(email),
     ]);
     return json({ ok: true });
+  }
+
+  // POST /api/thread { key, from, folder } — files a whole conversation, and
+  // { key, from, purge:1 } destroys it.
+  //
+  // Scoped to the folder you are looking at rather than to every copy
+  // everywhere: "delete this conversation" means the one in front of you, and
+  // taking the replies out of Sent along with it is not what anybody meant.
+  // That scoping is also what makes Undo exact — the same call, the two
+  // folders swapped.
+  if (path === "/api/thread" && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const key = String(b.key || "").slice(0, 300);
+    const from = String(b.from || "").slice(0, 100);
+    const target = String(b.folder || "").slice(0, 100);
+    if (!key || !from) return json({ error: "Which conversation, and from where?" }, 400);
+    if (!b.purge && !target) return json({ error: "No destination folder" }, 400);
+    if (!b.purge && target === from) return json({ ok: true, n: 0 });
+
+    const rows = await threadRowsIn(env, key, from);
+    if (!rows.length) return json({ ok: true, n: 0 });
+
+    const acct = await accountById(env, rows[0].account_id);
+    if (!acct) return json({ error: "Unknown account" }, 404);
+
+    let n = 0;
+    try {
+      n = await threadAct(env, acct, rows, async (im, boxes, uid) => {
+        if (b.purge) return imapPurge(im, uid);
+        const dest = resolveMailbox(boxes, target);
+        if (!dest) throw new Error(`No mailbox matching "${target}". Server has: ${mailboxList(boxes)}`);
+        await imapMove(im, uid, dest.name);
+      });
+    } catch (e) {
+      if (e.reauth) {
+        await flagAccount(env, acct, e);
+        return json({ error: "This account needs reconnecting" }, 409);
+      }
+      return json({ error: String(e.message || e) }, 502);
+    }
+
+    const ids = rows.map((r) => r.id);
+    const marks = ids.map(() => "?").join(",");
+    if (b.purge) {
+      for (const id of ids) await env.MAIL.delete(bodyKey(id)).catch(() => {});
+      await env.DB.batch([
+        env.DB.prepare(`DELETE FROM messages WHERE id IN (${marks})`).bind(...ids),
+        env.DB.prepare(`DELETE FROM search WHERE id IN (${marks})`).bind(...ids),
+      ]);
+    } else {
+      await env.DB.prepare(`UPDATE messages SET folder=?, unread=0 WHERE id IN (${marks})`)
+        .bind(target, ...ids)
+        .run();
+    }
+    return json({ ok: true, n: n || ids.length, from });
   }
 
   // GET /api/blocked — the rules, and what each one has destroyed.

@@ -1075,7 +1075,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v16";
+const CLIENT = "v17";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -1751,7 +1751,16 @@ function markReadLocally(id) {
   renderList();
 }
 
-async function openMsg(id) {
+/**
+ * Set when the reader was opened from a conversation row rather than from one
+ * message inside it. Everything filed from the reader then applies to the
+ * whole exchange, which is what clicking delete on a conversation means — and
+ * what it used to do one message at a time, leaving the next one behind to be
+ * deleted again.
+ */
+let currentThread = null;
+
+async function openMsg(id, threadRow = null) {
   // The composer occupies the reading pane, so opening a message replaces it.
   // What was being written is kept rather than queried — closeSheets does it —
   // because reading your mail is not a decision about the reply you started.
@@ -1761,6 +1770,10 @@ async function openMsg(id) {
     if (!res.ok) { toast("Could not open this message"); return; }
     current = await res.json();
   } catch { return; }
+  currentThread =
+    threadRow && threadRow.thread_key && Number(threadRow.n || 1) > 1
+      ? { key: threadRow.thread_key, n: Number(threadRow.n) }
+      : null;
   markReadLocally(id);
 
   const m = current.message;
@@ -1839,6 +1852,7 @@ async function openMsg(id) {
 function closeReader() {
   $("#reader").classList.remove("up");
   current = null;
+  currentThread = null;
   $("#rSubj").textContent = "—";
   $("#rMeta").textContent = "—";
   $("#rframe").srcdoc = "";
@@ -1957,10 +1971,35 @@ async function fileMessage(id, target) {
  * The row leaves the list immediately and the undo puts it back where it was —
  * the server reports the previous folder precisely so this can exist.
  */
+/** Files a whole conversation, and hands back an exact way to undo it. */
+async function fileThread(key, from, target, said) {
+  const call = (a, b) =>
+    api("/api/thread", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key, from: a, folder: b }),
+    })
+      .then((r) => (r.ok ? r.json() : r.json().then((d) => Promise.reject(d.error))))
+      .catch((e) => ({ error: typeof e === "string" ? e : "Could not move this conversation" }));
+
+  const d = await call(from, target);
+  if (d.error) {
+    toast(d.error);
+    return loadList();
+  }
+  // Undo is the same call with the two folders the other way round.
+  toast(d.n > 1 ? `${said} — ${d.n} messages` : said, async () => {
+    await call(target, from);
+    await Promise.all([loadList(), refreshCounts()]);
+  });
+  refreshCounts();
+}
+
 async function fileCurrent(target, said) {
   if (!current) return;
   const id = current.message.id;
   const wasIn = current.message.folder || "inbox";
+  const thread = currentThread;
 
   // Advance to the next message rather than dumping you back on the list —
   // triaging is a sequence, and closing the reader after every action makes it
@@ -1968,12 +2007,15 @@ async function fileCurrent(target, said) {
   const at = messages.findIndex((m) => m.id === id);
   messages = messages.filter((m) => m.id !== id);
   const next = messages[at] || messages[at - 1] || null;
+  if (thread && openThread === thread.key) { openThread = ""; threadRows = []; }
   renderList();
 
   // On a phone the reader is the whole screen, so staying in it would hide the
   // fact that anything happened. Two panes can show both at once.
-  if (next && matchMedia("(min-width:900px)").matches) openMsg(next.id);
+  if (next && matchMedia("(min-width:900px)").matches) openMsg(next.id, next);
   else closeReader();
+
+  if (thread) return fileThread(thread.key, wasIn, target, said);
 
   const d = await fileMessage(id, target);
   if (!d) return;
@@ -1995,15 +2037,33 @@ $("#rDelete").addEventListener("click", async () => {
   // to Trash again did nothing, which read as the button being broken.
   if (here !== "trash" && here !== "spam") return fileCurrent("trash", "Deleted");
 
-  if (!(await ask("Delete this message permanently?",
-      "It is removed from iCloud itself and cannot be recovered.", { ok: "Delete", danger: true }))) return;
+  const thread = currentThread;
+  const many = thread ? thread.n : 1;
+  if (!(await ask(
+      many > 1 ? "Delete this conversation permanently?" : "Delete this message permanently?",
+      `${many > 1 ? `All ${many} messages are` : "It is"} removed from iCloud itself and cannot be recovered.`,
+      { ok: "Delete", danger: true }))) return;
   const id = current.message.id;
   const at = messages.findIndex((m) => m.id === id);
   messages = messages.filter((m) => m.id !== id);
   const next = messages[at] || messages[at - 1] || null;
+  if (thread && openThread === thread.key) { openThread = ""; threadRows = []; }
   renderList();
-  if (next && matchMedia("(min-width:900px)").matches) openMsg(next.id);
+  if (next && matchMedia("(min-width:900px)").matches) openMsg(next.id, next);
   else closeReader();
+
+  if (thread) {
+    const r = await api("/api/thread", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: thread.key, from: here, purge: 1 }),
+    }).catch(() => null);
+    const dd = r ? await r.json().catch(() => ({})) : {};
+    if (!r || !r.ok) toast(dd.error || "Could not delete this conversation");
+    else toast(dd.n > 1 ? `Deleted — ${dd.n} messages` : "Deleted");
+    await Promise.all([loadList(), refreshCounts()]);
+    return;
+  }
 
   const res = await api(`/api/messages/${id}/purge`, { method: "POST" }).catch(() => null);
   const d = res ? await res.json().catch(() => ({})) : {};
@@ -3365,7 +3425,9 @@ $("#list").addEventListener("click", (e) => {
   // your own unfinished sentence behind glass, with no way back to writing it.
   const row = listRow(r.dataset.id);
   if (row && row.folder === "drafts") resumeDraft(r.dataset.id);
-  else openMsg(r.dataset.id);
+  // A row inside an expansion is one message; the row that summarises the
+  // conversation stands for all of it.
+  else openMsg(r.dataset.id, r.classList.contains("sub") ? null : row);
 });
 
 /**
