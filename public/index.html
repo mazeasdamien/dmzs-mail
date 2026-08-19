@@ -476,6 +476,11 @@ html.busy #bar{opacity:1}
   text-decoration:none;max-width:100%;
   transition:background .12s,border-color .12s,transform .08s}
 .att:active{transform:scale(.98)}
+/* A download in flight. The wait is an IMAP round trip, not a slow disk, so
+   without this the chip looks exactly as it did before the click. */
+.att.busy{opacity:.6}
+.att.busy .ic{animation:pulse 1s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.25}}
 .att .ic{color:var(--t3);flex:none}
 .att .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:210px;font-weight:500}
 .att .sz{color:var(--t3);font-size:11.5px;flex:none;font-variant-numeric:tabular-nums}
@@ -1083,7 +1088,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v18";
+const CLIENT = "v19";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -1838,7 +1843,7 @@ async function openMsg(id, threadRow = null) {
   const all =
     atts.length > 1
       ? `<a class="att primary" href="/api/messages/${encodeURIComponent(m.id)}/attachments.zip" download>
-           ${ICON_ZIP}<span class="nm">Download all (${atts.length})</span></a>`
+           ${ICON_ZIP}<span class="nm">Download all (${atts.length})</span><span class="sz"></span></a>`
       : "";
   $("#rAtts").innerHTML = all + atts
     .map(
@@ -2409,6 +2414,37 @@ $("#rUnsub").addEventListener("click", async () => {
     return;
   }
   toast(d.error || "No unsubscribe option in this message");
+});
+
+/* ── downloads ──
+   The link stays a plain <a download>: same-origin, cookie-authenticated, and
+   the browser streams the file straight to disk without it passing through JS.
+   What it cannot do is say anything while the Worker is still logging into
+   IMAP and hunting for the part — one to three seconds of a chip that looks
+   completely unclicked. Clicking again is the obvious thing to do, and every
+   click is a separate, real download, which is how one attachment arrives
+   three times.
+
+   So the first click is acknowledged and the ones behind it are dropped. The
+   timeout is a guard, not a claim that the file has landed: there is no event
+   for a finished download, and inventing one by pulling the bytes through JS
+   would cost the streaming this is built on. */
+$("#rAtts").addEventListener("click", (e) => {
+  const a = e.target.closest("a.att");
+  if (!a) return;
+  if (a.classList.contains("busy")) {
+    e.preventDefault();
+    toast("Already fetching that one");
+    return;
+  }
+  a.classList.add("busy");
+  const size = a.querySelector(".sz");
+  const was = size ? size.textContent : "";
+  if (size) size.textContent = "fetching…";
+  setTimeout(() => {
+    a.classList.remove("busy");
+    if (size) size.textContent = was;
+  }, 8000);
 });
 
 /* ── sheets ── */
