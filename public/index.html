@@ -146,11 +146,19 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
 .mi-info{flex:1;min-width:0}
 .l1{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
 /* How many messages are in the exchange, and the control that opens them.
-   Sits between the sender and the date, where the eye already travels, and
-   pushes nothing off the row because it is two characters wide. */
-.count{flex:none;margin-left:auto;min-width:19px;height:17px;padding:0 5px;border-radius:9px;
-       background:var(--elev2);color:var(--t2);font-size:11px;font-weight:600;line-height:17px}
-.count.on{background:var(--acc);color:var(--on-acc)}
+   Sits between the sender and the date, where the eye already travels.
+
+   Deliberately unlike .n, which is a filled accent pill and means unread. This
+   one used to borrow exactly that shape and colour, so "3" on a conversation
+   everybody had already read was taken for three unread messages — by the
+   person who asked for the feature, on the first day. An outline and a
+   chevron say "there is more folded up here", which is what it actually is. */
+.count{flex:none;margin-left:auto;display:inline-flex;align-items:center;gap:3px;
+       height:18px;padding:0 5px;border-radius:5px;border:1px solid var(--line);
+       background:0;color:var(--t3);font-size:11px;font-weight:600;line-height:1}
+.count svg{transition:transform .15s}
+.count.on{background:var(--elev2);color:var(--t2)}
+.count.on svg{transform:rotate(180deg)}
 /* Delete, on the row, for the one folder whose rows never reach the reader
    and so never get its action bar. */
 .rowdel{flex:none;margin-left:auto;width:24px;height:20px;border-radius:5px;color:var(--t3)}
@@ -1075,7 +1083,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v17";
+const CLIENT = "v18";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -1499,7 +1507,8 @@ function rowHtml(m, sub = false) {
       ${
         n > 1
           ? `<button class="count${openThread === m.thread_key ? " on" : ""}" data-thread="${esc(m.thread_key)}"
-               title="${n} messages in this conversation">${n}</button>`
+               aria-label="Show all ${n} messages in this conversation"
+               title="${n} messages in this conversation — not unread, that is the bold">${n}<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></button>`
           : ""
       }
       ${
