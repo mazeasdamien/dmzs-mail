@@ -335,7 +335,7 @@ async function renameCursor(env, account, from, to) {
   const state = row?.sync_state ? JSON.parse(row.sync_state) : {};
   const folders = state.folders || {};
   if (!(from in folders)) return;
-  if (to) folders[to] = folders[from];
+  if (to) folders[to] = { ...folders[from], app: to };
   delete folders[from];
   state.folders = folders;
   await env.DB.prepare("UPDATE accounts SET sync_state=? WHERE id=?")
@@ -445,9 +445,70 @@ async function reconcileFolders(env, account, boxes, state) {
       .bind(account.id, name)
       .run();
     delete gone[name];
-    if (state.folders) delete state.folders[name];
   }
   state.gone = gone;
+
+  // The loop above walks folders that have stored mail, so an empty one is
+  // invisible to it. Those live only in the cursor map, keyed by IMAP path,
+  // and are pruned against the LIST directly — otherwise a folder you made,
+  // never filed into, and then deleted at Apple would sit in the switcher
+  // forever, because nothing that could remove it ever looked at it.
+  const paths = new Set(boxes.map((mb) => mb.name));
+  for (const key of Object.keys(state.folders || {})) {
+    if (!paths.has(key)) delete state.folders[key];
+  }
+}
+
+/**
+ * Every mailbox the last sync saw, by the name the app files mail under.
+ *
+ * Cursors are keyed by IMAP path and carry the app name beside them. Entries
+ * written before they did fall back to reading the path the way a LIST with no
+ * flags would — right for exactly the mailboxes that matter here, the ones you
+ * named yourself, whose path and name are the same thing.
+ */
+function mailboxNames(accountRows) {
+  const names = new Set();
+  for (const row of accountRows) {
+    let state = null;
+    try {
+      state = row.sync_state ? JSON.parse(row.sync_state) : null;
+    } catch {
+      continue; // unreadable cursor map; the counted folders still stand
+    }
+    for (const [path, cur] of Object.entries(state?.folders || {})) {
+      names.add(cur?.app || folderNameFor({ flags: "", name: path }));
+    }
+  }
+  return names;
+}
+
+/**
+ * Puts a mailbox in the cursor map so an empty one is still somewhere to file.
+ *
+ * Called when you make a folder rather than left to the next sync: until it is
+ * listed the folder is in no move sheet, and a folder you cannot move mail
+ * into is one that can never acquire the mail that would list it.
+ */
+async function noteMailbox(env, account, box) {
+  const row = await env.DB.prepare("SELECT sync_state FROM accounts WHERE id=?")
+    .bind(account.id)
+    .first();
+  let state = {};
+  try {
+    state = row?.sync_state ? JSON.parse(row.sync_state) : {};
+  } catch {
+    state = {};
+  }
+  const folders = state.folders || {};
+  if (folders[box.name]) return;
+  // No cursor with it: the next pass reads the mailbox from the start, which
+  // for one this new is no work at all.
+  folders[box.name] = { app: folderNameFor(box) };
+  state.folders = folders;
+  await env.DB.prepare("UPDATE accounts SET sync_state=? WHERE id=?")
+    .bind(JSON.stringify(state), account.id)
+    .run();
 }
 
 /** Indexes up to `limit` already-stored messages that the index has not seen. */
@@ -670,6 +731,9 @@ async function syncIcloud(env, account) {
       }
 
       folders[mb.name] = {
+        // The name the app files mail under, kept beside the cursor so the
+        // folder list can name a mailbox that has no mail in it to name it.
+        app,
         uidvalidity: sel.uidvalidity || prev.uidvalidity || 0,
         last_uid: Math.max(last, ...targets, 0),
         first_uid: targets.length ? Math.min(first || Infinity, ...targets) : first,
@@ -1506,12 +1570,23 @@ async function handleApi(request, env, path, ctx) {
 
     const acct = await icloudAccountWithCreds(env);
     if (!acct) return json({ error: "No connected account" }, 400);
+    let box;
     try {
-      await withImap(env, acct, (im) => imapCreate(im, name));
+      box = await withImap(env, acct, async (im) => {
+        await imapCreate(im, name);
+        // CREATE reports that the command was accepted, not where the mailbox
+        // ended up: the server picks the path, and on a hierarchy hanging off
+        // INBOX that is not the name asked for. The LIST is also the only
+        // proof the thing is selectable rather than merely acknowledged.
+        const made = resolveMailbox(await imapList(im), name);
+        if (!made) throw new Error(`The server accepted "${name}" but does not list it`);
+        return made;
+      });
     } catch (e) {
       return json({ error: String(e.message || e) }, 502);
     }
-    return json({ ok: true, name });
+    await noteMailbox(env, acct, box);
+    return json({ ok: true, name: folderNameFor(box) });
   }
 
   if (path === "/api/folders/rename" && request.method === "POST") {
@@ -1675,15 +1750,32 @@ async function handleApi(request, env, path, ctx) {
     }
   }
 
-  // GET /api/folders — every place mail actually lives.
-  // Derived from the messages themselves rather than a folders table, so a
-  // mailbox you create at Apple simply appears here on the next sync.
+  // GET /api/folders — every place mail can live, not only the places some
+  // already does.
+  //
+  // Counts come from the messages themselves rather than a folders table. A
+  // mailbox holding nothing has nothing to count, though, and deriving the
+  // whole list from counts meant a folder you had just made was in no list, so
+  // in no move sheet, so impossible to file into — and filing into it was the
+  // only way it would ever have appeared. The empty ones come from the sync
+  // cursors instead, which name every mailbox the server has.
   if (path === "/api/folders" && request.method === "GET") {
-    const { results } = await env.DB.prepare(
-      `SELECT folder, COUNT(*) AS n, SUM(unread) AS unread
-         FROM messages GROUP BY folder ORDER BY folder`
-    ).all();
-    return json({ folders: results ?? [] });
+    const [counted, accts] = await env.DB.batch([
+      env.DB.prepare(
+        `SELECT folder, COUNT(*) AS n, SUM(unread) AS unread
+           FROM messages GROUP BY folder`
+      ),
+      env.DB.prepare("SELECT sync_state FROM accounts"),
+    ]);
+    const out = counted.results ?? [];
+    const seen = new Set(out.map((r) => r.folder));
+    for (const name of mailboxNames(accts.results ?? [])) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      out.push({ folder: name, n: 0, unread: 0 });
+    }
+    out.sort((a, b) => String(a.folder).localeCompare(String(b.folder)));
+    return json({ folders: out });
   }
 
   // GET /api/contacts — who you actually write to, most-written-to first.
