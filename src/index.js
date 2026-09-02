@@ -92,7 +92,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * hand — three constants, but the alternative is a build step for a project
  * whose whole point is that it has none.
  */
-const CLIENT_SHELL = "v19";
+const CLIENT_SHELL = "v20";
 
 /**
  * Which pass of the defuser produced a stored body.
@@ -1388,6 +1388,34 @@ async function accountById(env, id) {
   return env.DB.prepare("SELECT * FROM accounts WHERE id=?").bind(id).first();
 }
 
+/**
+ * The key the writing assistant runs on: the one typed into the app first,
+ * the deploy-time secret second.
+ *
+ * GEMINI_API_KEY as a Worker secret means rotating it — or moving to another
+ * Google project, or revoking one that leaked — needs a terminal, a wrangler
+ * login and a machine with the repo on it. That is a lot of ceremony for the
+ * one credential here that is expected to change. Typed into Settings it is
+ * sealed with ENC_KEY exactly like the iCloud password, and the secret stays
+ * behind it so an install that already had one keeps working untouched.
+ */
+async function aiKey(env) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key='ai_key'").first();
+  const box = row?.value ? await open(env.ENC_KEY, row.value) : null;
+  return box?.key || env.GEMINI_API_KEY || "";
+}
+
+/** Google's own verdict on a key: null when it works, the reason when it does not. */
+async function aiKeyRefused(key) {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}&pageSize=1`
+  ).catch(() => null);
+  if (!res) return "could not reach Google";
+  if (res.ok) return null;
+  const d = await res.json().catch(() => ({}));
+  return d?.error?.message || `HTTP ${res.status}`;
+}
+
 async function handleApi(request, env, path, ctx) {
   // GET /api/accounts — who is connected, how fresh, how much unread.
   if (path === "/api/accounts" && request.method === "GET") {
@@ -2386,14 +2414,57 @@ async function handleApi(request, env, path, ctx) {
     return json({ ok: true });
   }
 
+  // GET /api/ai-key — whether the assistant has a key and where it came from.
+  // Never the key itself: it goes in and is not readable back out, like the
+  // iCloud password. The last four characters are enough to tell one key from
+  // another when you are wondering which project you pasted.
+  if (path === "/api/ai-key" && request.method === "GET") {
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE key='ai_key'").first();
+    const box = row?.value ? await open(env.ENC_KEY, row.value) : null;
+    const stored = box?.key || "";
+    return json({
+      stored: !!stored,
+      secret: !!env.GEMINI_API_KEY,
+      tail: (stored || env.GEMINI_API_KEY || "").slice(-4),
+      model: env.GEMINI_MODEL || "gemini-2.5-flash",
+    });
+  }
+
+  // POST /api/ai-key { key } — replaces it. An empty key removes the stored
+  // one, which falls back to the secret where there is one and turns Fix and
+  // Improve off where there is not.
+  if (path === "/api/ai-key" && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const key = String(b.key || "").trim();
+    if (!key) {
+      await env.DB.prepare("DELETE FROM settings WHERE key='ai_key'").run();
+      return json({ ok: true, stored: false, secret: !!env.GEMINI_API_KEY });
+    }
+    if (key.length > 200 || /\s/.test(key)) {
+      return json({ error: "That does not look like an API key" }, 400);
+    }
+    // Proved against Google before it is stored, for the same reason the
+    // iCloud password is proved against Apple: a bad one otherwise surfaces
+    // an hour later, in the composer, with a draft on screen.
+    const refused = await aiKeyRefused(key);
+    if (refused) return json({ error: `Google refused this key: ${refused}`.slice(0, 240) }, 400);
+    await env.DB.prepare(
+      "INSERT INTO settings (key, value) VALUES ('ai_key', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+    )
+      .bind(await seal(env.ENC_KEY, { key }))
+      .run();
+    return json({ ok: true, stored: true, tail: key.slice(-4) });
+  }
+
   // GET /api/ai-check — asks Google what it actually offers, and whether the
   // configured model is among it. A wrong model id otherwise surfaces as a 404
   // at the moment you press Fix, which reads like the feature is broken.
   if (path === "/api/ai-check" && request.method === "GET") {
-    if (!env.GEMINI_API_KEY) return json({ error: "No GEMINI_API_KEY set" }, 400);
+    const key = await aiKey(env);
+    if (!key) return json({ error: "No AI key set" }, 400);
     const want = env.GEMINI_MODEL || "gemini-2.5-flash";
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${env.GEMINI_API_KEY}&pageSize=200`
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}&pageSize=200`
     );
     const d = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -2420,8 +2491,9 @@ async function handleApi(request, env, path, ctx) {
   // anyone else. Only ever on an explicit tap, never automatically, and the
   // result comes back for review rather than being applied here.
   if (path === "/api/assist" && request.method === "POST") {
-    if (!env.GEMINI_API_KEY) {
-      return json({ error: "No AI key set — run: npx wrangler secret put GEMINI_API_KEY" }, 400);
+    const key = await aiKey(env);
+    if (!key) {
+      return json({ error: "No AI key set — add one under the account button" }, 400);
     }
     const b = await request.json().catch(() => ({}));
     const text = String(b.text || "").slice(0, 12_000);
@@ -2438,7 +2510,7 @@ async function handleApi(request, env, path, ctx) {
 
     const model = env.GEMINI_MODEL || "gemini-2.5-flash";
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },

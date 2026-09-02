@@ -771,6 +771,13 @@ html.busy #bar{opacity:1}
     <button class="pill" data-images="ask">Ask first</button>
   </div>
   <div class="sh-s" style="margin:2px 0 0;font-size:12px">A remote image is fetched from the sender's server as the message opens, which tells them you read it and when. Asking first holds them back behind the Images button. Either way, nothing is re-downloaded when you switch — the blocked form is what has always been stored.</div>
+  <div class="sh-s" style="margin:14px 0 6px">Writing assistant</div>
+  <div class="sh-s" id="aiKeyState" style="margin:0 0 8px;font-size:12px">&mdash;</div>
+  <div class="field"><input id="aiKeyInput" type="password" placeholder="Gemini API key" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+  <div class="formerr" id="aiKeyErr"></div>
+  <button class="cta" id="aiKeySave" style="background:var(--elev2);color:var(--t1)">Save key</button>
+  <button class="ghost" id="aiKeyClear" hidden style="width:100%;justify-content:center;min-height:34px">Remove the stored key</button>
+  <div class="sh-s" style="margin:8px 0 0;font-size:12px">Fix and Improve in the composer send that draft to Google's Gemini API, and this is the key they use. It is checked with Google before it is kept, sealed in the database like the iCloud password, and never shown again &mdash; only its last four characters.</div>
   <button class="cta" id="notifyBtn" style="background:var(--elev2);color:var(--t1)">Enable notifications</button>
   <button class="ghost" id="notifyTest" style="width:100%;justify-content:center;min-height:34px">Send a test notification</button>
 </div>
@@ -1088,7 +1095,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v19";
+const CLIENT = "v20";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2786,7 +2793,12 @@ $("#scrim").addEventListener("click", () =>
 );
 
 /* accounts sheet */
-$("#acctBtn").addEventListener("click", () => { renderAccounts(); refreshNotifyButton(); openSheet("#acctSheet"); });
+$("#acctBtn").addEventListener("click", () => {
+  renderAccounts();
+  refreshNotifyButton();
+  refreshAiKey();
+  openSheet("#acctSheet");
+});
 $("#addIcloud").addEventListener("click", () => {
   closeSheets();
   setTimeout(() => openSheet("#icloudSheet"), 60);
@@ -3114,6 +3126,78 @@ function applyImages(choice) {
 $("#imgPick").addEventListener("click", (e) => {
   const b = e.target.closest("[data-images]");
   if (b) applyImages(b.dataset.images);
+});
+
+/* ── the writing assistant's key ── */
+
+/**
+ * Fix and Improve run on a Gemini key, and this is where it is changed.
+ *
+ * It used to be a Worker secret and nothing else, which made the one
+ * credential here most likely to need rotating the only one that could not be
+ * touched without a terminal. Typed here it is proved against Google and
+ * sealed into the database; the secret stays behind it, so an install that
+ * never opens this field behaves exactly as it did.
+ *
+ * Write-only, like the app password: what comes back is whether a key is set
+ * and its last four characters, never the key.
+ */
+async function refreshAiKey() {
+  const state = $("#aiKeyState");
+  const input = $("#aiKeyInput");
+  $("#aiKeyErr").classList.remove("show");
+  // Nothing typed and abandoned earlier is left lying in the field.
+  input.value = "";
+  $("#aiKeyClear").hidden = true;
+  state.textContent = "Checking…";
+  const res = await api("/api/ai-key").catch(() => null);
+  const d = res && res.ok ? await res.json().catch(() => null) : null;
+  if (!d) { state.textContent = "Could not read the current setting."; return; }
+  $("#aiKeyClear").hidden = !d.stored;
+  input.placeholder = d.stored || d.secret ? `Ends ${d.tail} — type a new key to replace it` : "Paste a Gemini API key";
+  state.textContent = d.stored
+    ? `Set here, ending ${d.tail}. Model: ${d.model}.`
+    : d.secret
+      ? `Using the deployed key, ending ${d.tail}. Anything saved here replaces it.`
+      : "No key set — Fix and Improve will say so when you press them.";
+}
+
+async function saveAiKey(key) {
+  const err = $("#aiKeyErr");
+  const btn = $("#aiKeySave");
+  err.classList.remove("show");
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = key ? "Checking with Google…" : "Removing…";
+  const res = await api("/api/ai-key", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key }),
+  }).catch(() => null);
+  btn.disabled = false;
+  btn.textContent = was;
+  const d = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) {
+    err.textContent = d.error || "Could not save that key";
+    err.classList.add("show");
+    return;
+  }
+  await refreshAiKey();
+  toast(key ? "AI key saved" : d.secret ? "Removed — back to the deployed key" : "AI key removed");
+}
+$("#aiKeySave").addEventListener("click", () => {
+  const key = $("#aiKeyInput").value.trim();
+  if (!key) {
+    const err = $("#aiKeyErr");
+    err.textContent = "Paste a key first — or use Remove, below, to clear the one stored.";
+    err.classList.add("show");
+    return;
+  }
+  saveAiKey(key);
+});
+$("#aiKeyClear").addEventListener("click", () => saveAiKey(""));
+$("#aiKeyInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); $("#aiKeySave").click(); }
 });
 
 /* ── notifications ── */

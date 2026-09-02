@@ -109,6 +109,8 @@ npm run deploy      # Worker + PWA + cron, served at mail.agentxr.app
 npm run secrets     # generates AUTH_SECRET/BOOTSTRAP_KEY/WORKER_TOKEN/ENC_KEY,
                     # prints your activation link and the agent token — SAVE BOTH —
                     # then offers to store a Gemini key for the writing assistant
+                    # (optional, and changeable later in the app: account
+                    #  button → Writing assistant)
 ```
 
 **Deploy before secrets, not after.** `wrangler secret put` writes to a Worker

@@ -66,6 +66,10 @@
   //   AUTH_SECRET, BOOTSTRAP_KEY, WORKER_TOKEN, ENC_KEY   — generated
   //   GEMINI_API_KEY                                      — optional, for Fix/Improve
   //
+  // The Gemini key is only a starting point: one typed into the app (account
+  // button → Writing assistant) is sealed into D1 and used ahead of this, so
+  // rotating it never needs a terminal.
+  //
   // The iCloud app-specific password is not here: it is entered in the app and
   // sealed into D1 with ENC_KEY, so it is per-account rather than per-Worker.
 }

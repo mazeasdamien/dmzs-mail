@@ -45,8 +45,10 @@ Keep these two somewhere safe NOW (they are needed on other machines):
 
 `);
 
-// Optional. The compose assistant (Fix / Improve) is the only thing that
-// wants a key here, and every other part of the app works without one.
+// Optional twice over: the compose assistant (Fix / Improve) is the only thing
+// that wants a key at all, every other part of the app works without one, and
+// a key can be typed into the app later instead — account button → Writing
+// assistant, which stores it in D1 and uses it ahead of this secret.
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 const gemini = (
   await rl.question("Gemini API key for the writing assistant (empty to skip): ")
@@ -56,7 +58,7 @@ if (gemini) {
   put("GEMINI_API_KEY", gemini);
   console.log("  stored GEMINI_API_KEY");
 } else {
-  console.log("  skipped: Fix and Improve will report that no key is set");
+  console.log("  skipped: add one later in the app, account button → Writing assistant");
 }
 
 console.log(`
