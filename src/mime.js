@@ -79,15 +79,30 @@ export function qpDecode(input, charset = "utf-8") {
 /* ── addresses ── */
 
 /** `"Jean Dupont" <jean@x.fr>` | `jean@x.fr` | `Jean <jean@x.fr>` → {name, email} */
+/**
+ * Strips quotes from around an address, and only from around it.
+ *
+ * Outlook writes a recipient it could not resolve to a display name as
+ * 'someone@example.com', apostrophes included, and that is what everyone on
+ * the thread then copies into their Cc. Left on, it reaches Apple as
+ * RCPT TO:<'someone@example.com'> and the whole send fails with
+ * 501 5.1.3 Bad recipient address syntax — one stray character, and the
+ * message goes nowhere until the quotes are deleted by hand.
+ *
+ * The outside only: an apostrophe is legal inside a local part, so
+ * o'brien@x.fr has to come through untouched.
+ */
+const unquote = (s) => String(s).replace(/^['"]+/, "").replace(/['"]+$/, "");
+
 export function parseAddress(input) {
   const s = decodeWords(String(input ?? "").trim());
   const angle = /<([^<>\s]+@[^<>\s]+)>/.exec(s);
   if (angle) {
     const name = s.slice(0, angle.index).replace(/^["']|["']\s*$/g, "").replace(/"/g, "").trim();
-    return { name, email: angle[1].toLowerCase() };
+    return { name, email: unquote(angle[1]).toLowerCase() };
   }
   const bare = /([^\s"<>]+@[^\s"<>]+)/.exec(s);
-  return { name: "", email: bare ? bare[1].toLowerCase() : "" };
+  return { name: "", email: bare ? unquote(bare[1]).toLowerCase() : "" };
 }
 
 /** Splits an address header on commas that sit outside quotes and <>. */

@@ -1095,7 +1095,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v20";
+const CLIENT = "v21";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2332,21 +2332,47 @@ $("#blockedList").addEventListener("click", async (e) => {
   toast(`${pattern} unblocked — their next message arrives`);
 });
 
-/** Every address in a header line, lowercased. */
+/**
+ * Every address in a header line, lowercased and stripped of the quotes
+ * Outlook wraps an unresolved recipient in. Those rode into the Cc field and
+ * on into RCPT TO, where Apple refused the entire message with 501 5.1.3 —
+ * so a reply could not be sent until they were deleted by hand. Outside
+ * only: o'brien@x.fr keeps its apostrophe.
+ */
 const addressesIn = (line) =>
-  (String(line || "").match(/[^\s<>,"();]+@[^\s<>,"();]+/g) || []).map((s) => s.toLowerCase());
+  (String(line || "").match(/[^\s<>,"();]+@[^\s<>,"();]+/g) || [])
+    .map((s) => s.replace(/^['"]+/, "").replace(/['"]+$/, "").toLowerCase())
+    .filter((s) => /[^@]@[^@]/.test(s));
 
 /**
  * Reply → the sender. Reply all → the sender plus everyone who was on it,
  * minus yourself, because replying to your own address is how mail loops start.
+ *
+ * Unless the message is one you sent. The sender is then you, dropping
+ * yourself left the To line empty, and the people you had actually written to
+ * turned up in Cc — a reply addressed to nobody. Answering your own message
+ * means writing to the same recipients again, which is the whole point of
+ * picking a thread up from Sent.
  */
 function replyTargets(msg, all) {
   const me = String((acctById(msg.account_id) || {}).email || "").toLowerCase();
-  const from = [String(msg.from_email || "").toLowerCase()];
-  const rest = all ? [...addressesIn(msg.to_line), ...addressesIn(msg.cc_line)] : [];
+  const from = String(msg.from_email || "").toLowerCase();
+  const mine = !!me && from === me;
+  const first = mine ? addressesIn(msg.to_line) : [from];
+  const rest = all
+    ? mine
+      ? addressesIn(msg.cc_line)
+      : [...addressesIn(msg.to_line), ...addressesIn(msg.cc_line)]
+    : [];
   const seen = new Set();
   const keep = (list) => list.filter((e) => e && e !== me && !seen.has(e) && seen.add(e));
-  return { to: keep(from), cc: keep(rest) };
+  const to = keep(first);
+  const cc = keep(rest);
+  // An empty To with a full Cc is that same bug from whichever side it
+  // arrives — a message you sent with no To line, or one you were only ever
+  // copied on. Somebody has to be addressed.
+  if (!to.length && cc.length) to.push(cc.shift());
+  return { to, cc };
 }
 
 /**

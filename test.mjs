@@ -58,6 +58,16 @@ eq(parseAddress("Jean <JEAN@X.FR>"), { name: "Jean", email: "jean@x.fr" }, "cass
 eq(parseAddress("=?utf-8?B?SsOpcsO0bWU=?= <j@x.fr>").name, "Jérôme", "nom encodé décodé");
 eq(parseAddressList('"Dupont, Jean" <j@x.fr>, b@y.fr').length, 2, "virgule entre guillemets ignorée");
 eq(parseAddressList("a@x.fr, b@y.fr, pas-une-adresse").length, 2, "les déchets sont filtrés");
+// Outlook écrit un destinataire non résolu 'comme@ceci.fr'. Gardées, ces
+// apostrophes arrivent jusqu'au RCPT TO et Apple refuse tout le message.
+eq(parseAddress("'jean@x.fr'"), { name: "", email: "jean@x.fr" }, "apostrophes d'Outlook retirées");
+eq(parseAddress("<'jean@x.fr'>"), { name: "", email: "jean@x.fr" }, "apostrophes dans les chevrons");
+eq(parseAddress("o'brien@x.fr").email, "o'brien@x.fr", "apostrophe interne conservée");
+eq(
+  parseAddressList("'a@x.fr', b@y.fr").map((a) => a.email),
+  ["a@x.fr", "b@y.fr"],
+  "liste : citée puis nue"
+);
 
 console.log("\n── sujets et fils ──────────────────────────");
 eq(normalizeSubject("Re: Re: FWD: Hello"), "hello", "préfixes empilés retirés");
