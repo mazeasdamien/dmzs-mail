@@ -1095,7 +1095,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v21";
+const CLIENT = "v22";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2392,7 +2392,47 @@ function quotedHistory(m, body) {
     `On ${esc(new Date(m.date).toLocaleString())}, ` +
     `${esc(m.from_name || m.from_email || "someone")} wrote:`;
   const inner = (body && body.html) || `<p>${esc(m.snippet || "")}</p>`;
-  return `<p><br></p><div class="quote-head">${head}</div><blockquote>${inner}</blockquote>`;
+  // <div><br></div> rather than <p><br></p>: pressing Enter here makes a
+  // div, so the gap above a quote is the same element as every other blank
+  // line in the message — and not a paragraph, which Word gives a blank
+  // line of its own above and below.
+  return `<div><br></div><div class="quote-head">${head}</div><blockquote>${inner}</blockquote>`;
+}
+
+/**
+ * The composer's HTML, made to look in someone else's client the way it looks
+ * here.
+ *
+ * The editor borrows this page's stylesheet, and that opens with `*{margin:0}`
+ * — so a paragraph in the composer has no space around it, and what is
+ * written looks as tight on screen as it reads. None of that travels with the
+ * message. Word, which renders the HTML inside Outlook, then applies its own
+ * defaults: a blank line above and below every <p>, and it does not collapse
+ * the adjacent pair, so one empty line between two paragraphs arrives as
+ * three. That is the "gigantic" spacing in mail that looked ordinary while it
+ * was being written.
+ *
+ * A <style> block would not help — most clients strip it — so the handful of
+ * rules the editor actually relies on are written onto the elements
+ * themselves, on a copy, on the way out.
+ */
+function mailHtml() {
+  const copy = $("#cBody").cloneNode(true);
+  const style = (sel, css) =>
+    copy
+      .querySelectorAll(sel)
+      // Appended behind anything already there, so a width set on an image
+      // by hand still wins.
+      .forEach((el) => el.setAttribute("style", css + ";" + (el.getAttribute("style") || "")));
+
+  // Wherever they came from: the AI pass, the Quote button, a paste.
+  style("p", "margin:0");
+  // Hex, not the palette variables: this is read somewhere that has never
+  // heard of this app.
+  style(".quote-head", "color:#5b5b60;font-size:13px;margin:0 0 4px");
+  style("blockquote", "margin:0;padding-left:12px;border-left:2px solid #d4d4d8;color:#5b5b60");
+  style("ul,ol", "padding-left:22px;margin:6px 0");
+  return copy.innerHTML.trim();
 }
 
 function startReply(all) {
@@ -3084,10 +3124,16 @@ async function assist(mode, btn) {
     if (!res.ok) { toast(d.error || "AI failed"); return; }
     // Plain text back, escaped and re-broken into paragraphs. Never innerHTML
     // from a model: it would be a script-injection hole into your own composer.
+    //
+    // Divs separated by an empty div, which is exactly what pressing Enter
+    // twice produces here — so a corrected message is indistinguishable from
+    // a typed one, on screen and in whatever opens it. As paragraphs it was
+    // neither: glued together in the composer, where nothing has a margin,
+    // and three blank lines apart in Outlook, where a <p> has two.
     body.innerHTML = d.text
       .split(/\n{2,}/)
-      .map((p) => `<p>${esc(p).replace(/\n/g, "<br>")}</p>`)
-      .join("");
+      .map((p) => `<div>${esc(p).replace(/\n/g, "<br>")}</div>`)
+      .join("<div><br></div>");
     toast(mode === "improve" ? "Rewritten" : "Corrected", () => { body.innerHTML = before; });
   } catch { toast("AI failed"); }
   finally {
@@ -3482,7 +3528,9 @@ $("#cAccounts").addEventListener("click", (e) => {
 $("#cSend").addEventListener("click", async () => {
   const err = $("#cErr");
   err.classList.remove("show");
-  const html = $("#cBody").innerHTML.trim();
+  // The draft is kept as the editor wrote it, because it comes back into the
+  // editor. What leaves has to stand on its own.
+  const html = mailHtml();
   const text = $("#cBody").innerText.trim();
   if (!text) {
     err.textContent = "Nothing to send";
