@@ -92,7 +92,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * hand — three constants, but the alternative is a build step for a project
  * whose whole point is that it has none.
  */
-const CLIENT_SHELL = "v26";
+const CLIENT_SHELL = "v27";
 
 /**
  * Which pass of the defuser produced a stored body.
@@ -1825,6 +1825,70 @@ async function handleApi(request, env, path, ctx) {
     } catch (e) {
       return json({ error: String(e.message || e) }, 502);
     }
+  }
+
+  // POST /api/repair/self-copies — the mail you copied yourself on, put back.
+  //
+  // Until the upsert learned to ignore a sighting in Sent, a message with your
+  // own address on its Cc collapsed onto the row of the copy in Sent and
+  // stayed there. New mail files itself correctly now, but what was already
+  // misfiled cannot fix itself: the delivered copy was read from the inbox
+  // once, and the cursor will never look at that UID again.
+  //
+  // Nothing is guessed here. The address is only how a candidate is found;
+  // each one is then looked up in the inbox at Apple by its Message-ID, and
+  // only what is actually sitting there is moved — carrying the flag the
+  // server has, rather than the "read" its sent copy was written with.
+  //
+  // Capped per press, because each candidate is a round trip to Apple and a
+  // request that spends a minute searching looks exactly like one that has
+  // hung. What is left over is counted and reported, so pressing again
+  // finishes the job.
+  if (path === "/api/repair/self-copies" && request.method === "POST") {
+    const acct = await icloudAccountWithCreds(env);
+    if (!acct) return json({ error: "No connected account" }, 400);
+    const pass = await icloudPassword(env, acct);
+    if (!pass) return json({ error: "This account has no stored password" }, 400);
+
+    const like = `%${acct.email.toLowerCase()}%`;
+    const WHERE = `account_id=? AND folder='sent' AND mid<>''
+        AND (lower(to_line) LIKE ? OR lower(cc_line) LIKE ? OR lower(bcc_line) LIKE ?)`;
+    const [total, page] = await env.DB.batch([
+      env.DB.prepare(`SELECT COUNT(*) AS n FROM messages WHERE ${WHERE}`).bind(acct.id, like, like, like),
+      env.DB.prepare(
+        `SELECT id, mid FROM messages WHERE ${WHERE} ORDER BY date DESC LIMIT 40`
+      ).bind(acct.id, like, like, like),
+    ]);
+    const rows = page.results ?? [];
+    const candidates = total.results?.[0]?.n || 0;
+    if (!rows.length) return json({ candidates, checked: 0, moved: 0, remaining: 0 });
+
+    let moved = 0;
+    const im = await imapOpen({ user: acct.email, pass });
+    try {
+      const boxes = await imapList(im);
+      const inbox = boxes.find((mb) => folderNameFor(mb) === "inbox");
+      if (!inbox) return json({ error: `no Inbox — server has: ${mailboxList(boxes)}` }, 502);
+      await imapSelect(im, inbox.name);
+      for (const r of rows) {
+        const uids = await imapSearch(im, `HEADER "Message-ID" "${String(r.mid).replace(/"/g, "")}"`);
+        if (!uids.length) continue;
+        const [meta] = await imapFetchMeta(im, String(uids[uids.length - 1]));
+        await env.DB.prepare("UPDATE messages SET folder='inbox', unread=? WHERE id=?")
+          .bind(/\\Seen/i.test(meta?.flags || "") ? 0 : 1, r.id)
+          .run();
+        moved++;
+      }
+    } catch (e) {
+      if (e.reauth) {
+        await flagAccount(env, acct, e);
+        return json({ error: "This account needs reconnecting" }, 409);
+      }
+      return json({ error: String(e.message || e) }, 502);
+    } finally {
+      await im.logout();
+    }
+    return json({ candidates, checked: rows.length, moved, remaining: Math.max(0, candidates - rows.length) });
   }
 
   // GET /api/backup — what is currently held. POST to take one now.

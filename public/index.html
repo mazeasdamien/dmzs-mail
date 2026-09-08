@@ -765,6 +765,8 @@ html.busy #bar{opacity:1}
   <button class="cta" id="addIcloud" style="background:var(--elev2);color:var(--t1)">Connect iCloud</button>
   <button class="cta" id="openContacts" style="background:var(--elev2);color:var(--t1)">Contacts</button>
   <button class="cta" id="openBlocked" style="background:var(--elev2);color:var(--t1)">Blocked senders</button>
+  <button class="ghost" id="repairSelf" style="width:100%;justify-content:center;min-height:34px">Look for mail you copied yourself on</button>
+  <div class="sh-s" style="margin:6px 0 0;font-size:12px">A message you put your own address on used to file itself under Sent and never reach the inbox here, because both copies carry one Message-ID. New mail lands correctly; this goes back over the old ones, checks each against your inbox at iCloud, and moves what is really there.</div>
   <div class="sh-s" style="margin:14px 0 6px">Appearance</div>
   <div class="chips" id="themePick">
     <button class="pill" data-theme="light">Light</button>
@@ -1107,7 +1109,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v26";
+const CLIENT = "v27";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2907,6 +2909,23 @@ $("#acctBtn").addEventListener("click", () => {
   refreshNotifyButton();
   refreshAiKey();
   openSheet("#acctSheet");
+});
+$("#repairSelf").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = "Asking iCloud…";
+  const res = await api("/api/repair/self-copies", { method: "POST" }).catch(() => null);
+  btn.disabled = false;
+  btn.textContent = was;
+  const d = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { toast(d.error || "Could not check"); return; }
+  if (!d.checked) { toast("Nothing filed under Sent has your own address on it"); return; }
+  if (!d.moved) { toast(`Checked ${d.checked} — none of them is in your inbox at iCloud`); return; }
+  toast(
+    `Moved ${d.moved} back to the inbox${d.remaining ? ` — ${d.remaining} left, press again` : ""}`
+  );
+  refreshAll();
 });
 $("#addIcloud").addEventListener("click", () => {
   closeSheets();
