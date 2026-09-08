@@ -789,6 +789,8 @@ html.busy #bar{opacity:1}
   <div class="sh-s" style="margin:8px 0 0;font-size:12px">Draft, Fix and Improve in the composer send that message to Google's Gemini API, and this is the key and the model they use. The key is checked with Google before it is kept, sealed in the database like the iCloud password, and never shown again &mdash; only its last four characters. Test asks Google what this key can actually reach; the menu only offers what came back.</div>
   <button class="cta" id="notifyBtn" style="background:var(--elev2);color:var(--t1)">Enable notifications</button>
   <button class="ghost" id="notifyTest" style="width:100%;justify-content:center;min-height:34px">Send a test notification</button>
+  <button class="ghost" id="notifyOnly" style="width:100%;justify-content:center;min-height:34px">Notify this device only</button>
+  <div class="sh-s" style="margin:6px 0 0;font-size:12px">Every registered device gets its own push, so a browser holding an old registration alongside its current one shows everything twice. This drops every registration but the one this browser is holding &mdash; turn notifications back on wherever else you want them.</div>
 </div>
 
 <div class="sheet" id="icloudSheet">
@@ -1105,7 +1107,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v25";
+const CLIENT = "v26";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -1738,9 +1740,15 @@ function renderBody() {
   // Render immediately, then swap in inline images once fetched: a message
   // should never wait on its pictures to become readable.
   $("#rframe").srcdoc = frameDoc(html);
+  // Kept, because this is what a reply quotes. The stored body still says
+  // src="cid:…", which points at a part inside the original message and means
+  // nothing outside it: quoting that put a broken image at the end of every
+  // reply to anyone with a logo in their signature.
+  current.body.shown = html;
   resolveInlineImages(html, m.id, current.body.attachments || []).then((withImages) => {
     if (withImages !== html && current && current.message.id === m.id) {
       $("#rframe").srcdoc = frameDoc(withImages);
+      current.body.shown = withImages;
     }
   });
   // Offered only when there is something held back to load.
@@ -2406,7 +2414,10 @@ function quotedHistory(m, body) {
   const head =
     `On ${esc(new Date(m.date).toLocaleString())}, ` +
     `${esc(m.from_name || m.from_email || "someone")} wrote:`;
-  const inner = (body && body.html) || `<p>${esc(m.snippet || "")}</p>`;
+  // What the reader is showing, in preference to what is stored: its cid:
+  // references have been resolved to the pictures themselves, and remote
+  // images are in whichever state you chose to read the message in.
+  const inner = (body && (body.shown || body.html)) || `<p>${esc(m.snippet || "")}</p>`;
   // <div><br></div> rather than <p><br></p>: pressing Enter here makes a
   // div, so the gap above a quote is the same element as every other blank
   // line in the message — and not a paragraph, which Word gives a blank
@@ -3504,6 +3515,24 @@ $("#notifyTest").addEventListener("click", async () => {
   if (!d.devices) { toast("No device is registered — tap Enable notifications first"); return; }
   if (!d.unread) { toast(`Pushed to ${d.sent}/${d.devices} — but nothing is unread, so there is no badge to show`); return; }
   toast(`Pushed to ${d.sent}/${d.devices} device${d.devices > 1 ? "s" : ""} · badge should read ${d.unread}`);
+});
+
+$("#notifyOnly").addEventListener("click", async () => {
+  const reg = await navigator.serviceWorker.getRegistration();
+  const sub = reg && (await reg.pushManager.getSubscription());
+  if (!sub) { toast("Turn notifications on here first"); return; }
+  const res = await api("/api/push/only", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint: sub.endpoint }),
+  }).catch(() => null);
+  const d = res && res.ok ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { toast("Could not clear the other registrations"); return; }
+  toast(
+    d.removed
+      ? `Removed ${d.removed} — this device is the only one now`
+      : "This device was already the only one"
+  );
 });
 
 $("#notifyBtn").addEventListener("click", async () => {

@@ -92,7 +92,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * hand — three constants, but the alternative is a build step for a project
  * whose whole point is that it has none.
  */
-const CLIENT_SHELL = "v25";
+const CLIENT_SHELL = "v26";
 
 /**
  * Which pass of the defuser produced a stored body.
@@ -1594,6 +1594,23 @@ async function handleApi(request, env, path, ctx) {
       from: row?.who || row?.who_email || "",
       subject: row?.subject || "",
     });
+  }
+
+  // POST /api/push/only { endpoint } — this device, and no other.
+  //
+  // Every registration gets its own push, so two of them for one browser is
+  // two notifications for one message. They cannot be told apart from here —
+  // an endpoint is opaque, and a browser that quietly replaced one leaves the
+  // old row looking exactly as alive as the new. So it is said from the
+  // device instead: keep the subscription I am holding, drop the rest.
+  if (path === "/api/push/only" && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const endpoint = String(b.endpoint || "");
+    if (!endpoint) return json({ error: "No subscription to keep" }, 400);
+    const before = await env.DB.prepare("SELECT COUNT(*) AS n FROM push_subs").first();
+    await env.DB.prepare("DELETE FROM push_subs WHERE endpoint != ?").bind(endpoint).run();
+    const after = await env.DB.prepare("SELECT COUNT(*) AS n FROM push_subs").first();
+    return json({ removed: (before?.n || 0) - (after?.n || 0), devices: after?.n || 0 });
   }
 
   // POST /api/push/test — fire the real thing on demand.

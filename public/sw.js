@@ -7,7 +7,7 @@
 
 // Bump on every shell change. The activate handler deletes any cache whose
 // name is not this one, so an old index.html cannot outlive a deploy.
-const SHELL = "dmzs-mail-shell-v25";
+const SHELL = "dmzs-mail-shell-v26";
 
 const SHELL_FILES = [
   "/",
@@ -125,8 +125,25 @@ self.addEventListener("push", (event) => {
       }
 
       if (!state.unread) return;
-      await self.registration.showNotification(state.from || "New mail", {
-        body: state.subject || `${state.unread} unread`,
+
+      const title = state.from || "New mail";
+      const line = state.subject || `${state.unread} unread`;
+
+      // The same doorbell, rung twice.
+      //
+      // One browser can end up holding two live subscriptions for this one
+      // service worker — an endpoint that was replaced but never unsubscribed,
+      // alongside the current one — and then every notification arrives twice,
+      // a second apart, through two pushes this handler has no way to tell
+      // apart. If what is already on screen says exactly this, about exactly
+      // this many unread, there is nothing to add by saying it again.
+      const up = await self.registration.getNotifications({ tag: "dmzs-mail" });
+      if (up.some((n) => n.title === title && n.body === line && n.data?.unread === state.unread)) {
+        return;
+      }
+
+      await self.registration.showNotification(title, {
+        body: line,
         icon: "/icon-192.png",
         badge: "/icon-192.png",
         // One notification that updates, rather than a stack of them: a mailbox
