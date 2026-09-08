@@ -363,6 +363,9 @@ body.composing:not(.overlay) #scrim{opacity:0;pointer-events:none}
 .field{display:flex;align-items:center;gap:9px;min-height:42px;padding:0 12px;background:var(--input);
   border:1px solid var(--line-strong);border-radius:var(--r);margin-bottom:8px}
 .field input{flex:1;font-size:14.5px;min-width:0;height:42px}
+/* The one menu in the app. Its own background, not transparent: the options
+   inherit it, and a transparent one leaves them unreadable on some systems. */
+.field select{flex:1;font-size:14.5px;min-width:0;height:42px;background:var(--input);color:var(--t1);border:0;outline:0}
 .field input::placeholder,textarea::placeholder{color:var(--t3)}
 textarea.field{width:100%;padding:11px 12px;font-size:14.5px;line-height:1.45;min-height:130px;resize:vertical;display:block}
 .cta{width:100%;height:46px;border-radius:var(--r);margin-top:10px;background:var(--acc);color:var(--on-acc);
@@ -777,7 +780,10 @@ html.busy #bar{opacity:1}
   <div class="formerr" id="aiKeyErr"></div>
   <button class="cta" id="aiKeySave" style="background:var(--elev2);color:var(--t1)">Save key</button>
   <button class="ghost" id="aiKeyClear" hidden style="width:100%;justify-content:center;min-height:34px">Remove the stored key</button>
-  <div class="sh-s" style="margin:8px 0 0;font-size:12px">Fix and Improve in the composer send that draft to Google's Gemini API, and this is the key they use. It is checked with Google before it is kept, sealed in the database like the iCloud password, and never shown again &mdash; only its last four characters.</div>
+  <div class="sh-s" style="margin:12px 0 6px">Model</div>
+  <div class="field"><select id="aiModel" aria-label="Model"></select></div>
+  <button class="ghost" id="aiKeyTest" style="width:100%;justify-content:center;min-height:34px">Test the key and list the models</button>
+  <div class="sh-s" style="margin:8px 0 0;font-size:12px">Draft, Fix and Improve in the composer send that message to Google's Gemini API, and this is the key and the model they use. The key is checked with Google before it is kept, sealed in the database like the iCloud password, and never shown again &mdash; only its last four characters. Test asks Google what this key can actually reach; the menu only offers what came back.</div>
   <button class="cta" id="notifyBtn" style="background:var(--elev2);color:var(--t1)">Enable notifications</button>
   <button class="ghost" id="notifyTest" style="width:100%;justify-content:center;min-height:34px">Send a test notification</button>
 </div>
@@ -891,6 +897,7 @@ html.busy #bar{opacity:1}
     <input type="file" id="cFile" multiple hidden>
     <span class="dstate" id="cSaved"></span>
     <span class="spacer"></span>
+    <button class="ai" id="aiDraft" hidden title="Write this reply from the message you are answering, and from anything you have already typed">Draft</button>
     <button class="ai" id="aiFix" title="Fix spelling and grammar">Fix</button>
     <button class="ai" id="aiImprove" title="Rewrite more clearly">Improve</button>
   </div>
@@ -1095,7 +1102,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v22";
+const CLIENT = "v24";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2957,6 +2964,8 @@ function openCompose(opts = {}) {
   for (const [btn, wrap, , name] of CC_TOGGLES) markToggle(btn, wrap, name);
   $("#cSubj").value = opts.subject || "";
   $("#cBody").innerHTML = opts.html || "";
+  // Nothing to answer in a message that is not a reply to anything.
+  $("#aiDraft").hidden = !replyTo;
   $("#cErr").classList.remove("show");
   $("#cSuggest").classList.remove("on");
   attached = [];
@@ -3144,6 +3153,84 @@ async function assist(mode, btn) {
 $("#aiFix").addEventListener("click", (e) => assist("grammar", e.currentTarget));
 $("#aiImprove").addEventListener("click", (e) => assist("improve", e.currentTarget));
 
+/**
+ * A name to sign a written reply with, taken from your own address.
+ *
+ * There is nowhere in this app to type a display name — the From line is the
+ * address itself — so damien.mazeas@icloud.com is all there is to go on. A
+ * local part with a separator in it is a name split in two often enough to be
+ * worth using; anything else is a mailbox called "contact" or "info", and
+ * signing with that reads worse than not signing at all. Then the reply stops
+ * at the sign-off line and you add the name: one word to type, rather than a
+ * wrong one to notice and delete.
+ */
+function signature() {
+  const a = acctById(composeAcct) || {};
+  const label = String(a.label || "").trim();
+  if (label && !label.includes("@")) return label.slice(0, 60);
+  const local = String(a.email || "").split("@")[0];
+  const first = local.split(/[._]/)[0] || "";
+  // Not on the hyphen: Jean-Luc split there would sign itself "Jean".
+  return /[._]/.test(local) && /^[a-zà-ÿ]{2,20}(-[a-zà-ÿ]{2,20})?$/i.test(first)
+    ? first.replace(/(^|-)([a-zà-ÿ])/gi, (_, sep, c) => sep + c.toUpperCase())
+    : "";
+}
+
+/**
+ * Writes the reply for you.
+ *
+ * The message being answered is already in the composer, quoted, so that is
+ * what it is written from — and anything typed above the quote is the brief.
+ * "yes, the 18th works, I will prepare the slides" becomes the letter that
+ * says so, in the language the message arrived in. With nothing typed it
+ * acknowledges and no more, because a model guessing at what you have agreed
+ * to is the one thing this must never do.
+ *
+ * What comes back lands in the composer like any other draft: nothing is
+ * sent, and the toast puts back what was there if it is not what you wanted.
+ */
+async function draftReply(btn) {
+  const body = $("#cBody");
+  const quote = body.querySelector("blockquote");
+  if (!quote) { toast("Open a message and press Reply first"); return; }
+  const original = quote.innerText.trim();
+  if (!original) { toast("Nothing to reply to"); return; }
+
+  // The brief is whatever is in the composer that is not the quote.
+  const scratch = body.cloneNode(true);
+  scratch.querySelectorAll("blockquote, .quote-head").forEach((el) => el.remove());
+  const note = scratch.innerText.trim();
+
+  const before = body.innerHTML;
+  const head = body.querySelector(".quote-head");
+  const tail = (head ? head.outerHTML : "") + quote.outerHTML;
+  const tools = document.querySelectorAll("#cTools .ai");
+  tools.forEach((t) => (t.disabled = true));
+  const was = btn.textContent;
+  btn.textContent = "…";
+  try {
+    const res = await api("/api/assist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "reply", text: original, note, me: signature() }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) { toast(d.error || "AI failed"); return; }
+    // The same shape as anything typed here, and never innerHTML from a model.
+    const written = d.text
+      .split(/\n{2,}/)
+      .map((p) => `<div>${esc(p).replace(/\n/g, "<br>")}</div>`)
+      .join("<div><br></div>");
+    body.innerHTML = written + "<div><br></div>" + tail;
+    toast("Reply written — read it before sending", () => { body.innerHTML = before; });
+  } catch { toast("AI failed"); }
+  finally {
+    tools.forEach((t) => (t.disabled = false));
+    btn.textContent = was;
+  }
+}
+$("#aiDraft").addEventListener("click", (e) => draftReply(e.currentTarget));
+
 /* ── appearance ── */
 
 /**
@@ -3227,12 +3314,68 @@ async function refreshAiKey() {
   if (!d) { state.textContent = "Could not read the current setting."; return; }
   $("#aiKeyClear").hidden = !d.stored;
   input.placeholder = d.stored || d.secret ? `Ends ${d.tail} — type a new key to replace it` : "Paste a Gemini API key";
+  // One entry until Test has been pressed: the list belongs to Google, and
+  // asking for it on every sheet open would be a request nobody asked for.
+  setModels([], d.model);
   state.textContent = d.stored
-    ? `Set here, ending ${d.tail}. Model: ${d.model}.`
+    ? `Set here, ending ${d.tail}.`
     : d.secret
       ? `Using the deployed key, ending ${d.tail}. Anything saved here replaces it.`
-      : "No key set — Fix and Improve will say so when you press them.";
+      : "No key set — Draft, Fix and Improve will say so when you press them.";
 }
+
+/** The model menu: what Google offered, with the one in use chosen. */
+function setModels(list, current) {
+  const models = [...new Set([current, ...(list || [])].filter(Boolean))];
+  $("#aiModel").innerHTML = models
+    .map((m) => `<option value="${esc(m)}"${m === current ? " selected" : ""}>${esc(m)}</option>`)
+    .join("");
+}
+
+/**
+ * What this key can actually reach, asked of Google rather than assumed.
+ *
+ * A model id that has been retired shows up as a 404 at the moment you press
+ * Fix, with a draft on screen, and reads like the feature is broken rather
+ * than like a name that moved. One button says whether the key works, whether
+ * the chosen model is still there, and what else it could be.
+ */
+async function testAi(btn) {
+  const state = $("#aiKeyState");
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = "Asking Google…";
+  const res = await api("/api/ai-check").catch(() => null);
+  btn.disabled = false;
+  btn.textContent = was;
+  const d = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) {
+    state.textContent = d.error ? `Google says: ${d.error}` : "Could not reach Google";
+    return;
+  }
+  setModels(d.models, d.configured);
+  state.textContent = d.ok
+    ? `Key works. ${d.total} models on it, and ${d.configured} is one of them.`
+    : `Key works, but ${d.configured} is not on it${d.suggestion ? ` — ${d.suggestion} is` : ""}.`;
+}
+$("#aiKeyTest").addEventListener("click", (e) => testAi(e.currentTarget));
+$("#aiModel").addEventListener("change", async (e) => {
+  const model = e.target.value;
+  const res = await api("/api/ai-model", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model }),
+  }).catch(() => null);
+  const d = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) {
+    toast(d.error || "Could not change the model");
+    // Back to whatever is actually stored, rather than leaving the menu
+    // showing a choice that was refused.
+    refreshAiKey();
+    return;
+  }
+  toast(`Writing with ${d.model}`);
+});
 
 async function saveAiKey(key) {
   const err = $("#aiKeyErr");
