@@ -743,6 +743,9 @@ html.busy #bar{opacity:1}
     <button class="rbtn ico" id="rMove" aria-label="Move to folder" title="Move (v)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 18Z"/></svg>
     </button>
+    <button class="rbtn ico" id="rReplyAI" aria-label="Reply all, written for you" title="Reply all, with the reply already written (Shift+A)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9 2.5 13l4.5 4"/><path d="M12 9l-4.5 4 4.5 4"/><path d="M7.5 13h7a6 6 0 0 1 6 6v.5"/><path d="m19 3.4.8 1.6 1.6.8-1.6.8-.8 1.6-.8-1.6-1.6-.8 1.6-.8z" fill="currentColor"/></svg>
+    </button>
     <button class="rbtn ico" id="rReplyAll" aria-label="Reply all" title="Reply all (a)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 8 3 12l4.5 4"/><path d="M12.5 8 8 12l4.5 4"/><path d="M8 12h7a6 6 0 0 1 6 6v1"/></svg>
     </button>
@@ -1102,7 +1105,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v24";
+const CLIENT = "v25";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -1967,6 +1970,11 @@ addEventListener("keydown", (e) => {
       e.preventDefault();
       startReply(true);
       break;
+    // Shift+A: the same reply, already written.
+    case "A":
+      e.preventDefault();
+      replyWritten();
+      break;
   }
 });
 
@@ -2459,6 +2467,23 @@ function startReply(all) {
 
 $("#rReply").addEventListener("click", () => startReply(false));
 $("#rReplyAll").addEventListener("click", () => startReply(true));
+
+/**
+ * Reply all, with the reply already written.
+ *
+ * The same two things you would have done by hand — open the reply, press
+ * Draft — with nothing in between, because for the mail this is for there is
+ * nothing to say in between: you are confirming, acknowledging or thanking,
+ * and the useful work is reading what came back rather than typing it. It
+ * lands in the composer like any other draft and goes nowhere until you send
+ * it. When there is something to say first, Reply all and then Draft is still
+ * the way round: what you type above the quote is what the reply is built on.
+ */
+async function replyWritten() {
+  startReply(true);
+  await draftReply($("#aiDraft"));
+}
+$("#rReplyAI").addEventListener("click", replyWritten);
 
 /* ── unsubscribe ── */
 $("#rUnsub").addEventListener("click", async () => {
@@ -3314,14 +3339,36 @@ async function refreshAiKey() {
   if (!d) { state.textContent = "Could not read the current setting."; return; }
   $("#aiKeyClear").hidden = !d.stored;
   input.placeholder = d.stored || d.secret ? `Ends ${d.tail} — type a new key to replace it` : "Paste a Gemini API key";
-  // One entry until Test has been pressed: the list belongs to Google, and
-  // asking for it on every sheet open would be a request nobody asked for.
   setModels([], d.model);
   state.textContent = d.stored
     ? `Set here, ending ${d.tail}.`
     : d.secret
       ? `Using the deployed key, ending ${d.tail}. Anything saved here replaces it.`
       : "No key set — Draft, Fix and Improve will say so when you press them.";
+  // Opening a menu to find one entry in it is not a menu. Only Google knows
+  // what this key can reach, so it is asked as the sheet opens rather than
+  // only behind Test — quietly, and without holding anything up.
+  if (d.stored || d.secret) fillModels(d.model);
+}
+
+/**
+ * Fills the model menu with what the key can actually reach.
+ *
+ * Silent when it fails: a sheet that opens with a red line across it because
+ * Google was slow is worse than a menu with one entry in it, and Test is
+ * there to say what went wrong in as many words as it takes.
+ */
+async function fillModels(current) {
+  const res = await api("/api/ai-check").catch(() => null);
+  if (!res || !res.ok) return;
+  const d = await res.json().catch(() => ({}));
+  setModels(d.models, d.configured || current);
+  // The one thing worth interrupting for: the model in use has gone from the
+  // key, so Draft and Fix are about to fail on a name that no longer exists.
+  if (d.ok === false && d.configured) {
+    $("#aiKeyState").textContent +=
+      ` ${d.configured} is not on this key${d.suggestion ? ` — ${d.suggestion} is` : ""}.`;
+  }
 }
 
 /** The model menu: what Google offered, with the one in use chosen. */

@@ -92,7 +92,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * hand — three constants, but the alternative is a build step for a project
  * whose whole point is that it has none.
  */
-const CLIENT_SHELL = "v24";
+const CLIENT_SHELL = "v25";
 
 /**
  * Which pass of the defuser produced a stored body.
@@ -2539,10 +2539,20 @@ async function handleApi(request, env, path, ctx) {
       suggestion: usable.includes(want)
         ? null
         : usable.filter((n) => n.includes("flash") && !n.includes("thinking"))[0] || usable[0] || null,
-      // Newest names first is not something the listing guarantees, so it is
-      // left in Google's order and simply capped: a picker with 200 entries in
-      // it is not a picker.
-      models: usable.slice(0, 60),
+      // Google lists these in no order worth relying on, and the reason to
+      // open this menu is almost always to find something newer than what is
+      // set. Sorted with a numeric collation, so gemini-3.9 lands above
+      // gemini-3.5 and above gemini-3.10 rather than wherever a plain string
+      // sort would put them. Capped, because a menu of 200 is not a menu.
+      models: usable
+        .sort(
+          (a, b) =>
+            // Gemini above everything else: Gemma and the rest are on the
+            // same key and are not what anyone opens this menu for.
+            (a.startsWith("gemini-") ? 0 : 1) - (b.startsWith("gemini-") ? 0 : 1) ||
+            b.localeCompare(a, undefined, { numeric: true })
+        )
+        .slice(0, 60),
       total: usable.length,
     });
   }
