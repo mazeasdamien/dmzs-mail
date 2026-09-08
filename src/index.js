@@ -138,10 +138,20 @@ async function storeRows(env, accountId, rows) {
            (id, account_id, pid, mid, thread_key, folder, from_name, from_email,
             to_line, cc_line, bcc_line, subject, snippet, date, unread, starred, has_body, created_at)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
+         -- Put yourself on the Cc of something you send and the provider keeps
+         -- two copies of one message: the one in Sent and the one delivered to
+         -- the inbox, sharing a Message-ID and therefore sharing this row.
+         -- Whichever mailbox was walked last used to win, and Sent is usually
+         -- walked after the inbox, so a message you copied yourself on filed
+         -- itself under Sent and never appeared in the inbox at all — while
+         -- every other client on the account showed it sitting there. A
+         -- sighting in Sent is never the interesting one: that is the copy you
+         -- have already read, because you wrote it.
          ON CONFLICT(account_id, pid) DO UPDATE SET
            unread=excluded.unread,
            starred=excluded.starred,
-           folder=excluded.folder`
+           folder=excluded.folder
+         WHERE NOT (excluded.folder = 'sent' AND messages.folder <> 'sent')`
       ).bind(
         await hashHex(`msg|${accountId}|${r.pid}`, 16),
         accountId,
