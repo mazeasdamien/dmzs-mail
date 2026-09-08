@@ -1109,7 +1109,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v27";
+const CLIENT = "v28";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2424,7 +2424,18 @@ function quotedHistory(m, body) {
   // div, so the gap above a quote is the same element as every other blank
   // line in the message — and not a paragraph, which Word gives a blank
   // line of its own above and below.
-  return `<div><br></div><div class="quote-head">${head}</div><blockquote>${inner}</blockquote>`;
+  //
+  // Two of them above, and one below. The caret opens on the first line and
+  // typing fills it, so with a single line there the reply ended pressed
+  // against "On … wrote:" with no gap at all. And the one below is the only
+  // place to type after the quote: without it, a click in the empty space
+  // under the message put the caret at the end of the last quoted line, and
+  // everything typed from there — a closing sentence, a whole list — went
+  // inside the quote, in the quote's grey, and was sent that way.
+  return (
+    `<div><br></div><div><br></div><div class="quote-head">${head}</div>` +
+    `<blockquote>${inner}</blockquote><div><br></div>`
+  );
 }
 
 /**
@@ -2460,6 +2471,11 @@ function mailHtml() {
   style(".quote-head", "color:#5b5b60;font-size:13px;margin:0 0 4px");
   style("blockquote", "margin:0;padding-left:12px;border-left:2px solid #d4d4d8;color:#5b5b60");
   style("ul,ol", "padding-left:22px;margin:6px 0");
+  // The empty line kept under the quote is somewhere to type, not something
+  // to send: trailing blank lines are trimmed the way trailing spaces are.
+  while (copy.lastElementChild && /^(DIV|P)$/.test(copy.lastElementChild.tagName) && !copy.lastElementChild.textContent.trim() && !copy.lastElementChild.querySelector("img")) {
+    copy.lastElementChild.remove();
+  }
   return copy.innerHTML.trim();
 }
 
@@ -3168,6 +3184,40 @@ $("#cLink").addEventListener("click", async () => {
   document.execCommand("createLink", false, url);
 });
 
+/**
+ * Enter on an empty line at the end of the quote leaves the quote.
+ *
+ * The browser never does this on its own: Enter inside a <blockquote> makes
+ * another line inside it, and again, and again, so a caret that landed at the
+ * end of the quoted message stays there for the rest of the reply. Every
+ * other mail client treats the second Enter as "I am done quoting" — this
+ * one now does too, but only from the last line, so a blank line pressed in
+ * the middle of the quote still just makes a blank line.
+ */
+$("#cBody").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+  const sel = getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return;
+  const at = sel.anchorNode;
+  const el = at.nodeType === 1 ? at : at.parentElement;
+  const quote = el && el.closest("#cBody blockquote");
+  if (!quote) return;
+  const line = el.closest("div, p");
+  if (!line || line.parentElement !== quote || line !== quote.lastElementChild) return;
+  if (line.textContent.trim() !== "") return;
+  e.preventDefault();
+  line.remove();
+  const out = document.createElement("div");
+  out.innerHTML = "<br>";
+  quote.after(out);
+  const r = document.createRange();
+  r.setStart(out, 0);
+  r.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(r);
+  queueDraftSave();
+});
+
 /* ── the AI pass ── */
 async function assist(mode, btn) {
   const body = $("#cBody");
@@ -3276,7 +3326,7 @@ async function draftReply(btn) {
       .split(/\n{2,}/)
       .map((p) => `<div>${esc(p).replace(/\n/g, "<br>")}</div>`)
       .join("<div><br></div>");
-    body.innerHTML = written + "<div><br></div>" + tail;
+    body.innerHTML = written + "<div><br></div>" + tail + "<div><br></div>";
     toast("Reply written — read it before sending", () => { body.innerHTML = before; });
   } catch { toast("AI failed"); }
   finally {
