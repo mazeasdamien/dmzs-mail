@@ -750,6 +750,9 @@ html.busy #bar{opacity:1}
     <button class="rbtn ico" id="rPdf" aria-label="Save as PDF" title="Save as PDF (p)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M12 11.5v5"/><path d="m9.8 14.5 2.2 2.2 2.2-2.2"/></svg>
     </button>
+    <button class="rbtn ico" id="rForward" aria-label="Forward" title="Forward (f)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 8 19 12l-4.5 4"/><path d="M19 12h-7a6 6 0 0 0-6 6v1"/></svg>
+    </button>
     <button class="rbtn ico" id="rReplyAI" aria-label="Reply all, written for you" title="Reply all, with the reply already written (Shift+A)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9 2.5 13l4.5 4"/><path d="M12 9l-4.5 4 4.5 4"/><path d="M7.5 13h7a6 6 0 0 1 6 6v.5"/><path d="m19 3.4.8 1.6 1.6.8-1.6.8-.8 1.6-.8-1.6-1.6-.8 1.6-.8z" fill="currentColor"/></svg>
     </button>
@@ -1127,7 +1130,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v29";
+const CLIENT = "v30";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2002,6 +2005,10 @@ addEventListener("keydown", (e) => {
       e.preventDefault();
       startReply(true);
       break;
+    case "f":
+      e.preventDefault();
+      startForward();
+      break;
     // Shift+A: the same reply, already written.
     case "A":
       e.preventDefault();
@@ -2500,6 +2507,99 @@ function mailHtml() {
   }
   return copy.innerHTML.trim();
 }
+
+/**
+ * The message, headed up for somebody who has not seen it.
+ *
+ * Not the shape of a reply. A reply quotes what it answers, under a line
+ * saying who wrote it; a forward hands the whole thing over, so it opens with
+ * the headers the recipient needs to make sense of it — who sent it, when,
+ * and who else was on it — the way every mail client has done it since long
+ * before HTML.
+ */
+function forwardedBody(m, html) {
+  const line = (label, v) => (v ? `${label} ${esc(v)}<br>` : "");
+  const who = m.from_name ? `${m.from_name} <${m.from_email}>` : m.from_email || "";
+  return (
+    `<div><br></div><div><br></div>` +
+    `<div class="quote-head">Begin forwarded message:<br><br>` +
+    line("From:", who) +
+    line("Subject:", m.subject) +
+    line("Date:", new Date(m.date).toLocaleString()) +
+    line("To:", m.to_line) +
+    line("Cc:", m.cc_line) +
+    `</div><blockquote>${html}</blockquote><div><br></div>`
+  );
+}
+
+/**
+ * Passing a message on, files and all.
+ *
+ * The files are the part that makes this more than a quote: a forward without
+ * the attachment is a forward of nothing, and the one thing the recipient
+ * actually wanted stays behind. They are fetched from our own attachment
+ * endpoint and re-attached to the new message, which is exactly what the file
+ * picker does with something off your disk — the same path, so nothing new
+ * can go wrong on the way out.
+ *
+ * Except the pictures the body already shows. A signature logo is referenced
+ * from the HTML as cid:, and the reader has already resolved it into the body
+ * as the picture itself; attaching it as well would send it twice, once
+ * inline and once as a file called image003.png.
+ */
+async function startForward() {
+  if (!current) return;
+  const m = current.message;
+  const stored = current.body.html || "";
+  const shown = current.body.shown || stored;
+
+  openCompose({
+    title: "Forward",
+    account: m.account_id,
+    subject: /^\s*fwd?\s*:/i.test(m.subject || "") ? m.subject : `Fwd: ${m.subject || ""}`,
+    html: forwardedBody(m, shown),
+  });
+
+  // After the composer is open, not before: a 3 MB attachment should not hold
+  // the window shut while it is read, and the files land as they arrive.
+  const atts = (current.body.attachments || []).filter(
+    (a) => !(a.cid && stored.toLowerCase().includes(String(a.cid).toLowerCase()))
+  );
+  if (!atts.length) return;
+
+  busy(1);
+  let over = 0;
+  try {
+    for (let i = 0; i < (current.body.attachments || []).length; i++) {
+      const a = (current.body.attachments || [])[i];
+      if (!atts.includes(a)) continue;
+      const res = await api(`/api/messages/${m.id}/attachment/${i}`).catch(() => null);
+      if (!res || !res.ok) continue;
+      const blob = await res.blob();
+      const data = await fileToBase64(blob);
+      // Budget against the base64, which is what actually travels, and stop
+      // rather than build a message the server will refuse whole.
+      if (attached.reduce((n, x) => n + x.data.length, 0) + data.length > SEND_LIMIT) {
+        over++;
+        continue;
+      }
+      attached.push({
+        filename: a.filename || `attachment-${i + 1}`,
+        type: a.type || "application/octet-stream",
+        data,
+        bytes: blob.size,
+      });
+      renderAtts();
+    }
+  } catch {
+    toast("Some attachments could not be read");
+  } finally {
+    busy(-1);
+  }
+  renderAtts();
+  if (over) toast(`${over} attachment${over > 1 ? "s" : ""} left behind — over 20 MB`);
+}
+$("#rForward").addEventListener("click", startForward);
 
 function startReply(all) {
   if (!current) return;
