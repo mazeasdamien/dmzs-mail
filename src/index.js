@@ -92,7 +92,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * hand — three constants, but the alternative is a build step for a project
  * whose whole point is that it has none.
  */
-const CLIENT_SHELL = "v28";
+const CLIENT_SHELL = "v29";
 
 /**
  * Which pass of the defuser produced a stored body.
@@ -2214,6 +2214,12 @@ async function handleApi(request, env, path, ctx) {
     if (!msg) return json({ error: "Unknown message" }, 404);
     const acct = await accountById(env, msg.account_id);
 
+    // ?peek=1 — fetch a message without marking it read. Saving a whole
+    // conversation opens every message in it, and an export is not a reading:
+    // coming back to an exchange to find all of it marked read, here and on
+    // every other device, is a change nobody asked for.
+    const peek = new URL(request.url).searchParams.get("peek") === "1";
+
     let body;
     try {
       body = await ensureBody(env, acct, msg);
@@ -2222,7 +2228,7 @@ async function handleApi(request, env, path, ctx) {
       body = { html: `<p>(could not fetch the body: ${String(e.message || e)})</p>`, blocked: 0 };
     }
 
-    if (msg.unread) {
+    if (msg.unread && !peek) {
       await env.DB.prepare("UPDATE messages SET unread=0 WHERE id=?").bind(msg.id).run();
       // Best effort at the provider; a failure here costs nothing visible.
       if (ctx) {
@@ -2248,7 +2254,7 @@ async function handleApi(request, env, path, ctx) {
     }
 
     return json({
-      message: { ...msg, unread: 0 },
+      message: { ...msg, unread: peek ? msg.unread : 0 },
       account: { id: acct.id, provider: acct.provider, email: acct.email },
       body,
     });
