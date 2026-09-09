@@ -521,38 +521,38 @@ function clientFns(names, globals = {}) {
 
 console.log("\n-- client : adresses d'une reponse ---------");
 {
-  const me = "damien.mazeas@icloud.com";
+  const me = "moi@x.fr";
   const { addressesIn, replyTargets } = clientFns(["addressesIn", "replyTargets"], {
     acctById: () => ({ email: me }),
   });
   const msg = (from, to, cc) => ({ account_id: "a", from_email: from, to_line: to, cc_line: cc });
 
-  eq(addressesIn(`'${me}', b@x.fr`), [me, "b@x.fr"], "apostrophes d'Outlook retirées");
-  eq(addressesIn("o'brien@x.fr"), ["o'brien@x.fr"], "apostrophe interne conservée");
+  eq(addressesIn(`'${me}', b@y.fr`), [me, "b@y.fr"], "apostrophes d'Outlook retirées");
+  eq(addressesIn("o'brien@y.fr"), ["o'brien@y.fr"], "apostrophe interne conservée");
 
   eq(
-    replyTargets(msg("j.a@cranfield.ac.uk", `'${me}'`, `'${me}', b@cranfield.ac.uk`), true),
-    { to: ["j.a@cranfield.ac.uk"], cc: ["b@cranfield.ac.uk"] },
+    replyTargets(msg("jean@y.fr", `'${me}'`, `'${me}', claire@z.fr`), true),
+    { to: ["jean@y.fr"], cc: ["claire@z.fr"] },
     "reçu : l'expéditeur en To, soi-même retiré du Cc"
   );
   eq(
-    replyTargets(msg(me, "x@mdpi.com", "b@cranfield.ac.uk"), true),
-    { to: ["x@mdpi.com"], cc: ["b@cranfield.ac.uk"] },
+    replyTargets(msg(me, "jean@y.fr", "claire@z.fr"), true),
+    { to: ["jean@y.fr"], cc: ["claire@z.fr"] },
     "envoyé : on réécrit aux mêmes, pas à soi"
   );
   eq(
-    replyTargets(msg(me, "x@mdpi.com", "b@cranfield.ac.uk"), false),
-    { to: ["x@mdpi.com"], cc: [] },
+    replyTargets(msg(me, "jean@y.fr", "claire@z.fr"), false),
+    { to: ["jean@y.fr"], cc: [] },
     "envoyé, réponse simple : le Cc reste dehors"
   );
   eq(
-    replyTargets(msg("x@y.fr", "", `z@w.fr, ${me}`), true),
-    { to: ["x@y.fr"], cc: ["z@w.fr"] },
+    replyTargets(msg("jean@y.fr", "", `claire@z.fr, ${me}`), true),
+    { to: ["jean@y.fr"], cc: ["claire@z.fr"] },
     "en copie seulement : l'expéditeur reste adressé"
   );
   eq(
-    replyTargets(msg(me, "", "z@w.fr"), true),
-    { to: ["z@w.fr"], cc: [] },
+    replyTargets(msg(me, "", "claire@z.fr"), true),
+    { to: ["claire@z.fr"], cc: [] },
     "rien en To : le premier du Cc est promu"
   );
 }
@@ -561,10 +561,10 @@ console.log("\n-- client : signature de l'assistant -------");
 {
   const sig = (email, label = "") =>
     clientFns(["signature"], { acctById: () => ({ email, label }), composeAcct: "a" }).signature();
-  eq(sig("damien.mazeas@icloud.com"), "Damien", "prénom tiré de l'adresse");
+  eq(sig("jean.dupont@x.fr"), "Jean", "prénom tiré de l'adresse");
   eq(sig("jean-luc.picard@x.fr"), "Jean-Luc", "prénom composé gardé entier");
   eq(sig("contact@x.fr"), "", "une boîte nommée contact ne signe rien");
-  eq(sig("x@y.fr", "Damien Mazeas"), "Damien Mazeas", "le libellé du compte l'emporte");
+  eq(sig("x@y.fr", "Jean Dupont"), "Jean Dupont", "le libellé du compte l'emporte");
 }
 
 console.log(`\n${fail === 0 ? "✓" : "✗"} ${pass} assertions passées, ${fail} échec(s)\n`);

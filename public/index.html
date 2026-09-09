@@ -790,7 +790,7 @@ html.busy #bar{opacity:1}
   </div>
   <div class="sh-s" style="margin:2px 0 0;font-size:12px">A remote image is fetched from the sender's server as the message opens, which tells them you read it and when. Asking first holds them back behind the Images button. Either way, nothing is re-downloaded when you switch — the blocked form is what has always been stored.</div>
   <div class="sh-s" style="margin:14px 0 6px">Signature</div>
-  <textarea class="field" id="sigText" rows="4" placeholder="Damien Mazeas&#10;Cranfield University" spellcheck="false" style="min-height:96px"></textarea>
+  <textarea class="field" id="sigText" rows="4" placeholder="Damien Mazeas" spellcheck="false" style="min-height:96px"></textarea>
   <button class="ghost" id="sigSave" style="width:100%;justify-content:center;min-height:34px">Save the signature</button>
   <div class="sh-s" style="margin:6px 0 0;font-size:12px">Goes under what you write and above the quote, in a new message and in a reply alike. Plain text, one line per line, kept in the database so it is the same signature on every device. Empty removes it.</div>
   <div class="sh-s" style="margin:14px 0 6px">Writing assistant</div>
@@ -1134,7 +1134,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v31";
+const CLIENT = "v32";
 
 async function api(path, opts = {}) {
   busy(1);

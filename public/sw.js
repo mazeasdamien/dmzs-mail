@@ -7,7 +7,7 @@
 
 // Bump on every shell change. The activate handler deletes any cache whose
 // name is not this one, so an old index.html cannot outlive a deploy.
-const SHELL = "dmzs-mail-shell-v31";
+const SHELL = "dmzs-mail-shell-v32";
 
 const SHELL_FILES = [
   "/",
