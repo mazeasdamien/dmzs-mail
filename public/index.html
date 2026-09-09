@@ -789,6 +789,10 @@ html.busy #bar{opacity:1}
     <button class="pill" data-images="ask">Ask first</button>
   </div>
   <div class="sh-s" style="margin:2px 0 0;font-size:12px">A remote image is fetched from the sender's server as the message opens, which tells them you read it and when. Asking first holds them back behind the Images button. Either way, nothing is re-downloaded when you switch — the blocked form is what has always been stored.</div>
+  <div class="sh-s" style="margin:14px 0 6px">Signature</div>
+  <textarea class="field" id="sigText" rows="4" placeholder="Damien Mazeas&#10;Cranfield University" spellcheck="false" style="min-height:96px"></textarea>
+  <button class="ghost" id="sigSave" style="width:100%;justify-content:center;min-height:34px">Save the signature</button>
+  <div class="sh-s" style="margin:6px 0 0;font-size:12px">Goes under what you write and above the quote, in a new message and in a reply alike. Plain text, one line per line, kept in the database so it is the same signature on every device. Empty removes it.</div>
   <div class="sh-s" style="margin:14px 0 6px">Writing assistant</div>
   <div class="sh-s" id="aiKeyState" style="margin:0 0 8px;font-size:12px">&mdash;</div>
   <div class="field"><input id="aiKeyInput" type="password" placeholder="Gemini API key" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
@@ -1130,7 +1134,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v30";
+const CLIENT = "v31";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -3185,6 +3189,7 @@ $("#acctBtn").addEventListener("click", () => {
   renderAccounts();
   refreshNotifyButton();
   refreshAiKey();
+  refreshSignature();
   openSheet("#acctSheet");
 });
 $("#repairSelf").addEventListener("click", async (e) => {
@@ -3295,7 +3300,7 @@ function openCompose(opts = {}) {
   $("#cBccWrap").hidden = true;
   for (const [btn, wrap, , name] of CC_TOGGLES) markToggle(btn, wrap, name);
   $("#cSubj").value = opts.subject || "";
-  $("#cBody").innerHTML = opts.html || "";
+  $("#cBody").innerHTML = withSignature(opts.html);
   // Nothing to answer in a message that is not a reply to anything.
   $("#aiDraft").hidden = !replyTo;
   $("#cErr").classList.remove("show");
@@ -3562,14 +3567,16 @@ async function draftReply(btn) {
   const original = quote.innerText.trim();
   if (!original) { toast("Nothing to reply to"); return; }
 
-  // The brief is whatever is in the composer that is not the quote.
+  // The brief is whatever is in the composer that is not the quote — and not
+  // the signature, which is not something you are asking for.
   const scratch = body.cloneNode(true);
-  scratch.querySelectorAll("blockquote, .quote-head").forEach((el) => el.remove());
+  scratch.querySelectorAll("blockquote, .quote-head, .sig").forEach((el) => el.remove());
   const note = scratch.innerText.trim();
 
   const before = body.innerHTML;
   const head = body.querySelector(".quote-head");
-  const tail = (head ? head.outerHTML : "") + quote.outerHTML;
+  const sig = body.querySelector(".sig");
+  const tail = (sig ? sig.outerHTML : "") + (head ? head.outerHTML : "") + quote.outerHTML;
   const tools = document.querySelectorAll("#cTools .ai");
   tools.forEach((t) => (t.disabled = true));
   const was = btn.textContent;
@@ -3578,7 +3585,7 @@ async function draftReply(btn) {
     const res = await api("/api/assist", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "reply", text: original, note, me: signature() }),
+      body: JSON.stringify({ mode: "reply", text: original, note, me: signature(), signed: !!sig }),
     });
     const d = await res.json().catch(() => ({}));
     if (!res.ok) { toast(d.error || "AI failed"); return; }
@@ -3651,6 +3658,79 @@ function applyImages(choice) {
 $("#imgPick").addEventListener("click", (e) => {
   const b = e.target.closest("[data-images]");
   if (b) applyImages(b.dataset.images);
+});
+
+/* ── the signature ── */
+
+/**
+ * What goes under everything you write.
+ *
+ * Read once at startup and kept here, because openCompose needs it the
+ * instant a reply opens and cannot wait on a request; written to the database
+ * rather than this browser, so the phone signs your mail the same way the
+ * laptop does.
+ */
+let signatureText = "";
+
+async function loadSignature() {
+  const res = await api("/api/signature").catch(() => null);
+  if (!res || !res.ok) return;
+  const d = await res.json().catch(() => ({}));
+  signatureText = String(d.text || "");
+}
+
+/**
+ * The signature as the editor's own markup: one div per line, marked so the
+ * rest of the composer can find it again. draftReply rewrites everything
+ * above the quote, and without a handle on this block it would rewrite the
+ * signature away with it.
+ */
+function signatureHtml() {
+  const t = signatureText.trim();
+  if (!t) return "";
+  return `<div class="sig">${t
+    .split("\n")
+    .map((l) => `<div>${esc(l) || "<br>"}</div>`)
+    .join("")}</div>`;
+}
+
+/**
+ * The composer's opening content with the signature in it.
+ *
+ * Above the quote, not below: a reply that signs off after the message it is
+ * answering reads as a signature on somebody else's letter. Everything else —
+ * a new message, a forward — takes it at the end, which is the same place.
+ */
+function withSignature(html) {
+  const sig = signatureHtml();
+  if (!sig) return html || "";
+  const at = (html || "").indexOf('<div class="quote-head">');
+  if (at < 0) return (html || "<div><br></div>") + sig;
+  return html.slice(0, at) + sig + html.slice(at);
+}
+
+async function refreshSignature() {
+  await loadSignature();
+  $("#sigText").value = signatureText;
+}
+
+$("#sigSave").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = "Saving…";
+  const res = await api("/api/signature", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: $("#sigText").value }),
+  }).catch(() => null);
+  btn.disabled = false;
+  btn.textContent = was;
+  const d = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { toast(d.error || "Could not save the signature"); return; }
+  signatureText = String(d.text || "");
+  $("#sigText").value = signatureText;
+  toast(signatureText ? "Signature saved" : "Signature removed");
 });
 
 /* ── the writing assistant's key ── */
@@ -4430,7 +4510,10 @@ addEventListener("online", () => refreshAll());
   applyImages(localStorage.getItem("dmzs-images") || "auto");
   try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch {}
 
-  await refreshAll();
+  // The signature is wanted the moment a reply opens, which can be before
+  // any settings sheet has ever been looked at, so it is read at startup
+  // alongside the mail rather than after it.
+  await Promise.all([refreshAll(), loadSignature()]);
   schedulePoll();
   resumeKeptDraft();
 

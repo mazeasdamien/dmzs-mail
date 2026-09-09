@@ -92,7 +92,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * hand — three constants, but the alternative is a build step for a project
  * whose whole point is that it has none.
  */
-const CLIENT_SHELL = "v30";
+const CLIENT_SHELL = "v31";
 
 /**
  * Which pass of the defuser produced a stored body.
@@ -2624,6 +2624,33 @@ async function handleApi(request, env, path, ctx) {
     return json({ ok: true });
   }
 
+  // GET /api/signature — what goes under everything you write.
+  // POST /api/signature { text } — an empty one removes it.
+  //
+  // In the database rather than in the browser: a signature that only exists
+  // on the laptop signs half your mail and leaves the other half bare, and
+  // which half depends on which device happened to be nearest. Plain text,
+  // not markup — it is pasted into a message, so the one thing it must not be
+  // able to do is carry anything into the composer that is not writing.
+  if (path === "/api/signature" && request.method === "GET") {
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE key='signature'").first();
+    return json({ text: row?.value || "" });
+  }
+  if (path === "/api/signature" && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const text = String(b.text || "").replace(/\r/g, "").slice(0, 2000).trim();
+    if (!text) {
+      await env.DB.prepare("DELETE FROM settings WHERE key='signature'").run();
+      return json({ ok: true, text: "" });
+    }
+    await env.DB.prepare(
+      "INSERT INTO settings (key, value) VALUES ('signature', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+    )
+      .bind(text)
+      .run();
+    return json({ ok: true, text });
+  }
+
   // GET /api/ai-key — whether the assistant has a key and where it came from.
   // Never the key itself: it goes in and is not readable back out, like the
   // iCloud password. The last four characters are enough to tell one key from
@@ -2752,6 +2779,9 @@ async function handleApi(request, env, path, ctx) {
     // followed. The message being answered is not, and is fenced off below.
     const note = String(b.note || "").slice(0, 2_000).trim();
     const me = String(b.me || "").slice(0, 80).replace(/[\r\n]+/g, " ").trim();
+    // A signature is already sitting under the composer, so a written reply
+    // that ends "Bien cordialement, Damien" puts the name twice on the page.
+    const signed = !!b.signed;
 
     const task = {
       grammar:
@@ -2763,9 +2793,13 @@ async function handleApi(request, env, path, ctx) {
 
 Be short. Four sentences at the very most, and fewer whenever fewer will do. Say the thing and stop: no thanking anyone for their email, no restating what they wrote, no offering to answer further questions, no filler courtesies of any kind. One line and a sign-off is a perfectly good reply.
 
-No invented facts, no commitment to anything the brief does not cover, and no bracketed placeholders for somebody to fill in later. Greet and sign off the way the message does${
-          me ? `, signing ${me}` : ", ending on the sign-off line with no name after it"
-        }.` +
+No invented facts, no commitment to anything the brief does not cover, and no bracketed placeholders for somebody to fill in later. Greet the way the message does.${
+          signed
+            ? " End on the last sentence of the reply: no sign-off, no farewell and no name, because a signature is added under what you write."
+            : me
+              ? ` Sign off the way the message does, signing ${me}.`
+              : " Sign off the way the message does, ending on the sign-off line with no name after it."
+        }` +
         (note
           ? `\n\nWhat the reply has to say, written by the person sending it. Cover it, and go no further than it:\n${note}`
           : "\n\nNothing was said about what to reply, so acknowledge the message and answer what it plainly asks, agreeing to nothing that is somebody's decision to make."),
