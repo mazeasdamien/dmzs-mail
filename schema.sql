@@ -49,6 +49,9 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_list    ON messages(folder, date DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_account ON messages(account_id, folder, date DESC);
+-- The list groups by thread_key on every load, and opening a conversation
+-- filters on it. Both walk the whole table without this.
+CREATE INDEX IF NOT EXISTS idx_messages_thread  ON messages(thread_key);
 
 -- A database created before this file dropped `labels` still has the column.
 -- It is left alone rather than migrated away: nothing reads or writes it now,

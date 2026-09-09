@@ -29,6 +29,7 @@ import {
   parseMessage,
 } from "./src/rfc822.js";
 import { seal, open } from "./src/crypto.js";
+import { readFileSync } from "node:fs";
 
 let pass = 0;
 let fail = 0;
@@ -479,6 +480,91 @@ console.log("\n-- message imbrique (transfert, rapport) ---");
     inner +
     "\r\n--B--\r\n";
   eq(parseMessage(joint).attachments.length, 1, "message joint nomme : reste une piece jointe");
+}
+
+/* ── le client, éprouvé comme le reste ──────────────────────────
+ *
+ * public/index.html porte quatre mille lignes de script qu'aucun test n'avait
+ * jamais exécutées : check-client.mjs vérifie qu'elles s'analysent, pas ce
+ * qu'elles font. Les trois bugs de la semaine — les destinataires d'un reply
+ * all, les apostrophes qu'Outlook met autour d'une adresse, le texte tapé qui
+ * finissait dans la citation — étaient tous là.
+ *
+ * Les fonctions qui ne touchent pas au DOM sont découpées du script livré et
+ * évaluées ici, leurs dépendances passées en paramètres. Rien à installer, et
+ * c'est bien le code déployé qui est mis à l'épreuve, pas une copie qui
+ * dériverait de son côté.
+ */
+const clientScript = readFileSync(new URL("./public/index.html", import.meta.url), "utf8")
+  .split("<script>")[1]
+  .split("</script>")[0];
+
+/** Une déclaration, découpée du script client par son nom. */
+function decl(name) {
+  const at = clientScript.search(new RegExp(`^(?:async )?(?:function ${name}\\b|const ${name} = )`, "m"));
+  if (at < 0) throw new Error(`introuvable dans le client : ${name}`);
+  const rest = clientScript.slice(at);
+  // Une fonction se ferme sur une accolade en première colonne ; une constante
+  // fléchée se termine au point-virgule suivi de la ligne vide qui la sépare
+  // de la suivante. Le fichier est écrit comme ça de bout en bout.
+  const end = rest.startsWith("const") ? rest.indexOf(";\n\n") + 1 : rest.indexOf("\n}\n") + 2;
+  if (end <= 1) throw new Error(`fin de déclaration introuvable : ${name}`);
+  return rest.slice(0, end);
+}
+
+/** Ces fonctions-là, avec ce qu'elles attendent autour d'elles. */
+function clientFns(names, globals = {}) {
+  const keys = Object.keys(globals);
+  const src = names.map(decl).join("\n");
+  return new Function(...keys, `${src}\nreturn { ${names.join(", ")} };`)(...keys.map((k) => globals[k]));
+}
+
+console.log("\n-- client : adresses d'une reponse ---------");
+{
+  const me = "damien.mazeas@icloud.com";
+  const { addressesIn, replyTargets } = clientFns(["addressesIn", "replyTargets"], {
+    acctById: () => ({ email: me }),
+  });
+  const msg = (from, to, cc) => ({ account_id: "a", from_email: from, to_line: to, cc_line: cc });
+
+  eq(addressesIn(`'${me}', b@x.fr`), [me, "b@x.fr"], "apostrophes d'Outlook retirées");
+  eq(addressesIn("o'brien@x.fr"), ["o'brien@x.fr"], "apostrophe interne conservée");
+
+  eq(
+    replyTargets(msg("j.a@cranfield.ac.uk", `'${me}'`, `'${me}', b@cranfield.ac.uk`), true),
+    { to: ["j.a@cranfield.ac.uk"], cc: ["b@cranfield.ac.uk"] },
+    "reçu : l'expéditeur en To, soi-même retiré du Cc"
+  );
+  eq(
+    replyTargets(msg(me, "x@mdpi.com", "b@cranfield.ac.uk"), true),
+    { to: ["x@mdpi.com"], cc: ["b@cranfield.ac.uk"] },
+    "envoyé : on réécrit aux mêmes, pas à soi"
+  );
+  eq(
+    replyTargets(msg(me, "x@mdpi.com", "b@cranfield.ac.uk"), false),
+    { to: ["x@mdpi.com"], cc: [] },
+    "envoyé, réponse simple : le Cc reste dehors"
+  );
+  eq(
+    replyTargets(msg("x@y.fr", "", `z@w.fr, ${me}`), true),
+    { to: ["x@y.fr"], cc: ["z@w.fr"] },
+    "en copie seulement : l'expéditeur reste adressé"
+  );
+  eq(
+    replyTargets(msg(me, "", "z@w.fr"), true),
+    { to: ["z@w.fr"], cc: [] },
+    "rien en To : le premier du Cc est promu"
+  );
+}
+
+console.log("\n-- client : signature de l'assistant -------");
+{
+  const sig = (email, label = "") =>
+    clientFns(["signature"], { acctById: () => ({ email, label }), composeAcct: "a" }).signature();
+  eq(sig("damien.mazeas@icloud.com"), "Damien", "prénom tiré de l'adresse");
+  eq(sig("jean-luc.picard@x.fr"), "Jean-Luc", "prénom composé gardé entier");
+  eq(sig("contact@x.fr"), "", "une boîte nommée contact ne signe rien");
+  eq(sig("x@y.fr", "Damien Mazeas"), "Damien Mazeas", "le libellé du compte l'emporte");
 }
 
 console.log(`\n${fail === 0 ? "✓" : "✗"} ${pass} assertions passées, ${fail} échec(s)\n`);

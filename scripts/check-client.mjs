@@ -14,6 +14,8 @@
 import { readFileSync } from "node:fs";
 
 const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+const worker = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
+const sw = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
 const script = html.split("<script>")[1]?.split("</script>")[0] ?? "";
 
 let failed = 0;
@@ -58,6 +60,25 @@ const buttons = [...html.matchAll(/<button[^>]*\bid="([^"]+)"/g)].map((m) => m[1
 //    is a button nothing anywhere refers to.
 const inert = buttons.filter((id) => !script.includes(id));
 check("no button without a handler", inert.length === 0, inert.join(", "));
+
+// 5. The build number, in the three files that have to agree on it.
+//
+//    The client sends it with every request, the Worker sends back what it
+//    ought to be, and the service worker names its cache after it. Bump two of
+//    the three and every open tab is told it is out of date on every request,
+//    or worse, none of them is told when it really is.
+const said = (src, re) => (re.exec(src) || [, ""])[1];
+const versions = {
+  "public/index.html": said(html, /const CLIENT = "([^"]+)"/),
+  "src/index.js": said(worker, /const CLIENT_SHELL = "([^"]+)"/),
+  "public/sw.js": said(sw, /const SHELL = "dmzs-mail-shell-([^"]+)"/),
+};
+const agreed = new Set(Object.values(versions));
+check(
+  "one build number across the three files",
+  agreed.size === 1 && !agreed.has(""),
+  Object.entries(versions).map(([f, v]) => `${f}: ${v || "(not found)"}`).join(", ")
+);
 
 console.log(failed === 0 ? "\nclient OK\n" : `\n${failed} client check(s) failed\n`);
 process.exit(failed ? 1 : 0);

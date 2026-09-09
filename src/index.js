@@ -124,6 +124,85 @@ async function flagAccount(env, account, e) {
 }
 
 /* ────────────────────────────────────────────────────────────────
+   Keeping the database in step with the code.
+   ──────────────────────────────────────────────────────────────── */
+
+/**
+ * What this build expects a table to have, for a database that predates it.
+ *
+ * schema.sql is CREATE TABLE IF NOT EXISTS from top to bottom. That is exactly
+ * right for a fresh install and does nothing whatsoever for one that already
+ * exists: a column added to that file after the database was created is never
+ * added to the database, and `npm run db:schema` will not tell you so.
+ *
+ * It is not a theoretical problem. The first INSERT naming a column that is
+ * not there throws, storeRows throws with it, and the sync stops dead for
+ * every account — silently, once a minute, for as long as it takes somebody
+ * to notice no mail has arrived. Nor can it be fixed from a laptop: the API
+ * token here deploys Workers but is refused on `d1 execute --remote`, so the
+ * only thing that can reach the live database is the Worker itself.
+ *
+ * So it checks, before each sync, what it is actually talking to. Everything
+ * below is idempotent, and costs two reads when there is nothing to do.
+ */
+const WANTED_COLUMNS = {
+  messages: {
+    mid: "TEXT NOT NULL DEFAULT ''",
+    thread_key: "TEXT NOT NULL DEFAULT ''",
+    cc_line: "TEXT NOT NULL DEFAULT ''",
+    bcc_line: "TEXT NOT NULL DEFAULT ''",
+    starred: "INTEGER NOT NULL DEFAULT 0",
+    has_body: "INTEGER NOT NULL DEFAULT 0",
+  },
+  accounts: {
+    label: "TEXT NOT NULL DEFAULT ''",
+    secret: "TEXT",
+    sync_state: "TEXT",
+    last_error: "TEXT",
+  },
+};
+
+/** Indexes that are not worth a table rebuild but are worth having. */
+const WANTED_INDEXES = {
+  // The message list groups by thread_key on every load, and a conversation is
+  // fetched by it. Without this, both walk the whole table.
+  idx_messages_thread: "CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_key)",
+};
+
+async function ensureSchema(env) {
+  const added = [];
+  for (const [table, columns] of Object.entries(WANTED_COLUMNS)) {
+    // pragma_table_info as a table-valued function rather than a bare PRAGMA:
+    // it comes back as ordinary rows, which is what D1's query interface
+    // returns anyway.
+    const info = await env.DB.prepare("SELECT name FROM pragma_table_info(?)").bind(table).all().catch(() => null);
+    const have = new Set((info?.results ?? []).map((r) => r.name));
+    // No columns at all means no table, which is schema.sql's job and not
+    // something to paper over here.
+    if (!have.size) continue;
+    for (const [name, decl] of Object.entries(columns)) {
+      if (have.has(name)) continue;
+      // The table and column names are constants from the map above, never
+      // anything that arrived over the wire — DDL cannot be parameterised.
+      await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${decl}`).run();
+      added.push(`${table}.${name}`);
+    }
+  }
+  for (const [name, sql] of Object.entries(WANTED_INDEXES)) {
+    const row = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name=?")
+      .bind(name)
+      .first();
+    if (row) continue;
+    await env.DB.prepare(sql).run();
+    added.push(name);
+  }
+  // Only ever says something when something changed: a line a minute saying
+  // all is well is a line nobody reads.
+  if (added.length) console.log(`schema: added ${added.join(", ")}`);
+  return added;
+}
+
+/* ────────────────────────────────────────────────────────────────
    Storing messages.
    ──────────────────────────────────────────────────────────────── */
 
@@ -3059,6 +3138,11 @@ export default {
     }
     ctx.waitUntil(
       (async () => {
+        // Before anything reads or writes a message: a build that expects a
+        // column the database has not got cannot sync at all, and this is the
+        // only place that can put that right.
+        await ensureSchema(env).catch((e) => console.log(`schema: ${e.message || e}`));
+
         const before = await env.DB.prepare(
           "SELECT COUNT(*) AS n FROM messages WHERE folder='inbox' AND unread=1"
         ).first();
