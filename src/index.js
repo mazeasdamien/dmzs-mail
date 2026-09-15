@@ -92,7 +92,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * hand — three constants, but the alternative is a build step for a project
  * whose whole point is that it has none.
  */
-const CLIENT_SHELL = "v32";
+const CLIENT_SHELL = "v33";
 
 /**
  * Which pass of the defuser produced a stored body.
@@ -2537,14 +2537,26 @@ async function handleApi(request, env, path, ctx) {
     const acct = await accountById(env, msg.account_id);
     if (!acct) return json({ error: "Unknown account" }, 404);
 
+    let gone = false;
     try {
       const done = await icloudAct(env, acct, msg.mid || msg.pid, msg.folder, (im, _b, _h, uid) =>
         imapPurge(im, uid)
       );
       if (!done) return json({ error: "This account cannot delete permanently" }, 400);
     } catch (e) {
-      if (e.reauth) await flagAccount(env, acct, e);
-      return json({ error: String(e.message || e) }, 502);
+      // A message the server does not have is already as deleted as it can be
+      // there, and refusing to drop the row over it leaves one that cannot be
+      // got rid of from anywhere.
+      //
+      // Which is exactly what a superseded draft becomes. Every save appends a
+      // new copy and expunges the one before it, so the older Message-IDs stop
+      // existing at Apple while their rows stay here — and each one answered
+      // Delete with "message not found in any mailbox", for good.
+      if (!/not found in any mailbox/i.test(String(e.message || e))) {
+        if (e.reauth) await flagAccount(env, acct, e);
+        return json({ error: String(e.message || e) }, 502);
+      }
+      gone = true;
     }
 
     await env.MAIL.delete(bodyKey(msg.id));
@@ -2552,7 +2564,7 @@ async function handleApi(request, env, path, ctx) {
       env.DB.prepare("DELETE FROM messages WHERE id=?").bind(msg.id),
       env.DB.prepare("DELETE FROM search WHERE id=?").bind(msg.id),
     ]);
-    return json({ ok: true });
+    return json({ ok: true, alreadyGone: gone });
   }
 
   // POST /api/messages/:id/move { folder } — also how delete works, with

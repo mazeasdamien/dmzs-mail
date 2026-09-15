@@ -1134,7 +1134,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v32";
+const CLIENT = "v33";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -1562,8 +1562,12 @@ function rowHtml(m, sub = false) {
         // A draft opens the composer rather than the reader, so it never had
         // the reader's action bar — and therefore no way to be deleted at all
         // short of opening it and hunting for Discard.
-        m.folder === "drafts" && !sub
-          ? `<button class="rowdel" data-drop="${m.id}" aria-label="Delete draft" title="Delete this draft">
+        // On the rows inside an expansion too: a conversation of eleven
+        // drafts is ten of them with no way to be deleted one at a time.
+        m.folder === "drafts"
+          ? `<button class="rowdel" data-drop="${m.id}" data-dropn="${n}" data-dropkey="${esc(m.thread_key || "")}"
+               aria-label="${n > 1 ? `Delete all ${n} drafts` : "Delete draft"}"
+               title="${n > 1 ? `Delete all ${n} drafts in this conversation` : "Delete this draft"}">
                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
              </button>`
           : ""
@@ -4242,7 +4246,7 @@ $("#list").addEventListener("click", (e) => {
   }
   // Deleting the row must not also open it.
   const del = e.target.closest("[data-drop]");
-  if (del) { dropDraftRow(del.dataset.drop); return; }
+  if (del) { dropDraftRow(del.dataset.drop, Number(del.dataset.dropn || 1), del.dataset.dropkey || ""); return; }
   // The count opens the conversation without opening a message: clicking it
   // must not also count as clicking the row it sits in.
   const c = e.target.closest("[data-thread]");
@@ -4288,9 +4292,27 @@ async function toggleThread(key) {
  * No Undo offered, because there is nothing to undo it with: the message is
  * expunged at Apple, and IMAP has no way back.
  */
-async function dropDraftRow(id) {
-  if (!(await ask("Delete this draft?", "It is removed here and at iCloud. This cannot be undone.", { ok: "Delete", danger: true }))) return;
-  const res = await api(`/api/messages/${id}/purge`, { method: "POST" }).catch(() => null);
+async function dropDraftRow(id, n = 1, key = "") {
+  // A draft saved over a morning leaves a row per sitting, all with the same
+  // subject and therefore all in one conversation. Offering to delete the
+  // newest of eleven and leave ten is not an offer.
+  const many = n > 1 && !!key;
+  const yes = await ask(
+    many ? `Delete these ${n} drafts?` : "Delete this draft?",
+    many
+      ? "Every copy in this conversation goes, here and at iCloud. This cannot be undone, and nothing is sent."
+      : "It is removed here and at iCloud. This cannot be undone.",
+    { ok: "Delete", danger: true }
+  );
+  if (!yes) return;
+  // One login for the whole pile rather than one per copy.
+  const res = many
+    ? await api("/api/thread", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, from: "drafts", purge: 1 }),
+      }).catch(() => null)
+    : await api(`/api/messages/${id}/purge`, { method: "POST" }).catch(() => null);
   const d = res ? await res.json().catch(() => ({})) : {};
   if (!res || !res.ok) return toast(d.error || "Could not delete this draft");
 
@@ -4303,7 +4325,8 @@ async function dropDraftRow(id) {
     draftSession++;
     if (document.body.classList.contains("composing")) closeSheets();
   }
-  toast("Draft deleted");
+  toast(many ? `${n} drafts deleted` : "Draft deleted");
+  if (many) { openThread = ""; threadRows = []; }
   refreshAll();
   refreshCounts();
 }

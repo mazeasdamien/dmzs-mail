@@ -557,6 +557,24 @@ console.log("\n-- client : adresses d'une reponse ---------");
   );
 }
 
+/* Les deux bouts d'une même phrase, dans deux fonctions qui ne se voient pas :
+ * icloudAct annonce qu'il n'a trouvé le message dans aucune boîte, et purge
+ * doit reconnaître cette annonce-là pour effacer quand même la ligne ici. Si
+ * l'un des deux est reformulé un jour, un brouillon redevient indélébile, et
+ * personne ne s'en apercevra avant d'essayer de le supprimer. */
+console.log("\n-- purge : ce qui est deja perdu ----------");
+{
+  const worker = readFileSync(new URL("./src/index.js", import.meta.url), "utf8");
+  const thrown = (/throw new Error\("([^"]*not found[^"]*)"\)/.exec(worker) || [])[1] || "";
+  const tolerated = (/if \(!\/([^/]+)\/i\.test\(String\(e\.message/.exec(worker) || [])[1] || "";
+  ok(!!thrown, "icloudAct dit toujours qu'il n'a rien trouvé");
+  ok(!!tolerated, "purge tolère toujours une de ces phrases");
+  ok(
+    !!thrown && !!tolerated && new RegExp(tolerated, "i").test(thrown),
+    `purge reconnaît la phrase d'icloudAct — "${tolerated}" contre "${thrown}"`
+  );
+}
+
 console.log("\n-- client : signature de l'assistant -------");
 {
   const sig = (email, label = "") =>
