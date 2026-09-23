@@ -721,15 +721,27 @@ html.busy #bar{opacity:1}
 #list{position:relative}
 .rowwrap{position:relative;overflow:hidden;background:var(--bg)}
 /* The reveal lives behind the row. Archive is the filing action worth a
-   gesture — delete is deliberate and stays a button you look for. */
+   gesture — delete is deliberate and stays a button you look for.
+
+   Hidden until a drag actually starts, and gone entirely where there is no
+   coarse pointer. Painted under every row it is one stray background away
+   from being all you can see of the message — which is what a desktop list
+   looked like after the triage work: rows of blue "Archive", no sender, no
+   subject. The gesture is touch-only in the script anyway (touchstart), so
+   a mouse has no use for the layer at all. */
 .rowwrap .swipe-act{
   position:absolute;inset:0;display:flex;align-items:center;justify-content:flex-end;
   gap:8px;padding:0 22px;background:color-mix(in srgb,var(--acc) 18%,var(--bg));
-  color:var(--acc);font-size:var(--t-m);font-weight:650;pointer-events:none}
+  color:var(--acc);font-size:var(--t-m);font-weight:650;pointer-events:none;
+  z-index:0;opacity:0;visibility:hidden}
+.rowwrap.dragging .swipe-act{opacity:1;visibility:visible}
 .rowwrap.left .swipe-act{background:color-mix(in srgb,var(--red) 18%,var(--bg));color:var(--red)}
 .rowwrap .swipe-act svg{flex:none}
 .rowwrap .row{background:var(--bg);will-change:transform;position:relative;z-index:1;
   transition:transform .22s cubic-bezier(.32,.72,0,1)}
+@media (hover:hover) and (pointer:fine){
+  .rowwrap .swipe-act{display:none}
+}
 .rowwrap.dragging .row{transition:none}
 .rowwrap.unread .row,.rowwrap .row.unread{
   background:color-mix(in srgb,var(--acc) 14%,var(--bg))}
@@ -1392,7 +1404,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v35";
+const CLIENT = "v36";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -3648,7 +3660,9 @@ function openCompose(opts = {}) {
   // accident, and the original's blind recipients were never ours to see.
   addrSet("#cBcc", "#cBccChips", "");
   $("#cBccWrap").hidden = true;
-  for (const [btn, wrap, , name] of CC_TOGGLES) markToggle(btn, wrap, name);
+  // Five fields per tuple, label last. An elision of one hole here named the
+  // chips host instead, and both buttons read "+ #cCcChips".
+  for (const [btn, wrap, , , name] of CC_TOGGLES) markToggle(btn, wrap, name);
   $("#cSubj").value = opts.subject || "";
   $("#cBody").innerHTML = withSignature(opts.html);
   // Nothing to answer in a message that is not a reply to anything.

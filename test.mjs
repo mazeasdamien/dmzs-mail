@@ -577,6 +577,27 @@ console.log("\n-- purge : ce qui est deja perdu ----------");
   );
 }
 
+console.log("\n-- client : bascules Cc / Bcc ---------------");
+{
+  // La paire a cinq cases : bouton, champ, input, chips, libellé. Une
+  // destructuration a trois trous sautait deux cases au lieu d'une, et le
+  // bouton s'intitulait « + #cCcChips » — le texte de Cc et Bcc devenait
+  // illisible à l'ouverture du composeur.
+  const m = /const CC_TOGGLES = (\[[\s\S]*?\n\]);/.exec(clientScript);
+  ok(!!m, "CC_TOGGLES présent");
+  const list = m ? new Function(`return ${m[1]}`)() : [];
+  eq(list.map((t) => t[4]), ["Cc", "Bcc"], "le libellé est la 5e case");
+  eq(list.map((t) => t.length), [5, 5], "cinq cases, pas quatre");
+  ok(
+    /for \(const \[btn, wrap, , , name\] of CC_TOGGLES\) markToggle/.test(clientScript),
+    "init lit le libellé au 5e rang"
+  );
+  ok(
+    /for \(const \[btn, wrap, input, chips, name\] of CC_TOGGLES\)/.test(clientScript),
+    "le gestionnaire de clic lit les cinq cases"
+  );
+}
+
 console.log("\n-- client : signature de l'assistant -------");
 {
   const sig = (email, label = "") =>
