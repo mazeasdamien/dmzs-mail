@@ -5,17 +5,28 @@
  *   - a mangled regex escape took the whole client script down
  *   - a duplicated Bcc field gave two elements the same id, so one was inert
  *   - a close button was rendered with no handler bound to it
+ *   - two of the three version constants were bumped and the third was not
  *
  * None of that is caught by the Worker's build, because the client script is
  * an opaque string as far as bundling is concerned.
  *
+ * Also syncs the build number: src/version.js is the only constant a human
+ * edits, and this writes it into the three places that have to agree.
+ *
  *   node scripts/check-client.mjs
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { CLIENT_VERSION } from "../src/version.js";
 
-const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
-const worker = readFileSync(new URL("../src/index.js", import.meta.url), "utf8");
-const sw = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
+const paths = {
+  html: new URL("../public/index.html", import.meta.url),
+  worker: new URL("../src/index.js", import.meta.url),
+  sw: new URL("../public/sw.js", import.meta.url),
+};
+
+let html = readFileSync(paths.html, "utf8");
+let worker = readFileSync(paths.worker, "utf8");
+let sw = readFileSync(paths.sw, "utf8");
 const script = html.split("<script>")[1]?.split("</script>")[0] ?? "";
 
 let failed = 0;
@@ -67,15 +78,57 @@ check("no button without a handler", inert.length === 0, inert.join(", "));
 //    ought to be, and the service worker names its cache after it. Bump two of
 //    the three and every open tab is told it is out of date on every request,
 //    or worse, none of them is told when it really is.
-const said = (src, re) => (re.exec(src) || [, ""])[1];
+//
+//    Rewritten here from src/version.js rather than merely compared: one
+//    constant to edit, and this is what keeps the other three honest. A
+//    missing anchor is a failure — silently writing nothing would leave the
+//    same split brain this is meant to prevent.
+const ANCHORS = [
+  {
+    file: "public/index.html",
+    path: paths.html,
+    re: /const CLIENT = "([^"]+)"/,
+    to: `const CLIENT = "${CLIENT_VERSION}"`,
+  },
+  {
+    file: "src/index.js",
+    path: paths.worker,
+    re: /const CLIENT_SHELL = "([^"]+)"/,
+    to: `const CLIENT_SHELL = "${CLIENT_VERSION}"`,
+  },
+  {
+    file: "public/sw.js",
+    path: paths.sw,
+    re: /const SHELL = "dmzs-mail-shell-([^"]+)"/,
+    to: `const SHELL = "dmzs-mail-shell-${CLIENT_VERSION}"`,
+  },
+];
+
+const absent = ANCHORS.filter((a) => !a.re.test(a.file === "public/index.html" ? html : a.file === "src/index.js" ? worker : sw));
+check(
+  "every version anchor is present",
+  absent.length === 0,
+  absent.map((a) => a.file).join(", ")
+);
+
+if (!absent.length) {
+  html = html.replace(ANCHORS[0].re, ANCHORS[0].to);
+  worker = worker.replace(ANCHORS[1].re, ANCHORS[1].to);
+  sw = sw.replace(ANCHORS[2].re, ANCHORS[2].to);
+  writeFileSync(paths.html, html);
+  writeFileSync(paths.worker, worker);
+  writeFileSync(paths.sw, sw);
+}
+
 const versions = {
-  "public/index.html": said(html, /const CLIENT = "([^"]+)"/),
-  "src/index.js": said(worker, /const CLIENT_SHELL = "([^"]+)"/),
-  "public/sw.js": said(sw, /const SHELL = "dmzs-mail-shell-([^"]+)"/),
+  "public/index.html": (ANCHORS[0].re.exec(html) || [, ""])[1],
+  "src/index.js": (ANCHORS[1].re.exec(worker) || [, ""])[1],
+  "public/sw.js": (ANCHORS[2].re.exec(sw) || [, ""])[1],
+  "src/version.js": CLIENT_VERSION,
 };
 const agreed = new Set(Object.values(versions));
 check(
-  "one build number across the three files",
+  "one build number across the files",
   agreed.size === 1 && !agreed.has(""),
   Object.entries(versions).map(([f, v]) => `${f}: ${v || "(not found)"}`).join(", ")
 );

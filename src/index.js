@@ -8,19 +8,22 @@
  * One provider throughout, which is why there is no dispatch layer and no
  * abstraction over "a mail account": the code says what it does.
  *
- * Sessions, cookies and device activation are dmzs-music's auth.js, verbatim.
+ * Sessions, cookies and device activation are dmzs-music's auth.js, with a
+ * device name stamped into the token so a session list means something.
  */
 
 import {
   requestSession,
   renewedCookie,
   issueSession,
-  readSession,
   sessionCookie,
   clearCookie,
   safeEqual,
-  SESSION_TTL,
 } from "./auth.js";
+import { CLIENT_VERSION } from "./version.js";
+import { MailAuthError, isAuthFailure } from "./errors.js";
+import { BODY_VERSION, bodyFromParts, unsubFromHeaders } from "./body.js";
+import { ensureSchema } from "./schema.js";
 import { seal, open } from "./crypto.js";
 import {
   b64decode,
@@ -74,8 +77,7 @@ const JSON_HEADERS = { "Content-Type": "application/json; charset=utf-8" };
 const json = (data, status = 200, extra = {}) =>
   new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...extra } });
 
-const JOB_LEASE_MS = 10 * 60 * 1000; // an agent job silent this long is retried
-const SYNC_PER_RUN = 2;              // accounts refreshed per cron pass (subrequest budget)
+const SYNC_PER_RUN = 1;              // accounts refreshed per cron pass — there is one
 const SYNC_CAP = 12;                 // new messages per account per pass
 
 async function hashHex(s, len) {
@@ -88,22 +90,11 @@ const bodyKey = (id) => `body/${id}.json`;
 /**
  * The client this Worker was deployed alongside.
  *
- * Kept in step with SHELL in public/sw.js and CLIENT in public/index.html by
- * hand — three constants, but the alternative is a build step for a project
- * whose whole point is that it has none.
+ * Written from src/version.js by scripts/check-client.mjs — one constant to
+ * edit, and the page, this file and the service worker all agree on it or the
+ * deploy never starts.
  */
-const CLIENT_SHELL = "v33";
-
-/**
- * Which pass of the defuser produced a stored body.
- *
- * Bumped whenever sanitizeHtml changes in a way that alters what a reader
- * sees, so bodies cached under the old rules are re-fetched once on the next
- * open rather than staying wrong forever. Version 2 keeps <style> blocks:
- * everything stored before it has them stripped, which renders some messages
- * as blank pages that no amount of re-reading the cached copy can recover.
- */
-const BODY_VERSION = 2;
+const CLIENT_SHELL = "v35";
 
 /**
  * IMAP system flags, spelled once.
@@ -116,90 +107,42 @@ const BODY_VERSION = 2;
 const FLAG_SEEN = "\\Seen";
 const FLAG_FLAGGED = "\\Flagged";
 
-/** Marks an account as needing the user, when refresh tokens die. */
+/** Marks an account as needing the user, when its credential dies. */
 async function flagAccount(env, account, e) {
   await env.DB.prepare("UPDATE accounts SET status=?, last_error=? WHERE id=?")
-    .bind(e.reauth ? "reauth" : "error", String((e && e.message) || e).slice(0, 300), account.id)
+    .bind(isAuthFailure(e) ? "reauth" : "error", String((e && e.message) || e).slice(0, 300), account.id)
     .run();
 }
 
-/* ────────────────────────────────────────────────────────────────
-   Keeping the database in step with the code.
-   ──────────────────────────────────────────────────────────────── */
+/**
+ * One response shape for every mail failure.
+ *
+ * A refused credential is 409 and needs a human. Everything else is 502 and
+ * worth saying out loud. The block this replaces was copy-pasted about fifteen
+ * times and had drifted into three different wordings of the same two facts.
+ */
+function imapError(e, acct, env) {
+  if (isAuthFailure(e)) {
+    if (acct && env) flagAccount(env, acct, e).catch(() => {});
+    return json({ error: "This account needs reconnecting" }, 409);
+  }
+  return json({ error: String((e && e.message) || e) }, 502);
+}
 
 /**
- * What this build expects a table to have, for a database that predates it.
+ * Runs one route with the account it names already loaded.
  *
- * schema.sql is CREATE TABLE IF NOT EXISTS from top to bottom. That is exactly
- * right for a fresh install and does nothing whatsoever for one that already
- * exists: a column added to that file after the database was created is never
- * added to the database, and `npm run db:schema` will not tell you so.
- *
- * It is not a theoretical problem. The first INSERT naming a column that is
- * not there throws, storeRows throws with it, and the sync stops dead for
- * every account — silently, once a minute, for as long as it takes somebody
- * to notice no mail has arrived. Nor can it be fixed from a laptop: the API
- * token here deploys Workers but is refused on `d1 execute --remote`, so the
- * only thing that can reach the live database is the Worker itself.
- *
- * So it checks, before each sync, what it is actually talking to. Everything
- * below is idempotent, and costs two reads when there is nothing to do.
+ * Every message route started with the same four lines — fetch the row, 404,
+ * fetch the account, 404 — and the same catch. One place now.
  */
-const WANTED_COLUMNS = {
-  messages: {
-    mid: "TEXT NOT NULL DEFAULT ''",
-    thread_key: "TEXT NOT NULL DEFAULT ''",
-    cc_line: "TEXT NOT NULL DEFAULT ''",
-    bcc_line: "TEXT NOT NULL DEFAULT ''",
-    starred: "INTEGER NOT NULL DEFAULT 0",
-    has_body: "INTEGER NOT NULL DEFAULT 0",
-  },
-  accounts: {
-    label: "TEXT NOT NULL DEFAULT ''",
-    secret: "TEXT",
-    sync_state: "TEXT",
-    last_error: "TEXT",
-  },
-};
-
-/** Indexes that are not worth a table rebuild but are worth having. */
-const WANTED_INDEXES = {
-  // The message list groups by thread_key on every load, and a conversation is
-  // fetched by it. Without this, both walk the whole table.
-  idx_messages_thread: "CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_key)",
-};
-
-async function ensureSchema(env) {
-  const added = [];
-  for (const [table, columns] of Object.entries(WANTED_COLUMNS)) {
-    // pragma_table_info as a table-valued function rather than a bare PRAGMA:
-    // it comes back as ordinary rows, which is what D1's query interface
-    // returns anyway.
-    const info = await env.DB.prepare("SELECT name FROM pragma_table_info(?)").bind(table).all().catch(() => null);
-    const have = new Set((info?.results ?? []).map((r) => r.name));
-    // No columns at all means no table, which is schema.sql's job and not
-    // something to paper over here.
-    if (!have.size) continue;
-    for (const [name, decl] of Object.entries(columns)) {
-      if (have.has(name)) continue;
-      // The table and column names are constants from the map above, never
-      // anything that arrived over the wire — DDL cannot be parameterised.
-      await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${decl}`).run();
-      added.push(`${table}.${name}`);
-    }
+async function withAccount(env, id, fn) {
+  const acct = await accountById(env, id);
+  if (!acct) return json({ error: "Unknown account" }, 404);
+  try {
+    return await fn(acct);
+  } catch (e) {
+    return imapError(e, acct, env);
   }
-  for (const [name, sql] of Object.entries(WANTED_INDEXES)) {
-    const row = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name=?")
-      .bind(name)
-      .first();
-    if (row) continue;
-    await env.DB.prepare(sql).run();
-    added.push(name);
-  }
-  // Only ever says something when something changed: a line a minute saying
-  // all is well is a line nobody reads.
-  if (added.length) console.log(`schema: added ${added.join(", ")}`);
-  return added;
 }
 
 /* ────────────────────────────────────────────────────────────────
@@ -361,7 +304,7 @@ function folderNameFor(mb) {
   return IMAP_NAME_FOLDER[mb.name.toLowerCase()] || mb.name;
 }
 
-/** The app password, or null when this account is still agent-driven. */
+/** The app password, or null when none is stored. */
 async function icloudPassword(env, account) {
   const box = await open(env.ENC_KEY, account.secret);
   return box?.password || null;
@@ -392,8 +335,15 @@ function resolveMailbox(boxes, wanted) {
 /** Names every mailbox, so a failure to match is diagnosable rather than flat. */
 const mailboxList = (boxes) => boxes.map((mb) => mb.name).join(", ").slice(0, 200);
 
-/** The one connected iCloud account, or null. */
-async function icloudAccountWithCreds(env) {
+/**
+ * The one connected iCloud account, or null.
+ *
+ * There is only ever one: the app is a personal mailbox, and pretending to
+ * dispatch between providers is what left `No provider handler` throws and a
+ * jobs table sitting in the schema. `account_id` stays on every row because
+ * live data has it and it still names the mailbox a message arrived on.
+ */
+async function theAccount(env) {
   return env.DB.prepare(
     "SELECT * FROM accounts WHERE provider='icloud' AND secret IS NOT NULL ORDER BY created_at LIMIT 1"
   ).first();
@@ -468,16 +418,11 @@ function rowFromRaw({ uid, flags, raw }, folder) {
       unread: /\\Seen/i.test(flags) ? 0 : 1,
       starred: /\\Flagged/i.test(flags) ? 1 : 0,
     },
-    body: {
-      v: BODY_VERSION,
+    body: bodyFromParts({
       html: defused.html,
       blocked: defused.blocked,
-      // RFC 2369 / RFC 8058. Almost every list carries these and almost no
-      // client surfaces them, which is why unsubscribing usually means hunting
-      // for grey 8px text at the bottom of a newsletter.
-      unsubscribe: String(h["list-unsubscribe"] || "").slice(0, 600),
-      unsubscribeOneClick: /one-?click/i.test(String(h["list-unsubscribe-post"] || "")),
-    },
+      ...unsubFromHeaders(h),
+    }),
     // Metadata only — the payload stays on Apple's server and is fetched by
     // part path when someone actually asks for it.
     attachments: m.attachments.map((a) => ({
@@ -634,21 +579,17 @@ async function backfillSearch(env, account, limit) {
  */
 async function readLargeBody(im, uid, totalBytes) {
   const sizeMb = Math.round(totalBytes / 104857.6) / 10;
-  const nothing = {
-    html: `<p>This message is ${sizeMb} MB and its text could not be read. Open it in Mail or at icloud.com.</p>`,
-    blocked: 0,
-    attachments: [],
-    snippet: `(large message, ${sizeMb} MB)`,
-  };
+  const note = `This message is ${sizeMb} MB and its text could not be read. Open it in Mail or at icloud.com.`;
+  const nothing = () => bodyFromParts({ text: note, tooLarge: true });
 
   let parts = [];
   try {
     const struct = await imapFetchStructure(im, uid);
     if (struct) parts = flattenStructure(parseSexp(struct));
   } catch {
-    return nothing;
+    return nothing();
   }
-  if (!parts.length) return nothing;
+  if (!parts.length) return nothing();
 
   const readable = parts.filter(
     (p) => p.type.startsWith("text/") && p.disposition !== "attachment" && p.size <= MAX_BODY_BYTES
@@ -667,34 +608,34 @@ async function readLargeBody(im, uid, totalBytes) {
       cid: p.cid || "",
     }));
 
-  if (!pick) return { ...nothing, attachments };
+  if (!pick) return bodyFromParts({ text: note, attachments, tooLarge: true });
 
   try {
     const encoded = await imapFetchPart(im, uid, pick.part);
     const text = decodePart(encoded || "", pick.encoding, pick.charset);
     const defused = pick.type === "text/html" ? sanitizeHtml(text) : sanitizeHtml(textToHtml(text));
-    return {
+    return bodyFromParts({
       html: defused.html,
       blocked: defused.blocked,
       attachments,
-      snippet: text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 280),
-    };
+      tooLarge: true,
+    });
   } catch {
-    return { ...nothing, attachments };
+    return bodyFromParts({ text: note, attachments, tooLarge: true });
   }
 }
 
 /**
  * One IMAP pass over every mailbox.
  *
- * Whole messages are fetched rather than headers alone, which is what the
- * Python agent did and what lets a body be defused and cached the moment it
- * arrives. The cost is CPU inside the Worker, so IMAP_CAP is deliberately
- * lower than the API providers' — at a pass a minute it still keeps up.
+ * Whole messages are fetched rather than headers alone, which is what lets a
+ * body be defused and cached the moment it arrives. The cost is CPU inside the
+ * Worker, so IMAP_CAP is deliberately low — at a pass a minute it still keeps
+ * up with a personal mailbox.
  */
 async function syncIcloud(env, account) {
   const pass = await icloudPassword(env, account);
-  if (!pass) return 0; // no stored credential: this account is the agent's
+  if (!pass) return 0; // no stored credential: nothing to sync with
 
   const im = await imapOpen({ user: account.email, pass });
   let stored = 0;
@@ -777,7 +718,7 @@ async function syncIcloud(env, account) {
         const msg = oversized ? await imapFetchHead(im, uid) : await imapFetchRaw(im, uid);
         if (!msg?.raw) continue;
         const { row, body, attachments } = rowFromRaw(msg, app);
-        body.attachments = attachments;
+        let doc = bodyFromParts({ ...body, attachments });
 
         // A blocked sender never becomes a message here. Expunged where it
         // sits, before the body reaches R2 and before the row exists, so
@@ -796,18 +737,20 @@ async function syncIcloud(env, account) {
         // attachment be downloaded without dragging the message with it.
         if (oversized) {
           const parsed = await readLargeBody(im, uid, sizes.get(uid) || 0);
-          body.html = parsed.html;
-          body.blocked = parsed.blocked;
-          body.attachments = parsed.attachments;
-          if (parsed.snippet) row.snippet = parsed.snippet;
+          doc = bodyFromParts({ ...parsed, attachments: parsed.attachments || attachments });
+          // A headers-only fetch has no body to preview; take one from what the
+          // structure yielded, or the list shows a blank under the subject.
+          if (!row.snippet && parsed.html) {
+            row.snippet = htmlToText(parsed.html).replace(/\s+/g, " ").trim().slice(0, 280);
+          }
         }
         rows.push(row);
         const id = await hashHex(`msg|${account.id}|${row.pid}`, 16);
-        await env.MAIL.put(bodyKey(id), JSON.stringify(body), {
+        await env.MAIL.put(bodyKey(id), JSON.stringify(doc), {
           httpMetadata: { contentType: "application/json" },
         });
         // Indexed from the defused HTML, so what is searched is what you read.
-        await indexMessage(env, id, row, htmlToText(body.html || ""));
+        await indexMessage(env, id, row, htmlToText(doc.html || ""));
       }
       if (rows.length) {
         await storeRows(env, account.id, rows);
@@ -855,11 +798,10 @@ async function syncIcloud(env, account) {
 /**
  * Finds a message by Message-ID and does something to it over IMAP.
  *
- * Returns false when the account has no stored credential, which is the signal
- * that the old agent still owns this mailbox and the caller should queue a job
- * instead. `hintFolder` is tried first — usually one round trip rather than ten
- * — but every mailbox is still searched, because the message may have been
- * moved from another client since we last looked.
+ * Returns false when the account has no stored credential. `hintFolder` is
+ * tried first — usually one round trip rather than ten — but every mailbox is
+ * still searched, because the message may have been moved from another client
+ * since we last looked.
  */
 async function icloudAct(env, account, mid, hintFolder, fn) {
   const pass = await icloudPassword(env, account);
@@ -1097,25 +1039,23 @@ async function fetchBodyNow(env, account, msg) {
       const large = await readLargeBody(im, uid, size);
       const head = await imapFetchHead(im, uid).catch(() => null);
       const h = head?.raw ? parseHeaders(head.raw) : {};
-      out = {
-        v: BODY_VERSION,
+      out = bodyFromParts({
         html: large.html,
         blocked: large.blocked,
         attachments: large.attachments,
-        unsubscribe: String(h["list-unsubscribe"] || "").slice(0, 600),
-        unsubscribeOneClick: /one-?click/i.test(String(h["list-unsubscribe-post"] || "")),
-      };
+        ...unsubFromHeaders(h),
+        tooLarge: true,
+      });
       return;
     }
 
     const raw = await imapFetchRaw(im, uid);
     if (!raw?.raw) return;
     const { body, attachments } = rowFromRaw(raw, msg.folder);
-    out = { ...body, attachments };
+    out = bodyFromParts({ ...body, attachments });
   });
 
-  // No stored credential (the agent still owns this mailbox), or the message is
-  // no longer on the server.
+  // No stored credential, or the message is no longer on the server.
   if (!found || !out) return null;
 
   // Marked so a message that really is empty is not re-fetched on every open.
@@ -1142,10 +1082,10 @@ async function ensureBody(env, account, msg) {
   const stale = !!stored && Number(stored.v || 1) < BODY_VERSION;
   if (stored && !stale && !bodyIsBlank(stored)) return stored;
 
-  if (account?.provider === "icloud" && (stale || !stored?.refetched)) {
+  if (account && (stale || !stored?.refetched)) {
     const fresh = await fetchBodyNow(env, account, msg).catch(() => null);
     if (fresh && !bodyIsBlank(fresh)) return fresh;
-    if (fresh) return { ...fresh, empty: true };
+    if (fresh) return bodyFromParts({ ...fresh, empty: true });
   }
 
   // The re-fetch did not happen or did not help. An old copy that still reads
@@ -1159,50 +1099,26 @@ async function ensureBody(env, account, msg) {
   // "this message has no text" is a fact about the mail, "we could not get it"
   // is a fact about us, and telling someone the first when the second is true
   // is how a fetch failure gets mistaken for an empty message.
-  if (stored) return { ...stored, empty: true };
-  return { html: "", blocked: 0, missing: true };
+  if (stored) return bodyFromParts({ ...stored, empty: true });
+  return bodyFromParts({ missing: true });
 }
 
 /* ────────────────────────────────────────────────────────────────
-   iCloud jobs (the agent's queue).
-   ──────────────────────────────────────────────────────────────── */
-
-async function queueJob(env, accountId, kind, payload) {
-  await env.DB.prepare(
-    "INSERT INTO jobs (id, account_id, kind, payload, created_at) VALUES (?,?,?,?,?)"
-  )
-    .bind(
-      await hashHex(`job|${accountId}|${kind}|${JSON.stringify(payload)}|${Date.now()}`, 16),
-      accountId,
-      kind,
-      JSON.stringify(payload),
-      Date.now()
-    )
-    .run();
-}
-
-/* ────────────────────────────────────────────────────────────────
-   Filing: one destination name, three very different providers.
+   Filing: one destination name, one provider.
    ──────────────────────────────────────────────────────────────── */
 
 /** Buckets every provider has, under the names this app uses. */
 const SYSTEM_FOLDERS = new Set(["inbox", "archive", "spam", "trash", "sent", "drafts"]);
 
 async function moveAtProvider(env, acct, msg, target) {
-  if (acct.provider === "icloud") {
-    const done = await icloudAct(env, acct, msg.mid || msg.pid, msg.folder, async (im, boxes, _here, uid) => {
-      // Match the destination by the app's own folder name first, then by the
-      // raw IMAP name, so both "spam" and "Junk" reach the same mailbox.
-      const dest = resolveMailbox(boxes, target);
-      if (!dest) throw new Error(`No mailbox matching "${target}". Server has: ${mailboxList(boxes)}`);
-      await imapMove(im, uid, dest.name);
-    });
-    // No stored credential means the agent still owns this mailbox.
-    if (!done) await queueJob(env, acct.id, "move", { mid: msg.mid || msg.pid, folder: target });
-    return;
-  }
-
-  throw new Error(`No provider handler for "${acct.provider}"`);
+  const done = await icloudAct(env, acct, msg.mid || msg.pid, msg.folder, async (im, boxes, _here, uid) => {
+    // Match the destination by the app's own folder name first, then by the
+    // raw IMAP name, so both "spam" and "Junk" reach the same mailbox.
+    const dest = resolveMailbox(boxes, target);
+    if (!dest) throw new Error(`No mailbox matching "${target}". Server has: ${mailboxList(boxes)}`);
+    await imapMove(im, uid, dest.name);
+  });
+  if (!done) throw new Error("This account has no stored credential");
 }
 
 /**
@@ -1226,20 +1142,20 @@ async function fileSentCopy(env, account, pass, raw, bccLine = "") {
   // Parsed back out of the bytes that were actually sent rather than rebuilt
   // from the form fields, so what Sent shows is the message as it went.
   const { row, body, attachments } = rowFromRaw({ uid: 0, flags: FLAG_SEEN, raw }, "sent");
-  body.attachments = attachments;
+  const doc = bodyFromParts({ ...body, attachments });
   // The bytes carry no Bcc — that is the point of one — so it is added to the
   // row here. Sent is your own record, and "who else got this" is exactly what
   // you go back to Sent to find out.
   row.bcc_line = bccLine;
   const id = await hashHex(`msg|${account.id}|${row.pid}`, 16);
-  await env.MAIL.put(bodyKey(id), JSON.stringify(body), {
+  await env.MAIL.put(bodyKey(id), JSON.stringify(doc), {
     httpMetadata: { contentType: "application/json" },
   });
   await storeRows(env, account.id, [row]);
   await env.DB.prepare("UPDATE messages SET has_body=1 WHERE account_id=? AND pid=?")
     .bind(account.id, row.pid)
     .run();
-  await indexMessage(env, id, row, htmlToText(body.html || ""));
+  await indexMessage(env, id, row, htmlToText(doc.html || ""));
 
   // Then Apple's copy, so every other device sees it too.
   const im = await imapOpen({ user: account.email, pass });
@@ -1285,16 +1201,16 @@ async function forgetLocal(env, accountId, pid) {
  */
 async function fileDraftCopy(env, account, pass, raw, replaces) {
   const { row, body, attachments } = rowFromRaw({ uid: 0, flags: FLAG_SEEN, raw }, "drafts");
-  body.attachments = attachments;
+  const doc = bodyFromParts({ ...body, attachments });
   const id = await hashHex(`msg|${account.id}|${row.pid}`, 16);
-  await env.MAIL.put(bodyKey(id), JSON.stringify(body), {
+  await env.MAIL.put(bodyKey(id), JSON.stringify(doc), {
     httpMetadata: { contentType: "application/json" },
   });
   await storeRows(env, account.id, [row]);
   await env.DB.prepare("UPDATE messages SET has_body=1 WHERE account_id=? AND pid=?")
     .bind(account.id, row.pid)
     .run();
-  await indexMessage(env, id, row, htmlToText(body.html || ""));
+  await indexMessage(env, id, row, htmlToText(doc.html || ""));
   if (replaces && replaces !== row.pid) await forgetLocal(env, account.id, replaces);
 
   const im = await imapOpen({ user: account.email, pass });
@@ -1318,156 +1234,6 @@ async function fileDraftCopy(env, account, pass, raw, replaces) {
   }
   return row.pid;
 }
-
-/* ────────────────────────────────────────────────────────────────
-   Internal endpoints — bearer token, called only by the agent.
-   ──────────────────────────────────────────────────────────────── */
-
-function internalAuthOk(request, env) {
-  const h = request.headers.get("Authorization") || "";
-  const token = h.startsWith("Bearer ") ? h.slice(7) : "";
-  return Boolean(env.WORKER_TOKEN) && safeEqual(token, env.WORKER_TOKEN);
-}
-
-async function icloudAccount(env, email) {
-  return env.DB.prepare("SELECT * FROM accounts WHERE provider='icloud' AND email=?")
-    .bind(String(email || "").toLowerCase())
-    .first();
-}
-
-async function handleInternal(request, env, path) {
-  if (!internalAuthOk(request, env)) return new Response("Unauthorized", { status: 401 });
-
-  // The agent introduces itself; the account row appears on first contact.
-  if (path === "/internal/icloud/hello" && request.method === "POST") {
-    const b = await request.json().catch(() => ({}));
-    const email = String(b.email || "").toLowerCase();
-    if (!email.includes("@")) return json({ error: "missing email" }, 400);
-    const id = await hashHex(`acct|icloud|${email}`, 8);
-    await env.DB.prepare(
-      `INSERT INTO accounts (id, provider, email, label, created_at)
-       VALUES (?,?,?,?,?) ON CONFLICT(provider, email) DO NOTHING`
-    )
-      .bind(id, "icloud", email, String(b.label || email).slice(0, 100), Date.now())
-      .run();
-    const acct = await icloudAccount(env, email);
-    return json({ account_id: acct.id, state: acct.sync_state || null });
-  }
-
-  // New mail, body included — the agent is the only fetcher iCloud gets.
-  if (path === "/internal/icloud/messages" && request.method === "POST") {
-    const b = await request.json().catch(() => ({}));
-    const acct = await icloudAccount(env, b.email);
-    if (!acct) return json({ error: "unknown account, call hello first" }, 400);
-
-    let stored = 0;
-    // The agent has already taken these off the server, so blocking here can
-    // only refuse to write them down — the expunge belongs to whoever holds
-    // the IMAP connection, which on this path is not us.
-    const blocked = await loadBlocked(env);
-    for (const m of (b.messages || []).slice(0, 25)) {
-      if (!m.pid) continue;
-      if (blockedBy(String(m.from_email || "").toLowerCase(), blocked)) continue;
-      const id = await hashHex(`msg|${acct.id}|${m.pid}`, 16);
-      const r = await env.DB.prepare(
-        `INSERT OR IGNORE INTO messages
-           (id, account_id, pid, mid, thread_key, folder, from_name, from_email,
-            to_line, subject, snippet, date, unread, starred, has_body, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)`
-      )
-        .bind(
-          id,
-          acct.id,
-          String(m.pid).slice(0, 300),
-          String(m.mid || m.pid).slice(0, 300),
-          String(m.thread_key || normalizeSubject(m.subject)).slice(0, 300),
-          // The agent now walks every mailbox, so it says which one this came
-          // from; older agents send nothing and still mean the inbox.
-          String(m.folder || "inbox").slice(0, 100),
-          String(m.from_name || "").slice(0, 200),
-          String(m.from_email || "").toLowerCase().slice(0, 200),
-          String(m.to_line || "").slice(0, 500),
-          String(m.subject || "").slice(0, 500),
-          String(m.snippet || "").slice(0, 300),
-          Number(m.date) || Date.now(),
-          m.unread ? 1 : 0,
-          m.starred ? 1 : 0,
-          Date.now()
-        )
-        .run();
-      if (r.meta?.changes) {
-        stored++;
-        const defused = m.html ? sanitizeHtml(m.html) : sanitizeHtml(textToHtml(m.text || ""));
-        defused.v = BODY_VERSION;
-        await env.MAIL.put(bodyKey(id), JSON.stringify(defused), {
-          httpMetadata: { contentType: "application/json" },
-        });
-      }
-    }
-    return json({ stored });
-  }
-
-  if (path === "/internal/icloud/state" && request.method === "POST") {
-    const b = await request.json().catch(() => ({}));
-    const acct = await icloudAccount(env, b.email);
-    if (!acct) return json({ error: "unknown account" }, 400);
-    // Existing mail predates the index, so each pass also indexes a handful of
-    // messages that are not in it yet. Spread over passes rather than done in
-    // one go: reading 700 bodies out of R2 in a single invocation would blow
-    // both the time and the memory budget.
-    await backfillSearch(env, acct, 20); // `account` is not bound in this scope
-
-    await env.DB.prepare(
-      "UPDATE accounts SET sync_state=?, last_sync=?, status='ok', last_error=NULL WHERE id=?"
-    )
-      .bind(JSON.stringify(b.state || {}), Date.now(), acct.id)
-      .run();
-    return json({ ok: true });
-  }
-
-  // Work for the agent: sends, archives, reads. Claim is atomic, lease-backed.
-  if (path === "/internal/jobs" && request.method === "GET") {
-    const email = new URL(request.url).searchParams.get("email");
-    const acct = await icloudAccount(env, email);
-    if (!acct) return json({ jobs: [] });
-
-    await env.DB.prepare(
-      "UPDATE jobs SET status='pending', claimed_at=NULL WHERE status='claimed' AND claimed_at < ?"
-    )
-      .bind(Date.now() - JOB_LEASE_MS)
-      .run();
-
-    const { results } = await env.DB.prepare(
-      "SELECT id, kind, payload FROM jobs WHERE account_id=? AND status='pending' ORDER BY created_at LIMIT 5"
-    )
-      .bind(acct.id)
-      .all();
-
-    const jobs = [];
-    for (const j of results ?? []) {
-      const claim = await env.DB.prepare(
-        "UPDATE jobs SET status='claimed', claimed_at=? WHERE id=? AND status='pending'"
-      )
-        .bind(Date.now(), j.id)
-        .run();
-      if (claim.meta?.changes) jobs.push({ id: j.id, kind: j.kind, payload: JSON.parse(j.payload) });
-    }
-    return json({ jobs });
-  }
-
-  const jobDone = path.match(/^\/internal\/jobs\/([a-f0-9]{16})$/);
-  if (jobDone && request.method === "POST") {
-    const b = await request.json().catch(() => ({}));
-    await env.DB.prepare("UPDATE jobs SET status=?, error=?, claimed_at=NULL WHERE id=?")
-      .bind(b.ok ? "done" : "error", b.ok ? null : String(b.error || "failed").slice(0, 300), jobDone[1])
-      .run();
-    return json({ ok: true });
-  }
-
-  return new Response("Not found", { status: 404 });
-}
-
-
 
 /* ────────────────────────────────────────────────────────────────
    Public API (behind the cookie)
@@ -1572,7 +1338,11 @@ async function handleApi(request, env, path, ctx) {
       await im.logout();
     } catch (e) {
       return json(
-        { error: e.reauth ? "Apple rejected that address or app password" : String(e.message || e) },
+        {
+          error: isAuthFailure(e)
+            ? "Apple rejected that address or app password"
+            : String(e.message || e),
+        },
         400
       );
     }
@@ -1612,7 +1382,6 @@ async function handleApi(request, env, path, ctx) {
     await forgetMessages(env, (results ?? []).map((m) => m.id));
     await env.DB.batch([
       env.DB.prepare("DELETE FROM messages WHERE account_id=?").bind(id),
-      env.DB.prepare("DELETE FROM jobs WHERE account_id=?").bind(id),
       env.DB.prepare("DELETE FROM accounts WHERE id=?").bind(id),
     ]);
     return json({ ok: true });
@@ -1623,8 +1392,8 @@ async function handleApi(request, env, path, ctx) {
   if (acctSync && request.method === "POST") {
     const acct = await accountById(env, acctSync[1]);
     if (!acct) return json({ error: "Unknown account" }, 404);
-    if (acct.provider === "icloud" && !acct.secret) {
-      return json({ ok: true, note: "this iCloud account is still synced by the agent" });
+    if (!acct.secret) {
+      return json({ error: "This account has no stored credential" }, 400);
     }
     const n = await syncAccount(env, acct);
     return json({ ok: true, fetched: n });
@@ -1736,7 +1505,7 @@ async function handleApi(request, env, path, ctx) {
     // Quotes and control characters break the IMAP command they travel in.
     if (/["\\\r\n]/.test(name)) return json({ error: "Name cannot contain quotes or line breaks" }, 400);
 
-    const acct = await icloudAccountWithCreds(env);
+    const acct = await theAccount(env);
     if (!acct) return json({ error: "No connected account" }, 400);
     let box;
     try {
@@ -1767,7 +1536,7 @@ async function handleApi(request, env, path, ctx) {
     }
     if (/["\\\r\n]/.test(to)) return json({ error: "Name cannot contain quotes or line breaks" }, 400);
 
-    const acct = await icloudAccountWithCreds(env);
+    const acct = await theAccount(env);
     if (!acct) return json({ error: "No connected account" }, 400);
     try {
       await withImap(env, acct, async (im) => {
@@ -1800,7 +1569,7 @@ async function handleApi(request, env, path, ctx) {
     if (which !== "trash" && which !== "spam") {
       return json({ error: "Only Trash and Spam can be emptied" }, 400);
     }
-    const acct = await icloudAccountWithCreds(env);
+    const acct = await theAccount(env);
     if (!acct) return json({ error: "No connected account" }, 400);
 
     let removed = 0;
@@ -1837,7 +1606,7 @@ async function handleApi(request, env, path, ctx) {
     const name = decodeURIComponent(folderDel[1]);
     if (PROTECTED.has(name.toLowerCase())) return json({ error: "System folders cannot be deleted" }, 400);
 
-    const acct = await icloudAccountWithCreds(env);
+    const acct = await theAccount(env);
     if (!acct) return json({ error: "No connected account" }, 400);
     try {
       await withImap(env, acct, async (im) => {
@@ -1870,7 +1639,7 @@ async function handleApi(request, env, path, ctx) {
   // Four folders that hold mail are absent from the parsed list; this shows
   // what Apple actually sends so the parser can be fixed against fact.
   if (path === "/api/debug/mailboxes" && request.method === "GET") {
-    const acct = await icloudAccountWithCreds(env);
+    const acct = await theAccount(env);
     if (!acct) return json({ error: "No connected account" }, 400);
     try {
       const [raw, boxes, counts] = await withImap(env, acct, async (im) => {
@@ -1924,7 +1693,7 @@ async function handleApi(request, env, path, ctx) {
   // hung. What is left over is counted and reported, so pressing again
   // finishes the job.
   if (path === "/api/repair/self-copies" && request.method === "POST") {
-    const acct = await icloudAccountWithCreds(env);
+    const acct = await theAccount(env);
     if (!acct) return json({ error: "No connected account" }, 400);
     const pass = await icloudPassword(env, acct);
     if (!pass) return json({ error: "This account has no stored password" }, 400);
@@ -1959,11 +1728,7 @@ async function handleApi(request, env, path, ctx) {
         moved++;
       }
     } catch (e) {
-      if (e.reauth) {
-        await flagAccount(env, acct, e);
-        return json({ error: "This account needs reconnecting" }, 409);
-      }
-      return json({ error: String(e.message || e) }, 502);
+      return imapError(e, acct, env);
     } finally {
       await im.logout();
     }
@@ -2117,11 +1882,7 @@ async function handleApi(request, env, path, ctx) {
         await imapMove(im, uid, dest.name);
       });
     } catch (e) {
-      if (e.reauth) {
-        await flagAccount(env, acct, e);
-        return json({ error: "This account needs reconnecting" }, 409);
-      }
-      return json({ error: String(e.message || e) }, 502);
+      return imapError(e, acct, env);
     }
 
     const ids = rows.map((r) => r.id);
@@ -2171,14 +1932,14 @@ async function handleApi(request, env, path, ctx) {
     // Best effort at the provider: a credential that has gone stale should not
     // leave the rule half-applied and unrecorded.
     let removed = 0;
-    const { results: accts } = await env.DB.prepare(
-      "SELECT * FROM accounts WHERE provider='icloud'"
-    ).all();
-    for (const acct of accts ?? []) {
+    // One account, so one pass. The loop this replaced was written when the
+    // schema still pretended there might be several.
+    const acct = await theAccount(env);
+    if (acct) {
       try {
         removed += await purgeBlockedAtProvider(env, acct, pattern);
       } catch (e) {
-        if (e.reauth) await flagAccount(env, acct, e);
+        if (isAuthFailure(e)) await flagAccount(env, acct, e);
       }
     }
     const forgotten = await forgetBlockedLocally(env, pattern);
@@ -2303,21 +2064,23 @@ async function handleApi(request, env, path, ctx) {
     try {
       body = await ensureBody(env, acct, msg);
     } catch (e) {
-      if (e.reauth) await flagAccount(env, acct, e);
-      body = { html: `<p>(could not fetch the body: ${String(e.message || e)})</p>`, blocked: 0 };
+      if (isAuthFailure(e)) await flagAccount(env, acct, e);
+      body = bodyFromParts({ html: `<p>(could not fetch the body: ${String(e.message || e)})</p>` });
     }
 
     if (msg.unread && !peek) {
       await env.DB.prepare("UPDATE messages SET unread=0 WHERE id=?").bind(msg.id).run();
       // Best effort at the provider; a failure here costs nothing visible.
+      // The local row is already updated — that is what the reader sees — and
+      // a flag that does not reach Apple is worth recording, not worth
+      // failing the read over.
       if (ctx) {
         ctx.waitUntil(
           (async () => {
             try {
-              const done = await icloudAct(env, acct, msg.mid || msg.pid, msg.folder, (im, _b, _h, uid) =>
+              await icloudAct(env, acct, msg.mid || msg.pid, msg.folder, (im, _b, _h, uid) =>
                 imapFlag(im, uid, FLAG_SEEN, true)
               );
-              if (!done) await queueJob(env, acct.id, "read", { mid: msg.mid || msg.pid });
             } catch (e) {
               // Not fatal to the read, but it must not vanish either: an
               // unrecorded failure here is exactly how "read here, unread on
@@ -2348,11 +2111,7 @@ async function handleApi(request, env, path, ctx) {
     try {
       await moveAtProvider(env, acct, msg, "archive");
     } catch (e) {
-      if (e.reauth) {
-        await flagAccount(env, acct, e);
-        return json({ error: "This account needs reconnecting" }, 409);
-      }
-      return json({ error: String(e.message || e) }, 502);
+      return imapError(e, acct, env);
     }
     await env.DB.prepare("UPDATE messages SET folder='archive', unread=0 WHERE id=?")
       .bind(msg.id)
@@ -2384,8 +2143,7 @@ async function handleApi(request, env, path, ctx) {
       });
       if (!found) return json({ error: "This account cannot fetch attachments" }, 400);
     } catch (e) {
-      if (e.reauth) await flagAccount(env, acct, e);
-      return json({ error: String(e.message || e) }, 502);
+      return imapError(e, acct, env);
     }
     if (encoded === null) return json({ error: "Apple returned nothing for that part" }, 502);
 
@@ -2553,8 +2311,7 @@ async function handleApi(request, env, path, ctx) {
       // existing at Apple while their rows stay here — and each one answered
       // Delete with "message not found in any mailbox", for good.
       if (!/not found in any mailbox/i.test(String(e.message || e))) {
-        if (e.reauth) await flagAccount(env, acct, e);
-        return json({ error: String(e.message || e) }, 502);
+        return imapError(e, acct, env);
       }
       gone = true;
     }
@@ -2586,11 +2343,7 @@ async function handleApi(request, env, path, ctx) {
       // back where it came from. IMAP has no separate verb for undeleting.
       await moveAtProvider(env, acct, msg, target);
     } catch (e) {
-      if (e.reauth) {
-        await flagAccount(env, acct, e);
-        return json({ error: "This account needs reconnecting" }, 409);
-      }
-      return json({ error: String(e.message || e) }, 502);
+      return imapError(e, acct, env);
     }
 
     await env.DB.prepare("UPDATE messages SET folder=? WHERE id=?").bind(target, msg.id).run();
@@ -2608,30 +2361,23 @@ async function handleApi(request, env, path, ctx) {
 
     try {
       if (typeof b.starred === "boolean") {
-        const done = await icloudAct(env, acct, msg.mid || msg.pid, msg.folder, (im, _b, _h, uid) =>
+        await icloudAct(env, acct, msg.mid || msg.pid, msg.folder, (im, _b, _h, uid) =>
           imapFlag(im, uid, FLAG_FLAGGED, b.starred)
         );
-        if (!done) await queueJob(env, acct.id, "star", { mid: msg.mid || msg.pid, on: b.starred });
         await env.DB.prepare("UPDATE messages SET starred=? WHERE id=?")
           .bind(b.starred ? 1 : 0, msg.id)
           .run();
       }
       if (typeof b.unread === "boolean") {
-        const done = await icloudAct(env, acct, msg.mid || msg.pid, msg.folder, (im, _b, _h, uid) =>
+        await icloudAct(env, acct, msg.mid || msg.pid, msg.folder, (im, _b, _h, uid) =>
           imapFlag(im, uid, FLAG_SEEN, !b.unread)
         );
-        if (!done)
-          await queueJob(env, acct.id, b.unread ? "unread" : "read", { mid: msg.mid || msg.pid });
         await env.DB.prepare("UPDATE messages SET unread=? WHERE id=?")
           .bind(b.unread ? 1 : 0, msg.id)
           .run();
       }
     } catch (e) {
-      if (e.reauth) {
-        await flagAccount(env, acct, e);
-        return json({ error: "This account needs reconnecting" }, 409);
-      }
-      return json({ error: String(e.message || e) }, 502);
+      return imapError(e, acct, env);
     }
     return json({ ok: true });
   }
@@ -2922,12 +2668,15 @@ No invented facts, no commitment to anything the brief does not cover, and no br
       messageId,
     });
 
+    // One secondary-failure policy, shared with send: the message itself is
+    // already safe here (or gone, for a send), so a failure to file the copy
+    // is reported and never turned into an error the client would retry.
     let filed = true;
     let filedError = "";
     try {
       await fileDraftCopy(env, acct, pass, raw, String(b.replaces || ""));
     } catch (e) {
-      if (e.reauth) await flagAccount(env, acct, e);
+      if (isAuthFailure(e)) await flagAccount(env, acct, e);
       filed = false;
       filedError = String(e.message || e).slice(0, 200);
     }
@@ -2938,10 +2687,8 @@ No invented facts, no commitment to anything the brief does not cover, and no br
   const draftDel = path.match(/^\/api\/draft\/(.+)$/);
   if (draftDel && request.method === "DELETE") {
     const pid = decodeURIComponent(draftDel[1]).slice(0, 300);
-    const { results } = await env.DB.prepare(
-      "SELECT * FROM accounts WHERE provider='icloud'"
-    ).all();
-    for (const acct of results ?? []) {
+    const acct = await theAccount(env);
+    if (acct) {
       await forgetLocal(env, acct.id, pid);
       try {
         await icloudAct(env, acct, pid, "drafts", (im, _b, _mb, uid) => imapPurge(im, uid));
@@ -3064,32 +2811,194 @@ No invented facts, no commitment to anything the brief does not cover, and no br
             .catch(() => {});
         }
       } else {
-        // The agent builds its own message with Python's EmailMessage, whose
-        // send_message strips Bcc before transmitting it.
-        await queueJob(env, acct.id, "send", {
-          to: to.map((a) => a.email),
-          cc: cc.map((a) => a.email),
-          bcc: bcc.map((a) => a.email),
-          subject,
-          text,
-          inReplyTo: orig?.mid || undefined,
-        });
+        return json({ error: "This account has no stored credential" }, 400);
       }
     } catch (e) {
-      if (e.reauth) {
-        await flagAccount(env, acct, e);
-        return json({ error: "This account needs reconnecting" }, 409);
-      }
-      return json({ error: String(e.message || e) }, 502);
+      return imapError(e, acct, env);
     }
-    return json(
-      { ok: true, filed, filedError, queued: acct.provider === "icloud" && !acct.secret },
-      202
-    );
+    return json({ ok: true, filed, filedError, queued: false }, 202);
   }
 
   return json({ error: "Unknown route" }, 404);
 }
+
+/**
+ * One activation key, three ways in.
+ *
+ * `GET /auth?k=…` is the form a saved link takes and still works: check the
+ * key, set the cookie, 302 to the app. `POST /auth` takes `{k, name?}` and
+ * answers with JSON, which is what the activation page and any future client
+ * wants. `GET /auth` with no key serves that page — and the page has to read
+ * the key out of `location.hash`, because a fragment never reaches a server
+ * and is therefore the one place a bootstrap key can travel in a URL without
+ * landing in a log line. A paste field covers the case where the link was
+ * copied without the fragment.
+ */
+async function route(request, env, ctx) {
+  const url = new URL(request.url);
+  const path = url.pathname;
+
+  if (path === "/auth") {
+    const k = url.searchParams.get("k") || "";
+    const ua = request.headers.get("User-Agent") || "";
+    if (k) {
+      if (!env.BOOTSTRAP_KEY || !safeEqual(k, env.BOOTSTRAP_KEY)) return denied();
+      const token = await issueSession(env.AUTH_SECRET, { userAgent: ua });
+      return new Response(null, {
+        status: 302,
+        headers: { Location: "/", "Set-Cookie": sessionCookie(token) },
+      });
+    }
+    if (request.method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      const key = String(body.k || body.key || "");
+      if (!env.BOOTSTRAP_KEY || !safeEqual(key, env.BOOTSTRAP_KEY)) {
+        return json({ error: "Wrong key" }, 401);
+      }
+      const token = await issueSession(env.AUTH_SECRET, {
+        name: String(body.name || "").slice(0, 40) || undefined,
+        userAgent: ua,
+      });
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Set-Cookie": sessionCookie(token),
+        },
+      });
+    }
+    return new Response(ACTIVATION_PAGE, {
+      status: 200,
+      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+    });
+  }
+
+  // The Chrome extension activates the same way a device does, with the
+  // bootstrap key — but it gets the token in the body rather than as a
+  // cookie, because it will send it back as X-Session. It cannot use the
+  // cookie: an extension request is cross-site, and the cookie is Lax.
+  if (path === "/api/extension/activate" && request.method === "POST") {
+    const body = await request.json().catch(() => ({}));
+    const key = String(body.k || body.key || "");
+    if (!env.BOOTSTRAP_KEY || !safeEqual(key, env.BOOTSTRAP_KEY)) {
+      return json({ error: "Wrong key" }, 401);
+    }
+    return json({
+      token: await issueSession(env.AUTH_SECRET, {
+        name: String(body.name || "").slice(0, 40) || undefined,
+        userAgent: request.headers.get("User-Agent") || "",
+      }),
+    });
+  }
+
+  if (path === "/logout") {
+    return new Response(null, {
+      status: 302,
+      headers: { Location: "/", "Set-Cookie": clearCookie() },
+    });
+  }
+
+  const session = await requestSession(request, env);
+  if (!session) return denied();
+
+  if (path.startsWith("/api/")) {
+    const res = await handleApi(request, env, path, ctx);
+    const fresh = await renewedCookie(session, env);
+    const out = new Response(res.body, res);
+    if (fresh) out.headers.append("Set-Cookie", fresh);
+
+    // Which client is on the other end, and which one it ought to be.
+    //
+    // A tab left open across a deploy runs old code against a new server,
+    // and every symptom of that looks like a bug in the feature you just
+    // shipped. Three separate diagnoses here have gone that way, so the
+    // answer travels with every response instead of being guessed at.
+    const said = request.headers.get("X-Client") || "";
+    out.headers.set("X-Shell", CLIENT_SHELL);
+    if (said !== CLIENT_SHELL) {
+      console.log(`stale client: ${said || "(pre-versioning)"} against ${CLIENT_SHELL} on ${path}`);
+    }
+    return out;
+  }
+
+  // The shell, never from the browser's own cache without asking first.
+  //
+  // A tab reloaded onto a stale index.html runs old code against a new
+  // Worker, and every symptom of that looks like a bug in whatever shipped
+  // last. It did, three times in one day, and no amount of reloading fixed
+  // it because reloading was being answered from disk.
+  //
+  // no-cache is not "do not store": the copy is kept and revalidated, so an
+  // unchanged page still costs one conditional request and nothing more.
+  // Set here rather than in a _headers file because run_worker_first means
+  // every asset is served through this call, where it can be seen to happen.
+  const asset = await env.ASSETS.fetch(request);
+  if (/^\/(|index\.html|sw\.js|manifest\.webmanifest)$/.test(path)) {
+    const out = new Response(asset.body, asset);
+    out.headers.set("Cache-Control", "no-cache");
+    return out;
+  }
+  return asset;
+}
+
+/**
+ * The unauthenticated page at /auth. Minimal on purpose: it holds a key for
+ * the length of one POST and nothing else. Matches denied()'s palette so the
+ * two do not look like different products.
+ */
+const ACTIVATION_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Activate this device</title>
+<style>
+ html,body{height:100%;margin:0}
+ body{background:#09090b;color:#8b8b93;display:flex;align-items:center;justify-content:center;
+      font:400 15px/1.6 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;padding:24px}
+ .card{max-width:360px;width:100%}
+ strong{display:block;color:#f4f4f5;font-size:17px;font-weight:600;margin-bottom:6px}
+ p{margin:0 0 16px}
+ form{display:flex;gap:8px}
+ input,button{font:inherit;border-radius:10px;border:1px solid #27272a;background:#111114;color:#f4f4f5}
+ input{flex:1;padding:10px 12px;min-width:0}
+ button{padding:10px 16px;background:#3f6df6;border-color:#3f6df6;color:#fff;cursor:pointer}
+ #msg{margin:12px 0 0;min-height:1.4em}
+ #msg[data-bad="1"]{color:#f87171}
+</style></head>
+<body><div class="card">
+<strong>Activate this device</strong>
+<p>Enter the bootstrap key for this deployment.</p>
+<form id="f" autocomplete="off"><input id="k" name="k" type="password" placeholder="Bootstrap key" required>
+<button type="submit">Activate</button></form>
+<p id="msg" role="status"></p>
+</div>
+<script>
+(function(){
+  var f=document.getElementById("f"),k=document.getElementById("k"),msg=document.getElementById("msg");
+  // A key in the fragment never reaches the server, which is why the
+  // activation link is written that way. Read it here and post it, so the
+  // link is still one tap.
+  var frag=(location.hash||"").replace(/^#/, "");
+  var fromFrag="";
+  frag.split("&").forEach(function(p){
+    var i=p.indexOf("=");
+    if(i>0 && decodeURIComponent(p.slice(0,i))==="k") fromFrag=decodeURIComponent(p.slice(i+1));
+  });
+  if(fromFrag){ k.value=fromFrag; k.type="hidden"; f.querySelector("button").focus(); }
+  else k.focus();
+  f.addEventListener("submit",function(e){
+    e.preventDefault();
+    msg.textContent=""; msg.removeAttribute("data-bad");
+    fetch("/auth",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({k:k.value,name:navigator.platform||""})})
+      .then(function(r){ return r.json().then(function(j){ return {r:r,j:j}; }); })
+      .then(function(x){
+        if(!x.r.ok){ msg.textContent=x.j.error||"That key was not accepted."; msg.setAttribute("data-bad","1"); return; }
+        location.replace("/");
+      })
+      .catch(function(){ msg.textContent="Something went wrong. Try again."; msg.setAttribute("data-bad","1"); });
+  });
+})();
+</script></body></html>`;
 
 /* ────────────────────────────────────────────────────────────────
    Entry points
@@ -3097,82 +3006,14 @@ No invented facts, no commitment to anything the brief does not cover, and no br
 
 export default {
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const path = url.pathname;
-
-
-    if (path.startsWith("/internal/")) return handleInternal(request, env, path);
-
-    if (path === "/auth") {
-      const k = url.searchParams.get("k") || "";
-      if (!env.BOOTSTRAP_KEY || !safeEqual(k, env.BOOTSTRAP_KEY)) return denied();
-      const token = await issueSession(env.AUTH_SECRET);
-      return new Response(null, {
-        status: 302,
-        headers: { Location: "/", "Set-Cookie": sessionCookie(token) },
-      });
+    // Everything below is allowed to throw; nothing is allowed to answer a
+    // thrown error with a Worker stack trace. One outer net, one shape.
+    try {
+      return await route(request, env, ctx);
+    } catch (e) {
+      console.log(`unhandled: ${e && e.stack ? e.stack : e}`);
+      return json({ error: String((e && e.message) || e) }, 500);
     }
-
-    // The Chrome extension activates the same way a device does, with the
-    // bootstrap key — but it gets the token in the body rather than as a
-    // cookie, because it will send it back as X-Session. It cannot use the
-    // cookie: an extension request is cross-site, and the cookie is Lax.
-    if (path === "/api/extension/activate" && request.method === "POST") {
-      const body = await request.json().catch(() => ({}));
-      if (!env.BOOTSTRAP_KEY || !safeEqual(String(body.key || ""), env.BOOTSTRAP_KEY)) {
-        return json({ error: "Wrong key" }, 401);
-      }
-      return json({ token: await issueSession(env.AUTH_SECRET) });
-    }
-
-    if (path === "/logout") {
-      return new Response(null, {
-        status: 302,
-        headers: { Location: "/", "Set-Cookie": clearCookie() },
-      });
-    }
-
-    const session = await requestSession(request, env);
-    if (!session) return denied();
-
-    if (path.startsWith("/api/")) {
-      const res = await handleApi(request, env, path, ctx);
-      const fresh = await renewedCookie(session, env);
-      const out = new Response(res.body, res);
-      if (fresh) out.headers.append("Set-Cookie", fresh);
-
-      // Which client is on the other end, and which one it ought to be.
-      //
-      // A tab left open across a deploy runs old code against a new server,
-      // and every symptom of that looks like a bug in the feature you just
-      // shipped. Three separate diagnoses here have gone that way, so the
-      // answer travels with every response instead of being guessed at.
-      const said = request.headers.get("X-Client") || "";
-      out.headers.set("X-Shell", CLIENT_SHELL);
-      if (said !== CLIENT_SHELL) {
-        console.log(`stale client: ${said || "(pre-versioning)"} against ${CLIENT_SHELL} on ${path}`);
-      }
-      return out;
-    }
-
-    // The shell, never from the browser's own cache without asking first.
-    //
-    // A tab reloaded onto a stale index.html runs old code against a new
-    // Worker, and every symptom of that looks like a bug in whatever shipped
-    // last. It did, three times in one day, and no amount of reloading fixed
-    // it because reloading was being answered from disk.
-    //
-    // no-cache is not "do not store": the copy is kept and revalidated, so an
-    // unchanged page still costs one conditional request and nothing more.
-    // Set here rather than in a _headers file because run_worker_first means
-    // every asset is served through this call, where it can be seen to happen.
-    const asset = await env.ASSETS.fetch(request);
-    if (/^\/(|index\.html|sw\.js|manifest\.webmanifest)$/.test(path)) {
-      const out = new Response(asset.body, asset);
-      out.headers.set("Cache-Control", "no-cache");
-      return out;
-    }
-    return asset;
   },
   // Sync heartbeat. Two least-recently-synced API accounts per pass, a dozen
   // messages each — the free plan's subrequest allowance shapes everything.
@@ -3194,8 +3035,8 @@ export default {
         ).first();
 
         const { results } = await env.DB.prepare(
-          // Only accounts with a stored credential; one without is still the
-        // old agent's job and there is nothing here to do for it.
+          // Only accounts with a stored credential; without one there is
+          // nothing this Worker can do with the mailbox.
         `SELECT * FROM accounts
             WHERE status != 'reauth' AND secret IS NOT NULL
             ORDER BY COALESCE(last_sync, 0) ASC LIMIT ?`

@@ -18,9 +18,16 @@
    here first, so a token can never exist only inside a media query — that is
    the failure mode where one theme quietly loses a colour. */
 :root{
+  /* Tells the UA which way the scrollbars, form controls and caret should go
+     before a single author rule runs. Without it a dark theme still paints
+     white scrollbars and a light system paints dark ones. */
+  color-scheme:light;
   --bg:#ffffff; --elev:#f4f4f7; --elev2:#e9e9ef;
   --line:rgba(0,0,0,.08); --line-strong:rgba(0,0,0,.15);
-  --t1:#16161a; --t2:#5b5b66; --t3:#8a8a95;
+  /* --t3 carries .snip, .when, .meta and every placeholder. #8a8a95 on white
+     was 3.4:1 — legible until you need it. #6b6b75 is 5:1 and still reads as
+     the quiet tier, not as body text. */
+  --t1:#16161a; --t2:#5b5b66; --t3:#6b6b75;
   /* Darker blue than the dark theme's: #5aa7f0 on white fails contrast. */
   --acc:#1f6fd0; --red:#c8352f; --on-acc:#ffffff;
   --press:rgba(0,0,0,.045); --press2:#dedee6;
@@ -28,7 +35,16 @@
   /* The toast inverts against the page, so its tokens flip with the theme. */
   --toast-bg:rgba(22,22,26,.96); --toast-fg:#f4f4f5; --undo:#7fbcff;
   --shadow:rgba(0,0,0,.16);
-  --r:7px; --sat:env(safe-area-inset-top); --sab:env(safe-area-inset-bottom);
+  /* Three radii, used on purpose: --r-s for things that are nearly square
+     (caps, chips), --r for anything you press, --r-l for panels and cards. */
+  --r-s:5px; --r:7px; --r-l:14px;
+  /* Spacing scale. Stops the drift between 10, 11, 12 and 13px gutters that
+     had grown up one component at a time. */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
+  /* Six type steps. Body is --t-base; everything else is a deliberate step
+     away from it rather than a new number. */
+  --t-xs:11px; --t-s:12px; --t-m:13px; --t-base:14px; --t-l:15px; --t-xl:16px;
+  --sat:env(safe-area-inset-top); --sab:env(safe-area-inset-bottom);
 }
 
 /* The original palette, kept intact. Applied when the system asks for dark and
@@ -36,9 +52,12 @@
    both directions, so the toggle always wins over the system setting. */
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
+    color-scheme:dark;
     --bg:#09090b; --elev:#141417; --elev2:#1d1d21;
     --line:rgba(255,255,255,.075); --line-strong:rgba(255,255,255,.13);
-    --t1:#f4f4f5; --t2:#8b8b93; --t3:#56565e;
+    /* --t3 was #56565e on #09090b: 2.75:1. Lifted to #7c7c86 (5:1) so the
+       quiet tier is still readable rather than decorative. */
+    --t1:#f4f4f5; --t2:#8b8b93; --t3:#7c7c86;
     --acc:#5aa7f0; --red:#f2615c; --on-acc:#06121f;
     --press:rgba(255,255,255,.045); --press2:#2a2a30;
       --glass:rgba(24,24,28,.97); --sheet:#17171b; --input:#0e0e11;
@@ -47,14 +66,28 @@
   }
 }
 :root[data-theme="dark"]{
+  color-scheme:dark;
   --bg:#09090b; --elev:#141417; --elev2:#1d1d21;
   --line:rgba(255,255,255,.075); --line-strong:rgba(255,255,255,.13);
-  --t1:#f4f4f5; --t2:#8b8b93; --t3:#56565e;
+  --t1:#f4f4f5; --t2:#8b8b93; --t3:#7c7c86;
   --acc:#5aa7f0; --red:#f2615c; --on-acc:#06121f;
   --press:rgba(255,255,255,.045); --press2:#2a2a30;
   --glass:rgba(24,24,28,.97); --sheet:#17171b; --input:#0e0e11;
   --toast-bg:rgba(240,240,245,.96); --toast-fg:#101014; --undo:#0a58c2;
   --shadow:rgba(0,0,0,.4);
+}
+/* Motion is decoration. Turning it off must never cost information, so the
+   spinner's rotation is the one thing that stays — it is the only thing that
+   says "working". Everything else is a transition on a transform or an
+   opacity that the end state already describes. */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{
+    transition-duration:.01ms !important;
+    animation-duration:.01ms !important;
+    animation-iteration-count:1 !important;
+    scroll-behavior:auto !important;
+  }
+  .iconbtn.busy .spin,#ptr.spin .ring,#bar i{animation:sp 1.2s linear infinite !important}
 }
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 /* `hidden` means hidden, whatever else says otherwise.
@@ -68,7 +101,7 @@ body{background:var(--bg);color:var(--t1);
   font:400 15px/1.35 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
   -webkit-font-smoothing:antialiased;overscroll-behavior:none;user-select:none;-webkit-user-select:none}
 button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;display:flex;align-items:center;justify-content:center}
-input,textarea{font:inherit;color:inherit;background:none;border:0;outline:0;user-select:text;-webkit-user-select:text}
+input,textarea,select{font:inherit;color:inherit;background:none;border:0;outline:0;user-select:text;-webkit-user-select:text}
 svg{display:block;flex:none}
 .num{font-variant-numeric:tabular-nums}
 .tr{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -94,8 +127,14 @@ header{flex:none;padding:calc(var(--sat) + 14px) 16px 0;background:var(--bg)}
 .meta{font-size:12.5px;color:var(--t3);margin-top:3px;min-height:16px}
 .meta .unread-n{color:var(--acc);font-weight:600}
 .htools{display:flex;align-items:center;gap:8px;flex:none}
-.iconbtn{width:33px;height:33px;border-radius:50%;flex:none;background:var(--elev2);color:var(--t1);transition:background .12s,transform .08s;position:relative}
+/* 44px, the smallest target a finger is meant to hit. The glyph inside stays
+   15px; it is the control that grew. */
+.iconbtn{width:44px;height:44px;border-radius:50%;flex:none;background:var(--elev2);color:var(--t1);transition:background .12s,transform .08s;position:relative}
 .iconbtn:active{background:var(--press2);transform:scale(.93)}
+/* Focus is an outline, never a removed outline. `outline:0` on inputs and the
+   editor used to leave a keyboard user with no idea where they were. */
+:where(a,button,input,select,textarea,[tabindex]):focus-visible{
+  outline:2px solid var(--acc);outline-offset:2px;border-radius:var(--r-s)}
 .iconbtn .spin{position:absolute;inset:0;border-radius:50%;border:2px solid transparent;border-top-color:var(--acc);animation:sp .7s linear infinite;display:none}
 .iconbtn.busy .spin{display:block}
 .iconbtn.busy{pointer-events:none}
@@ -103,8 +142,12 @@ header{flex:none;padding:calc(var(--sat) + 14px) 16px 0;background:var(--bg)}
 @keyframes sp{to{transform:rotate(360deg)}}
 
 .pills{display:flex;gap:6px;margin:12px 0 10px;flex-wrap:wrap}
-.pill{height:26px;padding:0 11px;border-radius:13px;background:var(--elev);border:1px solid var(--line);
-  color:var(--t2);font-size:12.5px;font-weight:500;gap:6px;transition:background .12s,color .12s}
+/* 32px visual, 44px hit. The ::after expands only vertically, so neighbouring
+   pills — 6px apart — cannot steal each other's taps. */
+.pill{height:32px;padding:0 13px;border-radius:16px;background:var(--elev);border:1px solid var(--line);
+  color:var(--t2);font-size:var(--t-m);font-weight:500;gap:6px;transition:background .12s,color .12s;
+  position:relative}
+.pill::after{content:"";position:absolute;inset:-6px 0}
 .pill.on{background:color-mix(in srgb,var(--acc) 16%,transparent);color:var(--acc);border-color:color-mix(in srgb,var(--acc) 35%,transparent)}
 .pill .dot{width:7px;height:7px;border-radius:50%;flex:none}
 
@@ -153,15 +196,20 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
    everybody had already read was taken for three unread messages — by the
    person who asked for the feature, on the first day. An outline and a
    chevron say "there is more folded up here", which is what it actually is. */
+/* 26px visual so the chevron has somewhere to live; the ::after makes the tap
+   target 44px tall without pushing the sender/date baselines apart. */
 .count{flex:none;margin-left:auto;display:inline-flex;align-items:center;gap:3px;
-       height:18px;padding:0 5px;border-radius:5px;border:1px solid var(--line);
-       background:0;color:var(--t3);font-size:11px;font-weight:600;line-height:1}
+       height:26px;padding:0 7px;border-radius:var(--r-s);border:1px solid var(--line);
+       background:0;color:var(--t3);font-size:var(--t-xs);font-weight:600;line-height:1;
+       position:relative}
+.count::after{content:"";position:absolute;inset:-9px 0}
 .count svg{transition:transform .15s}
 .count.on{background:var(--elev2);color:var(--t2)}
 .count.on svg{transform:rotate(180deg)}
 /* Delete, on the row, for the one folder whose rows never reach the reader
    and so never get its action bar. */
-.rowdel{flex:none;margin-left:auto;width:24px;height:20px;border-radius:5px;color:var(--t3)}
+.rowdel{flex:none;margin-left:auto;width:32px;height:28px;border-radius:var(--r-s);color:var(--t3);position:relative}
+.rowdel::after{content:"";position:absolute;inset:-8px 0}
 .rowdel:hover{background:var(--press2);color:var(--red)}
 .count + .rowdel{margin-left:6px}
 /* The rest of the conversation, indented under the row that summarised it.
@@ -257,7 +305,9 @@ button.who{cursor:pointer}
   #folderBtn:hover{background:color-mix(in srgb,var(--acc) 14%,var(--elev));
     border-color:color-mix(in srgb,var(--acc) 45%,transparent)}
 
-  .row:hover{background:rgba(255,255,255,.055);cursor:pointer}
+  /* --press, not a white wash. rgba(255,255,255,.055) is a hairline of
+     nothing on a white page, so hover was a dark-theme-only affordance. */
+  .row:hover{background:var(--press);cursor:pointer}
   .row.sel:hover{background:color-mix(in srgb,var(--acc) 30%,transparent)}
 
   .rbtn:hover{background:color-mix(in srgb,var(--acc) 15%,var(--elev));
@@ -287,7 +337,7 @@ button.who{cursor:pointer}
   .ghost:hover{background:var(--press2);color:var(--t1)}
   /* The row's Sync / Make default / Remove keep their own colour; only the
      surface reacts, so Remove never stops looking like Remove. */
-  .side:hover{background:rgba(255,255,255,.09);border-radius:5px}
+  .side:hover{background:var(--press2);border-radius:var(--r-s)}
   .searchwrap:hover{border-color:var(--line-strong)}
   .searchwrap button:hover{color:var(--t1)}
 }
@@ -342,13 +392,16 @@ body.composing:not(.overlay) #scrim{opacity:0;pointer-events:none}
 .suggest .em{color:var(--t3);font-size:12px}
 /* Under the message, so the rule that separates it from the text is above. */
 .toolbar{display:flex;gap:3px;flex-wrap:wrap;align-items:center;padding:7px 0 0;border-top:1px solid var(--line);flex:none}
-.toolbar button{height:30px;min-width:32px;padding:0 8px;border-radius:6px;color:var(--t2);font-size:13px}
+/* 36px visual with a 44px hit. Formatting controls sit in a row of eleven;
+   at 44px each they would wrap onto two lines of their own. */
+.toolbar button{height:36px;min-width:36px;padding:0 9px;border-radius:var(--r-s);color:var(--t2);font-size:var(--t-m);position:relative}
+.toolbar button::after{content:"";position:absolute;inset:-4px 0}
 .toolbar button.on,.toolbar button:active{background:var(--press2);color:var(--t1)}
 .toolbar .spacer{flex:1}
 .toolbar .ai{color:var(--acc);font-weight:600}
 .toolbar button:disabled{opacity:.35;pointer-events:none}
 .editor{min-height:170px;max-height:42vh;overflow-y:auto;padding:12px 0;font-size:14.5px;
-  line-height:1.5;outline:0;user-select:text;-webkit-user-select:text;word-break:break-word}
+  line-height:1.5;user-select:text;-webkit-user-select:text;word-break:break-word}
 .editor:empty:before{content:attr(data-ph);color:var(--t3)}
 .editor blockquote{margin:6px 0 6px 8px;padding-left:11px;border-left:2px solid var(--line-strong);color:var(--t2)}
 .editor a{color:var(--acc)}
@@ -361,7 +414,9 @@ body.composing:not(.overlay) #scrim{opacity:0;pointer-events:none}
   border-top:1px solid var(--line-strong);padding:8px 16px max(var(--sab), 14px);
   transform:translateY(101%);transition:transform .3s cubic-bezier(.32,.72,0,1);max-height:86vh;overflow-y:auto}
 .sheet.up{transform:translateY(0)}
-.grab{width:35px;height:4px;border-radius:2px;background:rgba(255,255,255,.2);margin:0 auto 14px}
+/* --line-strong, not a white wash: the handle has to be visible on the white
+   sheet it sits on, which is exactly the surface a light theme shows. */
+.grab{width:35px;height:4px;border-radius:2px;background:var(--line-strong);margin:0 auto 14px}
 .sh-t{font-size:16px;font-weight:600;letter-spacing:-.011em;margin-bottom:3px}
 .sh-s{font-size:13px;color:var(--t2);margin-bottom:14px;line-height:1.45}
 .field{display:flex;align-items:center;gap:9px;min-height:42px;padding:0 12px;background:var(--input);
@@ -370,6 +425,7 @@ body.composing:not(.overlay) #scrim{opacity:0;pointer-events:none}
 /* The one menu in the app. Its own background, not transparent: the options
    inherit it, and a transparent one leaves them unreadable on some systems. */
 .field select{flex:1;font-size:14.5px;min-width:0;height:42px;background:var(--input);color:var(--t1);border:0;outline:0}
+.field select:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
 .field input::placeholder,textarea::placeholder{color:var(--t3)}
 textarea.field{width:100%;padding:11px 12px;font-size:14.5px;line-height:1.45;min-height:130px;resize:vertical;display:block}
 .cta{width:100%;height:46px;border-radius:var(--r);margin-top:10px;background:var(--acc);color:var(--on-acc);
@@ -658,6 +714,123 @@ html.busy #bar{opacity:1}
   background:var(--toast-bg);color:var(--toast-fg);padding:9px 15px;border-radius:19px;font-size:13.5px;font-weight:500;
   opacity:0;pointer-events:none;transition:opacity .22s,transform .22s;max-width:82vw;text-align:center;box-shadow:0 8px 26px var(--shadow)}
 #toast.up{opacity:1;transform:translate(-50%,0)}
+
+/* ── triage: swipe and bulk select ──────────────────────────────────
+   Both are the same gesture language as the phone you are holding: the row
+   slides aside to be filed, and a held press marks it without opening it. */
+#list{position:relative}
+.rowwrap{position:relative;overflow:hidden;background:var(--bg)}
+/* The reveal lives behind the row. Archive is the filing action worth a
+   gesture — delete is deliberate and stays a button you look for. */
+.rowwrap .swipe-act{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:flex-end;
+  gap:8px;padding:0 22px;background:color-mix(in srgb,var(--acc) 18%,var(--bg));
+  color:var(--acc);font-size:var(--t-m);font-weight:650;pointer-events:none}
+.rowwrap.left .swipe-act{background:color-mix(in srgb,var(--red) 18%,var(--bg));color:var(--red)}
+.rowwrap .swipe-act svg{flex:none}
+.rowwrap .row{background:var(--bg);will-change:transform;position:relative;z-index:1;
+  transition:transform .22s cubic-bezier(.32,.72,0,1)}
+.rowwrap.dragging .row{transition:none}
+.rowwrap.unread .row,.rowwrap .row.unread{
+  background:color-mix(in srgb,var(--acc) 14%,var(--bg))}
+.rowwrap.open .row,.rowwrap .row.sel{background:color-mix(in srgb,var(--acc) 25%,var(--bg))}
+
+/* Selection mode replaces the row's swipe behaviour with a checkbox. */
+.rowwrap .selbox{
+  flex:none;width:22px;height:22px;border-radius:50%;border:1.5px solid var(--line-strong);
+  background:var(--input);margin-top:3px;display:none;align-items:center;justify-content:center;
+  color:transparent}
+body.selmode .rowwrap .selbox{display:flex}
+body.selmode .rowwrap .row{touch-action:pan-y}
+.rowwrap.picked .selbox{background:var(--acc);border-color:var(--acc);color:var(--on-acc)}
+.rowwrap.picked .row{background:color-mix(in srgb,var(--acc) 16%,var(--bg))}
+/* The bar that replaces the action row while you are choosing. Sticky at the
+   foot of the list so it is where your other thumb already is. */
+#bulkbar{
+  position:fixed;left:0;right:0;bottom:0;z-index:70;
+  display:flex;align-items:center;gap:var(--s2);
+  padding:10px var(--s4) max(var(--sab), 10px);
+  background:var(--glass);border-top:1px solid var(--line-strong);
+  -webkit-backdrop-filter:blur(22px);backdrop-filter:blur(22px);
+  transform:translateY(110%);transition:transform .25s cubic-bezier(.32,.72,0,1)}
+#bulkbar.up{transform:translateY(0)}
+#bulkbar .n-sel{font-size:var(--t-m);font-weight:650;color:var(--t1);flex:1;min-width:0}
+#bulkbar .rbtn{height:40px}
+#bulkbar .rbtn.acc{margin-left:0;min-width:0}
+
+/* Thread scope. One control, one meaning: the bar says whether it is about
+   to file the message you are reading or the whole conversation, and the
+   switch is a single chip next to the subject rather than a second row of
+   twelve buttons wearing the same icons. */
+.tscope{
+  display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;
+  border-radius:13px;border:1px solid var(--line-strong);background:var(--elev);
+  color:var(--t2);font-size:var(--t-xs);font-weight:650;flex:none;margin-left:auto;
+  position:relative}
+.tscope::after{content:"";position:absolute;inset:-9px 0}
+.tscope.on{
+  background:color-mix(in srgb,var(--acc) 16%,transparent);
+  color:var(--acc);border-color:color-mix(in srgb,var(--acc) 40%,transparent)}
+/* Stated on the button itself, not only in the chip: once the chip is set to
+   "conversation", the destructive buttons name what they will hit. */
+.rbtn[data-scope="thread"] .lbl::after{content:" conversation"}
+
+/* Reader overflow. On a narrow screen only Star, Archive, Delete and Reply
+   stay in the bar — the four you reach for — and everything else moves into
+   one sheet behind "⋯". Reply keeps its place at the right edge either way. */
+#rMore{display:none}
+@media (max-width:899px){
+  .rbtn.overflowable{display:none}
+  #rMore{display:flex}
+}
+#moreSheet .mi{min-height:52px}
+
+/* Recipient chips. An address becomes a chip the moment it parses, so a typo
+   is visible as a name you can strike out rather than a comma in a string. */
+.chip{
+  display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 6px 0 11px;
+  border-radius:15px;background:var(--elev);border:1px solid var(--line-strong);
+  font-size:var(--t-m);color:var(--t1);max-width:100%}
+.chip .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip .x{
+  width:22px;height:22px;border-radius:50%;color:var(--t2);font-size:15px;line-height:1;flex:none;
+  display:flex;align-items:center;justify-content:center}
+.chip .x:hover{background:var(--red);color:#fff}
+.chip.bad{border-color:var(--red);color:var(--red)}
+.field.afield{flex-wrap:wrap;min-height:44px;padding:6px 12px}
+.field.afield .chip{margin:2px 4px 2px 0}
+.field.afield input{min-width:120px;flex:1 1 120px;height:30px}
+/* Drop target. Dragging a file over the composer has to say so, or you drop
+   it on the desktop and wonder where it went. */
+#composeSheet.dropping{outline:2px dashed var(--acc);outline-offset:-8px}
+#composeSheet.dropping #dropHint{display:flex}
+#dropHint{
+  display:none;position:absolute;inset:0;z-index:5;align-items:center;justify-content:center;
+  background:color-mix(in srgb,var(--acc) 12%,var(--sheet));
+  color:var(--acc);font-size:var(--t-l);font-weight:650;pointer-events:none;border-radius:var(--r-l)}
+
+/* Settings, split. One sheet with five headings was a drawer; these are five
+   places to go, and the one you want should be one tap from the button. */
+.setnav{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px}
+.setnav .pill{height:32px}
+.setsec{display:none}
+.setsec.on{display:block}
+/* Repair is a tool you use once, not a setting. It lives under Accounts as a
+   disclosure so it stops sitting between "Blocked senders" and "Appearance"
+   looking like something to press every week. */
+details.repair{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
+details.repair summary{
+  list-style:none;cursor:pointer;color:var(--t2);font-size:var(--t-m);font-weight:600;
+  min-height:34px;display:flex;align-items:center;gap:6px}
+details.repair summary::-webkit-details-marker{display:none}
+details.repair summary::before{content:"▸";color:var(--t3);font-size:10px;transition:transform .15s}
+details.repair[open] summary::before{transform:rotate(90deg)}
+details.repair .body{padding-top:8px}
+
+/* Visually hidden, still announced. Used for the live region that names what
+   a key command or a swipe just did. */
+.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;border:0}
 </style>
 </head>
 <body>
@@ -668,13 +841,13 @@ html.busy #bar{opacity:1}
   <header>
     <div class="htop">
       <div style="min-width:0">
-        <div class="meta" id="hmeta">Loading…</div>
+        <div class="meta" id="hmeta" role="status" aria-live="polite">Loading…</div>
       </div>
       <div class="htools">
-        <button class="iconbtn" id="syncBtn" aria-label="Refresh"><span class="spin"></span>
+        <button class="iconbtn" id="syncBtn" aria-label="Refresh" aria-busy="false"><span class="spin"></span>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 1 3 6.7"/><path d="M3 20v-5h5"/></svg>
         </button>
-        <button class="iconbtn" id="acctBtn" aria-label="Accounts">
+        <button class="iconbtn" id="acctBtn" aria-label="Settings" aria-haspopup="dialog" aria-expanded="false">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5 20c.8-3.4 3.6-5.4 7-5.4s6.2 2 7 5.4"/></svg>
         </button>
         <button class="iconbtn" id="composeBtn" aria-label="Compose">
@@ -690,13 +863,25 @@ html.busy #bar{opacity:1}
     </div>
     <div class="pills" id="accPills"></div>
     <div class="folderbar">
-      <button id="folderBtn"><span id="folderName">Inbox</span><span id="folderCount"></span><span class="caret">▾</span></button>
+      <button id="folderBtn" aria-haspopup="dialog" aria-expanded="false"><span id="folderName">Inbox</span><span id="folderCount"></span><span class="caret">▾</span></button>
     </div>
   </header>
   <main id="main">
     <div id="ptr"><span class="lift"><span class="ring"></span></span></div>
-    <div id="list"></div>
+    <!-- The list is a list, and every row in it is reachable from the keyboard
+         with a name that carries what sighted users get from the layout. -->
+    <div id="list" role="list" aria-label="Messages"></div>
   </main>
+</div>
+
+<!-- Bulk actions. Appears only in selection mode; it is the one place these
+     three filing actions are supposed to live while you are choosing. -->
+<div id="bulkbar" role="toolbar" aria-label="Actions for selected messages" hidden>
+  <div class="n-sel" id="bulkCount">0 selected</div>
+  <button class="rbtn" id="bulkArchive" aria-label="Archive selected">Archive</button>
+  <button class="rbtn" id="bulkMove" aria-label="Move selected">Move</button>
+  <button class="rbtn danger" id="bulkDelete" aria-label="Delete selected">Delete</button>
+  <button class="rbtn" id="bulkDone">Done</button>
 </div>
 
 <div id="grip" role="separator" aria-orientation="vertical" aria-label="Resize list"></div>
@@ -713,50 +898,66 @@ html.busy #bar{opacity:1}
       <div class="rsubj" id="rSubj">—</div>
       <div class="rmeta tr" id="rMeta">—</div>
     </div>
+    <!-- The only way to say "these buttons are about the conversation, not
+         this one message", and it sits with the subject it qualifies. -->
+    <button class="tscope" id="rScope" aria-pressed="false"
+      title="Decide whether Archive, Delete and Move act on this message or on the whole conversation">
+      <span id="rScopeLbl">This message</span>
+    </button>
   </div>
   <div id="rbody">
     <div id="rEmpty">
       <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 7.5 8.5 6 8.5-6"/></svg>
       <div><b>Nothing open</b><span>Pick a message on the left, or press <kbd>j</kbd> to start at the top.</span></div>
     </div>
-    <iframe id="rframe" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>
+    <!-- A title is the accessible name of a frame. Without one a screen reader
+         announces "frame" and offers no way to tell this from the print frame. -->
+    <iframe id="rframe" title="Message body" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>
   </div>
   <div class="attbar" id="rAtts" style="padding:8px 16px 0"></div>
   <div class="rbar">
-    <button class="rbtn lab" id="rImages" hidden>
+    <button class="rbtn ico" id="rMore" aria-haspopup="dialog" aria-expanded="false" aria-label="More actions" title="More actions">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="5" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="19" cy="12" r="1.4" fill="currentColor"/></svg>
+    </button>
+    <!-- `.overflowable` is what moves into the sheet below 900px. The four that
+         stay — Star, Archive, Delete, Reply — never change place, so the thing
+         you reach for blind is where you left it. -->
+    <button class="rbtn lab overflowable" id="rImages" hidden>
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m5 18 5-5 3.5 3.5L17 13l2.5 2.5"/></svg><span class="lbl">Images</span>
     </button>
-    <button class="rbtn lab" id="rUnsub" hidden aria-label="Unsubscribe" title="Unsubscribe from this sender">
+    <button class="rbtn lab overflowable" id="rUnsub" hidden aria-label="Unsubscribe" title="Unsubscribe from this sender">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 12.5V9a6.5 6.5 0 0 0-13 0c0 6-2.5 7.5-2.5 7.5h11"/><path d="M10.3 20a2 2 0 0 0 3.4 0"/><path d="M16 18h6"/></svg><span class="lbl">Unsubscribe</span>
     </button>
-    <button class="rbtn lab" id="rNotSpam" hidden aria-label="Not spam" title="Not spam — move it to the Inbox">
+    <button class="rbtn lab overflowable" id="rNotSpam" hidden aria-label="Not spam" title="Not spam — move it to the Inbox">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 5 6v5.6c0 4 2.9 7.4 7 8.4 4.1-1 7-4.4 7-8.4V6Z"/><path d="m8.8 12 2.3 2.3 4.1-4.6"/></svg><span class="lbl">Not spam</span>
     </button>
-    <button class="rbtn ico" id="rStar" aria-label="Star" title="Star (s)">
+    <button class="rbtn ico" id="rStar" aria-label="Star" aria-pressed="false" title="Star (s)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3.6 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.8l5.9-.9Z"/></svg>
     </button>
-    <button class="rbtn ico" id="rUnread" aria-label="Mark unread" title="Mark unread (u)">
+    <button class="rbtn ico overflowable" id="rUnread" aria-label="Mark unread" title="Mark unread (u)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 7 8.5 6 8.5-6"/></svg>
     </button>
     <button class="rbtn ico" id="rArchive" aria-label="Archive" title="Archive (e)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1.4"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9"/><path d="M10 13h4"/></svg>
     </button>
+    <!-- `#` is bound to Delete now. It used to be printed on the title and
+         pressed by nobody, because there was nothing behind it. -->
     <button class="rbtn ico" id="rDelete" aria-label="Delete" title="Delete (#)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5.2A1.2 1.2 0 0 1 10.2 4h3.6A1.2 1.2 0 0 1 15 5.2V7"/><path d="M6 7v12a1.5 1.5 0 0 0 1.5 1.5h9A1.5 1.5 0 0 0 18 19V7"/><path d="M10 11v6M14 11v6"/></svg>
     </button>
-    <button class="rbtn ico" id="rMove" aria-label="Move to folder" title="Move (v)">
+    <button class="rbtn ico overflowable" id="rMove" aria-label="Move to folder" title="Move (v)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 18Z"/></svg>
     </button>
-    <button class="rbtn ico" id="rPdf" aria-label="Save as PDF" title="Save as PDF (p)">
+    <button class="rbtn ico overflowable" id="rPdf" aria-label="Save as PDF" title="Save as PDF (p)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M12 11.5v5"/><path d="m9.8 14.5 2.2 2.2 2.2-2.2"/></svg>
     </button>
-    <button class="rbtn ico" id="rForward" aria-label="Forward" title="Forward (f)">
+    <button class="rbtn ico overflowable" id="rForward" aria-label="Forward" title="Forward (f)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 8 19 12l-4.5 4"/><path d="M19 12h-7a6 6 0 0 0-6 6v1"/></svg>
     </button>
-    <button class="rbtn ico" id="rReplyAI" aria-label="Reply all, written for you" title="Reply all, with the reply already written (Shift+A)">
+    <button class="rbtn ico overflowable" id="rReplyAI" aria-label="Reply all, written for you" title="Reply all, with the reply already written (Shift+A)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9 2.5 13l4.5 4"/><path d="M12 9l-4.5 4 4.5 4"/><path d="M7.5 13h7a6 6 0 0 1 6 6v.5"/><path d="m19 3.4.8 1.6 1.6.8-1.6.8-.8 1.6-.8-1.6-1.6-.8 1.6-.8z" fill="currentColor"/></svg>
     </button>
-    <button class="rbtn ico" id="rReplyAll" aria-label="Reply all" title="Reply all (a)">
+    <button class="rbtn ico overflowable" id="rReplyAll" aria-label="Reply all" title="Reply all (a)">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 8 3 12l4.5 4"/><path d="M12.5 8 8 12l4.5 4"/><path d="M8 12h7a6 6 0 0 1 6 6v1"/></svg>
     </button>
     <button class="rbtn acc" id="rReply">
@@ -765,48 +966,89 @@ html.busy #bar{opacity:1}
   </div>
 </div>
 
+<!-- The overflow that keeps Reply at the far edge on a 375px screen. Each row
+     is a mirror of the button it stands for, so there is one place a label and
+     an icon are decided — the button above — and one place they are shown. -->
+<div class="sheet" id="moreSheet">
+  <div class="grab"></div>
+  <div class="sh-t">More</div>
+  <div class="sh-s" id="moreScope">These act on the message you are reading.</div>
+  <div id="moreList"></div>
+</div>
+
 <div id="scrim"></div>
 
 <div class="sheet" id="acctSheet">
   <div class="grab"></div>
-  <div class="sh-t">Accounts</div>
-  <div class="sh-s">iCloud connects here in two taps. It appears on its own once the agent runs on your PC (see the README).</div>
-  <div id="acctList"></div>
-  <button class="cta" id="addIcloud" style="background:var(--elev2);color:var(--t1)">Connect iCloud</button>
-  <button class="cta" id="openContacts" style="background:var(--elev2);color:var(--t1)">Contacts</button>
-  <button class="cta" id="openBlocked" style="background:var(--elev2);color:var(--t1)">Blocked senders</button>
-  <button class="ghost" id="repairSelf" style="width:100%;justify-content:center;min-height:34px">Look for mail you copied yourself on</button>
-  <div class="sh-s" style="margin:6px 0 0;font-size:12px">A message you put your own address on used to file itself under Sent and never reach the inbox here, because both copies carry one Message-ID. New mail lands correctly; this goes back over the old ones, checks each against your inbox at iCloud, and moves what is really there.</div>
-  <div class="sh-s" style="margin:14px 0 6px">Appearance</div>
-  <div class="chips" id="themePick">
-    <button class="pill" data-theme="light">Light</button>
-    <button class="pill" data-theme="dark">Dark</button>
-    <button class="pill" data-theme="system">System</button>
+  <div class="sh-t">Settings</div>
+  <!-- Five places, not one drawer. The section you want is one tap from the
+       button, and the one-off repair tool is out of the way under Accounts. -->
+  <div class="setnav" id="setNav" role="tablist" aria-label="Settings sections">
+    <button class="pill on" role="tab" aria-selected="true" data-set="accounts">Accounts</button>
+    <button class="pill" role="tab" aria-selected="false" data-set="privacy">Privacy</button>
+    <button class="pill" role="tab" aria-selected="false" data-set="writing">Writing</button>
+    <button class="pill" role="tab" aria-selected="false" data-set="notify">Notifications</button>
+    <button class="pill" role="tab" aria-selected="false" data-set="appear">Appearance</button>
   </div>
-  <div class="sh-s" style="margin:14px 0 6px">Remote images</div>
-  <div class="chips" id="imgPick">
-    <button class="pill" data-images="auto">Load them</button>
-    <button class="pill" data-images="ask">Ask first</button>
-  </div>
-  <div class="sh-s" style="margin:2px 0 0;font-size:12px">A remote image is fetched from the sender's server as the message opens, which tells them you read it and when. Asking first holds them back behind the Images button. Either way, nothing is re-downloaded when you switch — the blocked form is what has always been stored.</div>
-  <div class="sh-s" style="margin:14px 0 6px">Signature</div>
-  <textarea class="field" id="sigText" rows="4" placeholder="Damien Mazeas" spellcheck="false" style="min-height:96px"></textarea>
-  <button class="ghost" id="sigSave" style="width:100%;justify-content:center;min-height:34px">Save the signature</button>
-  <div class="sh-s" style="margin:6px 0 0;font-size:12px">Goes under what you write and above the quote, in a new message and in a reply alike. Plain text, one line per line, kept in the database so it is the same signature on every device. Empty removes it.</div>
-  <div class="sh-s" style="margin:14px 0 6px">Writing assistant</div>
-  <div class="sh-s" id="aiKeyState" style="margin:0 0 8px;font-size:12px">&mdash;</div>
-  <div class="field"><input id="aiKeyInput" type="password" placeholder="Gemini API key" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
-  <div class="formerr" id="aiKeyErr"></div>
-  <button class="cta" id="aiKeySave" style="background:var(--elev2);color:var(--t1)">Save key</button>
-  <button class="ghost" id="aiKeyClear" hidden style="width:100%;justify-content:center;min-height:34px">Remove the stored key</button>
-  <div class="sh-s" style="margin:12px 0 6px">Model</div>
-  <div class="field"><select id="aiModel" aria-label="Model"></select></div>
-  <button class="ghost" id="aiKeyTest" style="width:100%;justify-content:center;min-height:34px">Test the key and list the models</button>
-  <div class="sh-s" style="margin:8px 0 0;font-size:12px">Draft, Fix and Improve in the composer send that message to Google's Gemini API, and this is the key and the model they use. The key is checked with Google before it is kept, sealed in the database like the iCloud password, and never shown again &mdash; only its last four characters. Test asks Google what this key can actually reach; the menu only offers what came back.</div>
-  <button class="cta" id="notifyBtn" style="background:var(--elev2);color:var(--t1)">Enable notifications</button>
-  <button class="ghost" id="notifyTest" style="width:100%;justify-content:center;min-height:34px">Send a test notification</button>
-  <button class="ghost" id="notifyOnly" style="width:100%;justify-content:center;min-height:34px">Notify this device only</button>
-  <div class="sh-s" style="margin:6px 0 0;font-size:12px">Every registered device gets its own push, so a browser holding an old registration alongside its current one shows everything twice. This drops every registration but the one this browser is holding &mdash; turn notifications back on wherever else you want them.</div>
+
+  <section class="setsec on" data-set="accounts" role="tabpanel" aria-label="Accounts">
+    <div class="sh-s">iCloud connects here in two taps.</div>
+    <div id="acctList"></div>
+    <button class="cta" id="addIcloud" style="background:var(--elev2);color:var(--t1)">Connect iCloud</button>
+    <button class="cta" id="openContacts" style="background:var(--elev2);color:var(--t1)">Contacts</button>
+    <button class="cta" id="openBlocked" style="background:var(--elev2);color:var(--t1)">Blocked senders</button>
+    <details class="repair">
+      <summary>Repair old self-copies</summary>
+      <div class="body">
+        <button class="ghost" id="repairSelf" style="width:100%;justify-content:center;min-height:34px">Look for mail you copied yourself on</button>
+        <div class="sh-s" style="margin:6px 0 0;font-size:12px">A message you put your own address on used to file itself under Sent and never reach the inbox here, because both copies carry one Message-ID. New mail lands correctly; this goes back over the old ones, checks each against your inbox at iCloud, and moves what is really there.</div>
+      </div>
+    </details>
+  </section>
+
+  <section class="setsec" data-set="privacy" role="tabpanel" aria-label="Privacy" hidden>
+    <div class="sh-s">Remote images</div>
+    <div class="chips" id="imgPick" role="group" aria-label="Remote images">
+      <button class="pill" data-images="auto" aria-pressed="false">Load them</button>
+      <button class="pill" data-images="ask" aria-pressed="false">Ask first</button>
+    </div>
+    <div class="sh-s" style="margin:2px 0 0;font-size:12px">A remote image is fetched from the sender's server as the message opens, which tells them you read it and when. Asking first holds them back behind the Images button. Either way, nothing is re-downloaded when you switch &mdash; the blocked form is what has always been stored.</div>
+    <button class="cta" id="openBlocked2" style="background:var(--elev2);color:var(--t1)">Blocked senders</button>
+  </section>
+
+  <section class="setsec" data-set="writing" role="tabpanel" aria-label="Writing" hidden>
+    <div class="sh-s">Signature</div>
+    <textarea class="field" id="sigText" rows="4" placeholder="Your name" spellcheck="false" style="min-height:96px"></textarea>
+    <button class="ghost" id="sigSave" style="width:100%;justify-content:center;min-height:34px">Save the signature</button>
+    <div class="sh-s" style="margin:6px 0 0;font-size:12px">Goes under what you write and above the quote, in a new message and in a reply alike. Plain text, one line per line, kept in the database so it is the same signature on every device. Empty removes it.</div>
+    <div class="sh-s" style="margin:14px 0 6px">Writing assistant</div>
+    <div class="sh-s" id="aiKeyState" style="margin:0 0 8px;font-size:12px">&mdash;</div>
+    <div class="field"><input id="aiKeyInput" type="password" placeholder="Gemini API key" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+    <div class="formerr" id="aiKeyErr"></div>
+    <button class="cta" id="aiKeySave" style="background:var(--elev2);color:var(--t1)">Save key</button>
+    <button class="ghost" id="aiKeyClear" hidden style="width:100%;justify-content:center;min-height:34px">Remove the stored key</button>
+    <div class="sh-s" style="margin:12px 0 6px">Model</div>
+    <div class="field"><select id="aiModel" aria-label="Model"></select></div>
+    <button class="ghost" id="aiKeyTest" style="width:100%;justify-content:center;min-height:34px">Test the key and list the models</button>
+    <div class="sh-s" style="margin:8px 0 0;font-size:12px">Draft, Fix and Improve in the composer send that message to Google's Gemini API, and this is the key and the model they use. Select some text first and only that is rewritten. The key is checked with Google before it is kept, sealed in the database like the iCloud password, and never shown again &mdash; only its last four characters. Test asks Google what this key can actually reach; the menu only offers what came back.</div>
+  </section>
+
+  <section class="setsec" data-set="notify" role="tabpanel" aria-label="Notifications" hidden>
+    <button class="cta" id="notifyBtn" style="background:var(--elev2);color:var(--t1)">Enable notifications</button>
+    <button class="ghost" id="notifyTest" style="width:100%;justify-content:center;min-height:34px">Send a test notification</button>
+    <button class="ghost" id="notifyOnly" style="width:100%;justify-content:center;min-height:34px">Notify this device only</button>
+    <div class="sh-s" style="margin:6px 0 0;font-size:12px">Every registered device gets its own push, so a browser holding an old registration alongside its current one shows everything twice. This drops every registration but the one this browser is holding &mdash; turn notifications back on wherever else you want them.</div>
+  </section>
+
+  <section class="setsec" data-set="appear" role="tabpanel" aria-label="Appearance" hidden>
+    <div class="sh-s">Theme</div>
+    <div class="chips" id="themePick" role="group" aria-label="Theme">
+      <button class="pill" data-theme="light" aria-pressed="false">Light</button>
+      <button class="pill" data-theme="dark" aria-pressed="false">Dark</button>
+      <button class="pill" data-theme="system" aria-pressed="false">System</button>
+    </div>
+    <div class="sh-s" style="margin:2px 0 0;font-size:12px">System follows your device. Light and Dark fix it here and keep it when the device changes its mind at sunset.</div>
+  </section>
 </div>
 
 <div class="sheet" id="icloudSheet">
@@ -876,7 +1118,9 @@ html.busy #bar{opacity:1}
 <div class="sheet lg" id="composeSheet">
   <div class="grab"></div>
   <div class="crow">
-    <button class="iconbtn" id="cClose" aria-label="Close message" title="Close (Esc)">
+    <!-- It closes the composer, not a message. Saying otherwise sent a screen
+         reader user looking for a message that was never open. -->
+    <button class="iconbtn" id="cClose" aria-label="Close draft" title="Close (Esc)">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
     </button>
     <div class="sh-t" id="cTitle">New message</div>
@@ -894,22 +1138,31 @@ html.busy #bar{opacity:1}
   </div>
   <div class="fromrow"><span class="flabel">From</span><div class="chips" id="cAccounts"></div></div>
 
-  <div class="field afield"><span class="flabel">To</span>
-    <input id="cTo" type="text" inputmode="email" placeholder="name@example.com" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+  <!-- Addresses become chips as they parse. The input keeps taking commas and
+       newlines, so typing a list still works; what changes is that each address
+       is a thing you can read and strike out, not a comma inside a string. -->
+  <div class="field afield" id="cToWrap"><span class="flabel">To</span>
+    <span class="chips" id="cToChips"></span>
+    <input id="cTo" type="text" inputmode="email" placeholder="name@example.com" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="To"></div>
   <div class="suggest" id="cSuggest"></div>
 
   <div class="field afield" id="cCcWrap" hidden><span class="flabel">Cc</span>
-    <input id="cCc" type="text" inputmode="email" placeholder="Also send a copy — everyone can see these" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+    <span class="chips" id="cCcChips"></span>
+    <input id="cCc" type="text" inputmode="email" placeholder="Everyone sees these" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Cc"></div>
 
   <div class="field afield" id="cBccWrap" hidden><span class="flabel">Bcc</span>
-    <input id="cBcc" type="text" inputmode="email" placeholder="Send a copy — no other recipient sees these" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+    <span class="chips" id="cBccChips"></span>
+    <input id="cBcc" type="text" inputmode="email" placeholder="Nobody else sees these" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Bcc"></div>
 
 
   <div class="field" id="cSubjWrap"><input id="cSubj" type="text" placeholder="Subject" autocomplete="off"></div>
   <div class="formerr" id="cErr"></div>
 
-  <div class="editor" id="cBody" contenteditable="true" data-ph="Write…"></div>
+  <!-- Drop a file anywhere in the composer. Without a hint the gesture looks
+       like nothing happened and the file is still on the desktop. -->
+  <div class="editor" id="cBody" contenteditable="true" data-ph="Write…" role="textbox" aria-multiline="true" aria-label="Message body"></div>
   <div class="attbar" id="cAtts"></div>
+  <div id="dropHint">Drop to attach</div>
   <div id="imgTools" hidden><span>Image</span><button data-w="25%">25%</button><button data-w="50%">50%</button><button data-w="75%">75%</button><button data-w="100%">Full</button><button data-w="">Reset</button><button id="imgDel">Remove</button></div>
 
   <!-- Below the message, not above it. Sitting between Subject and the body it
@@ -947,7 +1200,10 @@ html.busy #bar{opacity:1}
   </div>
 </div>
 
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite"></div>
+<!-- What a key command or a swipe just did, said out loud. The toast is visual
+     and easy to miss; this is for anyone who cannot see it appear. -->
+<div id="say" class="sr" role="status" aria-live="polite"></div>
 
 <script>
 "use strict";
@@ -1049,6 +1305,7 @@ function closeModal(value) {
   modalDone = null;
   $("#modal").hidden = true;
   $("#modalInput").hidden = true;
+  releaseFocus();
   if (done) done(value);
 }
 
@@ -1065,7 +1322,7 @@ function openModal({ title, detail = "", input = false, value = "", placeholder 
   okBtn.textContent = ok;
   okBtn.classList.toggle("danger", danger);
   $("#modal").hidden = false;
-  setTimeout(() => (input ? field.focus() : okBtn.focus()), 40);
+  trapFocus($("#modal"), input ? field : okBtn);
   return new Promise((resolve) => (modalDone = resolve));
 }
 
@@ -1105,6 +1362,7 @@ function toast(msg, undo, label = "Undo") {
   // sometimes subjects, and a subject is attacker-controlled.
   el.textContent = "";
   el.appendChild(document.createTextNode(msg));
+  say(msg);
   if (undo) {
     const b = document.createElement("button");
     b.className = "undo";
@@ -1134,7 +1392,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v33";
+const CLIENT = "v35";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -1354,7 +1612,7 @@ function renderFolders() {
       : raw === "trash" || raw === "spam"
       ? `<span class="ftools"><span class="side" data-empty="${esc(raw)}" style="color:var(--red)">Empty</span></span>`
       : "";
-    return `<button class="frow${key ? " on" : ""}${unread ? " unread" : ""}${tools ? " actionable" : ""}" ${attr}>
+    return `<button class="frow${key ? " on" : ""}${unread ? " unread" : ""}${tools ? " actionable" : ""}" ${attr}${key ? ' aria-current="true"' : ""}>
        <span class="grow">${esc(name)}</span>
        ${tools}
        <span class="fcount">${unread ? `<span class="n num">${unread}</span>` : ""}<span class="side num">${count}</span></span>
@@ -1365,7 +1623,7 @@ function renderFolders() {
     system
       .map((f) => row(folder === f.folder, `data-folder="${esc(f.folder)}"`, folderLabel(f.folder), f.n, f.unread, false, f.folder))
       .join("") +
-    `<button class="frow${starredOnly ? " on" : ""}" data-starred="1">
+    `<button class="frow${starredOnly ? " on" : ""}" data-starred="1"${starredOnly ? ' aria-current="true"' : ""}>
        <span class="grow">Starred</span></button>` +
     (mine.length ? `<div class="fgroup">Your folders</div>` : "") +
     mine
@@ -1540,7 +1798,22 @@ function rowHtml(m, sub = false) {
   const a = acctById(m.account_id);
   const open = current && current.message && current.message.id === m.id;
   const n = Number(m.n || 1);
-  return `<div class="row${m.unread ? " unread" : ""}${open ? " sel" : ""}${sub ? " sub" : ""}" data-id="${m.id}">
+  // One name that carries what the layout carries: who, what, when, and whether
+  // it has been read. A screen reader gets the message rather than a row of
+  // four unlabelled spans, and Enter opens it the way a click does.
+  const label = [
+    m.unread ? "Unread" : "",
+    m.from_name || m.from_email || "Unknown sender",
+    m.subject ? `— ${m.subject}` : "",
+    m.snippet || "",
+    fmtWhen(m.date),
+    n > 1 ? `${n} in this conversation` : "",
+  ]
+    .filter(Boolean)
+    .join(", ");
+  return `<div class="rowwrap${open ? " open" : ""}"><div class="row${m.unread ? " unread" : ""}${open ? " sel" : ""}${sub ? " sub" : ""}" data-id="${m.id}"
+    role="listitem" tabindex="0" aria-label="${esc(label)}"${open ? ' aria-current="true"' : ""}>
+    <button class="selbox" type="button" aria-label="Select this message" aria-pressed="false"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></button>
     ${
       // Which account a message arrived on is only worth a swatch when
       // there is more than one of them, the same rule the account pills
@@ -1576,7 +1849,11 @@ function rowHtml(m, sub = false) {
       ${sub ? "" : `<div class="subj tr">${esc(m.subject || "(no subject)")}</div>`}
       <div class="snip tr">${esc(m.snippet || "")}</div>
     </div>
-  </div>`;
+    <div class="swipe-act" aria-hidden="true">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1.4"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9"/><path d="M10 13h4"/></svg>
+      <span>Archive</span>
+    </div>
+  </div></div>`;
 }
 
 function renderList() {
@@ -1818,13 +2095,44 @@ function markReadLocally(id) {
 }
 
 /**
- * Set when the reader was opened from a conversation row rather than from one
- * message inside it. Everything filed from the reader then applies to the
- * whole exchange, which is what clicking delete on a conversation means — and
- * what it used to do one message at a time, leaving the next one behind to be
- * deleted again.
+ * The conversation the open message sits in, and whether the action bar is
+ * currently about the whole of it.
+ *
+ * `{key, n, whole}`. `whole` is what the buttons actually honour — so opening
+ * from the summarising row of a three-message exchange starts as "all three",
+ * and opening one message from inside the expansion starts as "just this".
+ * The chip in the header is the switch between the two; before it existed the
+ * scope was set by *where you had clicked* and there was nothing on screen
+ * saying which one you had chosen.
  */
 let currentThread = null;
+
+/** Paints the scope chip and renames the destructive buttons to match. */
+function renderScope() {
+  const chip = $("#rScope");
+  const on = !!(currentThread && currentThread.whole !== false);
+  chip.hidden = !(currentThread && currentThread.n > 1);
+  chip.classList.toggle("on", on);
+  chip.setAttribute("aria-pressed", String(on));
+  $("#rScopeLbl").textContent = on ? `All ${currentThread ? currentThread.n : 0}` : "This message";
+  chip.title = on
+    ? "Archive, Delete and Move will act on every message in this conversation. Tap for just this one."
+    : "Archive, Delete and Move will act on this message alone. Tap for the whole conversation.";
+  $("#moreScope").textContent = on
+    ? "These act on the whole conversation."
+    : "These act on the message you are reading.";
+  for (const id of ["rArchive", "rDelete", "rMove", "rNotSpam"]) {
+    const b = $("#" + id);
+    if (b) b.dataset.scope = on ? "thread" : "one";
+    if (b) b.title = (b.getAttribute("aria-label") || id) + (on ? " — whole conversation" : "");
+  }
+}
+$("#rScope").addEventListener("click", () => {
+  if (!currentThread) return;
+  currentThread.whole = currentThread.whole === false;
+  renderScope();
+  say(currentThread.whole ? "Actions now cover the conversation" : "Actions now cover this message only");
+});
 
 async function openMsg(id, threadRow = null) {
   // The composer occupies the reading pane, so opening a message replaces it.
@@ -1836,10 +2144,17 @@ async function openMsg(id, threadRow = null) {
     if (!res.ok) { toast("Could not open this message"); return; }
     current = await res.json();
   } catch { return; }
+  // The summarising row carries the conversation's size; a row inside the
+  // expansion is one message of it. Either way the chip is shown when there is
+  // more than one, and either way you can change your mind.
+  const listed = (threadRow && threadRow.n) ? threadRow : listRow(id);
+  const key = (listed && listed.thread_key) || current.message.thread_key || "";
+  const n = Number((listed && listed.n) || 1);
   currentThread =
-    threadRow && threadRow.thread_key && Number(threadRow.n || 1) > 1
-      ? { key: threadRow.thread_key, n: Number(threadRow.n) }
+    key && n > 1
+      ? { key, n, whole: !!(threadRow && threadRow.n) }
       : null;
+  renderScope();
   markReadLocally(id);
 
   const m = current.message;
@@ -1876,6 +2191,7 @@ async function openMsg(id, threadRow = null) {
   showImagesOnce = false; // a fresh message asks again
   renderBody();
   $("#rStar").classList.toggle("on", !!Number(m.starred));
+  $("#rStar").setAttribute("aria-pressed", String(!!Number(m.starred)));
 
   // Unsubscribing is something you do to the message, not something attached
   // to it, so it belongs in the action bar with Archive and Delete rather than
@@ -1919,6 +2235,7 @@ function closeReader() {
   $("#reader").classList.remove("up");
   current = null;
   currentThread = null;
+  renderScope();
   $("#rSubj").textContent = "—";
   $("#rMeta").textContent = "—";
   $("#rframe").srcdoc = "";
@@ -1956,6 +2273,9 @@ function step(delta) {
 addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     // Escape peels one layer at a time rather than dismissing everything.
+    // The modal is the outermost, so it is the first to go — it used to be
+    // skipped entirely, leaving a confirm box that only its Cancel would end.
+    if (!$("#modal").hidden) { closeModal(null); return; }
     if (document.body.classList.contains("overlay")) closeOverlays();
     else if (document.querySelector(".sheet.up")) closeSheets();
     else if ($("#reader").classList.contains("up")) closeReader();
@@ -1982,8 +2302,11 @@ addEventListener("keydown", (e) => {
     // easier to hit by accident than a button, so the safety net matters more.
     case "Delete":
     case "Backspace":
+    // `#` is what the button has always claimed in its title. It was printed
+    // there and bound to nothing; now it does what it says.
+    case "#":
       e.preventDefault();
-      fileCurrent("trash", "Deleted");
+      $("#rDelete").click();
       break;
     case "e":
       e.preventDefault();
@@ -2083,18 +2406,21 @@ async function fileCurrent(target, said) {
   // Advance to the next message rather than dumping you back on the list —
   // triaging is a sequence, and closing the reader after every action makes it
   // one. Falls back to the previous message at the end of the list.
+  //
+  // Same on a phone as on a desktop. It used to close the reader below 900px,
+  // "so staying in it would hide the fact that anything happened" — which
+  // meant every archive cost a tap back into the list and a tap into the next
+  // message. The toast already says what happened. Staying in the reader is
+  // what makes clearing a phone inbox possible at all.
   const at = messages.findIndex((m) => m.id === id);
   messages = messages.filter((m) => m.id !== id);
   const next = messages[at] || messages[at - 1] || null;
   if (thread && openThread === thread.key) { openThread = ""; threadRows = []; }
   renderList();
-
-  // On a phone the reader is the whole screen, so staying in it would hide the
-  // fact that anything happened. Two panes can show both at once.
-  if (next && matchMedia("(min-width:900px)").matches) openMsg(next.id, next);
+  if (next) openMsg(next.id, next);
   else closeReader();
 
-  if (thread) return fileThread(thread.key, wasIn, target, said);
+  if (thread && thread.whole !== false) return fileThread(thread.key, wasIn, target, said);
 
   const d = await fileMessage(id, target);
   if (!d) return;
@@ -2128,10 +2454,10 @@ $("#rDelete").addEventListener("click", async () => {
   const next = messages[at] || messages[at - 1] || null;
   if (thread && openThread === thread.key) { openThread = ""; threadRows = []; }
   renderList();
-  if (next && matchMedia("(min-width:900px)").matches) openMsg(next.id, next);
+  if (next) openMsg(next.id, next);
   else closeReader();
 
-  if (thread) {
+  if (thread && thread.whole !== false) {
     const r = await api("/api/thread", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2160,6 +2486,7 @@ $("#rStar").addEventListener("click", async () => {
   const on = !Number(current.message.starred);
   current.message.starred = on ? 1 : 0;
   $("#rStar").classList.toggle("on", on);
+  $("#rStar").setAttribute("aria-pressed", String(on));
   for (const r of [messages, threadRows]) {
     const hit = r.find((m) => m.id === current.message.id);
     if (hit) hit.starred = on ? 1 : 0;
@@ -2194,6 +2521,7 @@ $("#rUnread").addEventListener("click", async () => {
 
 $("#rMove").addEventListener("click", () => {
   if (!current) return;
+  moveBulk = false;
   const here = current.message.folder;
   const choices = folders.filter((f) => f.folder !== here);
   $("#moveList").innerHTML = choices.length
@@ -2210,8 +2538,11 @@ $("#moveList").addEventListener("click", (e) => {
   const b = e.target.closest("[data-move]");
   if (!b) return;
   closeSheets();
+  if (moveBulk) { bulkApply(b.dataset.move, `Moved to ${pretty(b.dataset.move)}`); return; }
   fileCurrent(b.dataset.move, `Moved to ${pretty(b.dataset.move)}`);
 });
+/** True while the move picker is deciding for the bulk selection. */
+let moveBulk = false;
 
 /* ── the sender ── */
 
@@ -2852,7 +3183,14 @@ const openSheet = (s) => {
   // Anything that is not the composer is an overlay *over* it, which is what
   // brings the scrim back while a draft is open.
   if (s !== "#composeSheet") document.body.classList.add("overlay");
-  $(s).classList.add("up");
+  const el = $(s);
+  el.classList.add("up");
+  // The button that opened this is what a screen reader is sitting on, so say
+  // so while it is up: otherwise "expanded" describes a button that looks
+  // exactly like every other one.
+  const opener = { "#acctSheet": "#acctBtn", "#folderSheet": "#folderBtn", "#moreSheet": "#rMore", "#composeSheet": "#composeBtn" }[s];
+  if (opener && $(opener)) $(opener).setAttribute("aria-expanded", "true");
+  trapFocus(el, el.querySelector("button, input, select, textarea, [tabindex]") || el);
 };
 
 /**
@@ -2867,6 +3205,12 @@ function closeOverlays() {
     if (s.id !== "composeSheet") s.classList.remove("up");
   });
   document.body.classList.remove("picking", "overlay");
+  for (const b of document.querySelectorAll("[aria-expanded]")) {
+    if (b.closest("#composeSheet") && b.id === "composeBtn") continue;
+    if (b.getAttribute("aria-expanded") === "true" && b.id !== "composeBtn") b.setAttribute("aria-expanded", "false");
+  }
+  $("#rMore").setAttribute("aria-expanded", "false");
+  releaseFocus();
   if (!document.body.classList.contains("composing")) $("#scrim").classList.remove("up");
 }
 
@@ -2882,6 +3226,8 @@ function closeSheets() {
   $("#scrim").classList.remove("up");
   document.body.classList.remove("composing", "picking", "overlay");
   document.querySelectorAll(".sheet").forEach((s) => s.classList.remove("up"));
+  for (const b of document.querySelectorAll("[aria-expanded]")) b.setAttribute("aria-expanded", "false");
+  releaseFocus();
 }
 
 /* ── drafts ──
@@ -2920,9 +3266,9 @@ let draftRowId = "";
 function draftSnapshot() {
   return {
     account_id: composeAcct,
-    to: $("#cTo").value.trim(),
-    cc: $("#cCc").value.trim(),
-    bcc: $("#cBcc").value.trim(),
+    to: addrGet("#cTo", "#cToChips"),
+    cc: addrGet("#cCc", "#cCcChips"),
+    bcc: addrGet("#cBcc", "#cBccChips"),
     subject: $("#cSubj").value.trim(),
     html: $("#cBody").innerHTML.trim(),
     text: $("#cBody").innerText.trim(),
@@ -3025,7 +3371,7 @@ function resumeKept(d) {
   // Bcc is cleared by openCompose on purpose, so it is put back here rather
   // than by teaching that function to inherit blind recipients.
   if (d.bcc) {
-    $("#cBcc").value = d.bcc;
+    addrSet("#cBcc", "#cBccChips", d.bcc);
     $("#cBccWrap").hidden = false;
     markToggle("#cBccToggle", "#cBccWrap", "Bcc");
   }
@@ -3295,12 +3641,12 @@ function openCompose(opts = {}) {
   replyTo = opts.reply || null;
   composeAcct = opts.account || composeAcct || (accounts[0] && accounts[0].id) || "";
   $("#cTitle").textContent = opts.title || (replyTo ? "Reply" : "New message");
-  $("#cTo").value = opts.to || "";
-  $("#cCc").value = opts.cc || "";
+  addrSet("#cTo", "#cToChips", opts.to || "");
+  addrSet("#cCc", "#cCcChips", opts.cc || "");
   $("#cCcWrap").hidden = !opts.cc;
   // Never carried over from a reply: Bcc is not something to inherit by
   // accident, and the original's blind recipients were never ours to see.
-  $("#cBcc").value = "";
+  addrSet("#cBcc", "#cBccChips", "");
   $("#cBccWrap").hidden = true;
   for (const [btn, wrap, , name] of CC_TOGGLES) markToggle(btn, wrap, name);
   $("#cSubj").value = opts.subject || "";
@@ -3414,16 +3760,16 @@ function markToggle(btn, wrap, name) {
   $(btn).textContent = ($(wrap).hidden ? "+ " : "− ") + name;
 }
 const CC_TOGGLES = [
-  ["#cCcToggle", "#cCcWrap", "#cCc", "Cc"],
-  ["#cBccToggle", "#cBccWrap", "#cBcc", "Bcc"],
+  ["#cCcToggle", "#cCcWrap", "#cCc", "#cCcChips", "Cc"],
+  ["#cBccToggle", "#cBccWrap", "#cBcc", "#cBccChips", "Bcc"],
 ];
-for (const [btn, wrap, input, name] of CC_TOGGLES) {
+for (const [btn, wrap, input, chips, name] of CC_TOGGLES) {
   $(btn).addEventListener("click", () => {
     const w = $(wrap);
     w.hidden = !w.hidden;
     // Emptied on the way out, so a field you have closed cannot still be
     // carrying an address when the message goes.
-    if (w.hidden) $(input).value = "";
+    if (w.hidden) { $(input).value = ""; addrSet(input, chips, ""); }
     else $(input).focus();
     markToggle(btn, wrap, name);
   });
@@ -3492,7 +3838,15 @@ $("#cBody").addEventListener("keydown", (e) => {
 async function assist(mode, btn) {
   const body = $("#cBody");
   const before = body.innerHTML;
-  const text = body.innerText.trim();
+  // Rewrite just what is selected, when something is. Fix and Improve used to
+  // always take the whole message — so touching up one sentence meant losing
+  // everything else to a model's idea of it, and undoing the lot.
+  const sel = getSelection();
+  const inBody =
+    sel && sel.rangeCount && !sel.isCollapsed &&
+    body.contains(sel.getRangeAt(0).commonAncestorContainer);
+  const scoped = inBody ? String(sel) : "";
+  const text = (scoped || body.innerText).trim();
   if (!text) { toast("Write something first"); return; }
   const tools = document.querySelectorAll("#cTools .ai");
   tools.forEach((t) => (t.disabled = true));
@@ -3514,11 +3868,26 @@ async function assist(mode, btn) {
     // a typed one, on screen and in whatever opens it. As paragraphs it was
     // neither: glued together in the composer, where nothing has a margin,
     // and three blank lines apart in Outlook, where a <p> has two.
-    body.innerHTML = d.text
+    // Plain text back, escaped and re-broken into paragraphs. Never innerHTML
+    // from a model: it would be a script-injection hole into your own composer.
+    const rebuilt = d.text
       .split(/\n{2,}/)
       .map((p) => `<div>${esc(p).replace(/\n/g, "<br>")}</div>`)
       .join("<div><br></div>");
-    toast(mode === "improve" ? "Rewritten" : "Corrected", () => { body.innerHTML = before; });
+    if (scoped) {
+      // Splice it back over the selection only. The quote and the signature
+      // are outside the range, so they survive without being reconstructed.
+      const r = sel.getRangeAt(0);
+      r.deleteContents();
+      const frag = document.createRange().createContextualFragment(rebuilt);
+      r.insertNode(frag);
+    } else {
+      body.innerHTML = rebuilt;
+    }
+    toast(
+      mode === "improve" ? (scoped ? "Selection rewritten" : "Rewritten") : scoped ? "Selection corrected" : "Corrected",
+      () => { body.innerHTML = before; }
+    );
   } catch { toast("AI failed"); }
   finally {
     tools.forEach((t) => (t.disabled = false));
@@ -3627,9 +3996,11 @@ function applyTheme(choice) {
     (choice === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
   document.querySelector('meta[name="theme-color"]').setAttribute("content", dark ? "#09090b" : "#ffffff");
 
-  document.querySelectorAll("#themePick [data-theme]").forEach((b) =>
-    b.classList.toggle("on", b.dataset.theme === choice)
-  );
+  document.querySelectorAll("#themePick [data-theme]").forEach((b) => {
+    const on = b.dataset.theme === choice;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", String(on));
+  });
 }
 $("#themePick").addEventListener("click", (e) => {
   const b = e.target.closest("[data-theme]");
@@ -3650,6 +4021,9 @@ $("#themePick").addEventListener("click", (e) => {
  */
 function applyImages(choice) {
   autoImages = choice !== "ask";
+  document.querySelectorAll("#imgPick [data-images]").forEach((b) =>
+    b.setAttribute("aria-pressed", String(b.dataset.images === choice))
+  );
   localStorage.setItem("dmzs-images", autoImages ? "auto" : "ask");
   // Tapping Images was a decision about one message; changing the rule
   // outright supersedes it.
@@ -4017,12 +4391,15 @@ const fileToBase64 = (file) =>
   });
 
 $("#cAttach").addEventListener("click", () => $("#cFile").click());
-$("#cFile").addEventListener("change", async (e) => {
-  const files = [...(e.target.files || [])];
-  e.target.value = ""; // so choosing the same file twice still fires
+/** Files onto the draft. Shared by the picker and by a drop, so both enforce
+    the same ceiling and say the same thing when they cannot. */
+async function addFiles(files) {
+  const list = [...files];
+  if (!list.length) return;
   busy(1);
+  let added = 0;
   try {
-    for (const f of files) {
+    for (const f of list) {
       const data = await fileToBase64(f);
       // Base64 is what actually travels, so budget against its length rather
       // than the file size on disk — it is about a third larger.
@@ -4032,6 +4409,7 @@ $("#cFile").addEventListener("change", async (e) => {
         continue;
       }
       attached.push({ filename: f.name, type: f.type || "application/octet-stream", data, bytes: f.size });
+      added++;
     }
   } catch {
     toast("Could not read that file");
@@ -4039,6 +4417,12 @@ $("#cFile").addEventListener("change", async (e) => {
     busy(-1);
   }
   renderAtts();
+  if (added) say(`${added} attachment${added > 1 ? "s" : ""} added`);
+}
+$("#cFile").addEventListener("change", async (e) => {
+  const files = [...(e.target.files || [])];
+  e.target.value = ""; // so choosing the same file twice still fires
+  await addFiles(files);
 });
 $("#cAtts").addEventListener("click", (e) => {
   const b = e.target.closest("[data-drop]");
@@ -4172,9 +4556,9 @@ $("#cSend").addEventListener("click", async () => {
   }
   const body = {
     account_id: composeAcct,
-    to: $("#cTo").value.trim(),
-    cc: $("#cCc").value.trim() || undefined,
-    bcc: $("#cBcc").value.trim() || undefined,
+    to: addrGet("#cTo", "#cToChips"),
+    cc: addrGet("#cCc", "#cCcChips") || undefined,
+    bcc: addrGet("#cBcc", "#cBccChips") || undefined,
     attachments: attached.map(({ filename, type, data }) => ({ filename, type, data })),
     subject: $("#cSubj").value.trim(),
     // Both forms travel: html for readers that want it, text for those that
@@ -4215,9 +4599,7 @@ $("#cSend").addEventListener("click", async () => {
   closeSheets();
   if (!dropped) toast("Sent — but its draft could not be removed from Drafts");
   toast(
-    d.queued
-      ? "Queued — the agent sends it in under a minute"
-      : d.filed === false
+    d.filed === false
       // It went, and it is in your Sent folder here. What failed is the copy at
       // Apple, so the reason travels with the message — an unexplained "could
       // not file" is the thing that makes this impossible to diagnose.
@@ -4251,6 +4633,8 @@ $("#list").addEventListener("click", (e) => {
   // must not also count as clicking the row it sits in.
   const c = e.target.closest("[data-thread]");
   if (c) { toggleThread(c.dataset.thread); return; }
+  const pick = e.target.closest(".selbox");
+  if (pick) { togglePick(pick.closest(".rowwrap")); return; }
   const r = e.target.closest(".row");
   if (!r) return;
   // A draft is not something to read. Opening one in the reader showed you
@@ -4353,7 +4737,7 @@ async function resumeDraft(id) {
   // because openCompose clears Bcc on purpose: a reply must never inherit
   // blind recipients, but reopening your own draft must never lose them.
   if (d.message.bcc_line) {
-    $("#cBcc").value = d.message.bcc_line;
+    addrSet("#cBcc", "#cBccChips", d.message.bcc_line);
     $("#cBccWrap").hidden = false;
     markToggle("#cBccToggle", "#cBccWrap", "Bcc");
   }
@@ -4526,6 +4910,363 @@ addEventListener("online", () => refreshAll());
     localStorage.setItem("dmzs-left", "430px");
   });
 })();
+
+/* ══ triage, settings and the things that talk ════════════════════
+   Everything below is the behaviour the markup above now has room for:
+   a live region, a focus trap, five settings sections, an overflow sheet,
+   recipient chips, drop-to-attach, swipe-to-archive and bulk select. */
+
+/** Says a thing out loud for anyone who cannot see the toast appear. */
+function say(msg) {
+  const el = $("#say");
+  if (!el || !msg) return;
+  // Cleared first so the same message twice is still announced twice.
+  el.textContent = "";
+  setTimeout(() => { el.textContent = msg; }, 40);
+}
+
+/**
+ * Keeps Tab inside a dialog and gives the focus back on the way out.
+ *
+ * Without this a keyboard user tabs out of a confirm box into the message
+ * list behind it, and the box is still there when they come back.
+ */
+let focusReturn = null;
+let focusTrapEl = null;
+function trapFocus(root, first) {
+  if (!focusTrapEl) focusReturn = document.activeElement;
+  focusTrapEl = root;
+  setTimeout(() => {
+    const target = first || root.querySelector("button, input, select, textarea, [tabindex]");
+    if (target) try { target.focus(); } catch {}
+  }, 30);
+}
+function releaseFocus() {
+  const back = focusReturn;
+  focusReturn = null;
+  focusTrapEl = null;
+  if (back && back.focus) try { back.focus(); } catch {}
+}
+addEventListener("keydown", (e) => {
+  if (e.key !== "Tab" || !focusTrapEl) return;
+  const f = [...focusTrapEl.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  )].filter((el) => el.getClientRects().length);
+  if (!f.length) return;
+  const first = f[0], last = f[f.length - 1];
+  if (!focusTrapEl.contains(document.activeElement)) {
+    e.preventDefault(); first.focus(); return;
+  }
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
+
+/* ── settings sections ── */
+$("#setNav").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-set]");
+  if (!b) return;
+  const which = b.dataset.set;
+  for (const p of document.querySelectorAll("#setNav .pill")) {
+    const on = p === b;
+    p.classList.toggle("on", on);
+    p.setAttribute("aria-selected", String(on));
+  }
+  for (const s of document.querySelectorAll("#acctSheet .setsec")) {
+    const on = s.dataset.set === which;
+    s.classList.toggle("on", on);
+    s.hidden = !on;
+  }
+});
+// Blocked senders is offered from two sections. One handler, two doors.
+$("#openBlocked2").addEventListener("click", () => $("#openBlocked").click());
+
+/* ── reader overflow ──
+   The sheet mirrors the bar's overflowable buttons rather than restating
+   them, so a label and an icon are decided in one place. */
+const OVERFLOW_IDS = [
+  "#rImages", "#rUnsub", "#rNotSpam",
+  "#rUnread", "#rMove", "#rPdf", "#rForward", "#rReplyAI", "#rReplyAll",
+];
+function renderMoreSheet() {
+  $("#moreList").innerHTML = OVERFLOW_IDS.map((id) => {
+    const b = $(id);
+    if (!b || b.hidden) return "";
+    const label = b.getAttribute("aria-label") || (b.querySelector(".lbl") || {}).textContent || id;
+    return `<button class="mi" data-more="${id}"><span class="grow">${esc(String(label).trim())}</span></button>`;
+  }).join("") || `<div class="sh-s">Nothing else for this message.</div>`;
+}
+$("#rMore").addEventListener("click", () => {
+  renderMoreSheet();
+  openSheet("#moreSheet");
+});
+$("#moreList").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-more]");
+  if (!b) return;
+  const t = $(b.dataset.more);
+  closeOverlays();
+  if (t) t.click();
+});
+
+/* ── recipient chips ── */
+const looksAddr = (s) => /.+@.+\..+/.test(s) || /.+ <.+@.+>/.test(s);
+
+/** The line as it would be typed: chips, then anything still half-typed. */
+function addrGet(inputSel, chipsSel) {
+  const chips = [...$(chipsSel).querySelectorAll(".chip")].map((c) => c.dataset.addr || "");
+  const raw = $(inputSel).value.trim();
+  return chips.concat(raw ? [raw] : []).filter(Boolean).join(", ");
+}
+function addrPaint(inputSel, chipsSel, list) {
+  $(chipsSel).innerHTML = list.map((a) => {
+    const bad = !looksAddr(a);
+    return `<span class="chip${bad ? " bad" : ""}" data-addr="${esc(a)}">
+      <span class="nm">${esc(a)}</span>
+      <button class="x" type="button" aria-label="Remove ${esc(a)}">&times;</button>
+    </span>`;
+  }).join("");
+}
+function addrSet(inputSel, chipsSel, str) {
+  const list = String(str || "").split(",").map((s) => s.trim()).filter(Boolean);
+  addrPaint(inputSel, chipsSel, list);
+  $(inputSel).value = "";
+}
+function addrChipify(inputSel, chipsSel) {
+  const input = $(inputSel);
+  const parts = input.value.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean);
+  if (!parts.length) return;
+  const list = [...$(chipsSel).querySelectorAll(".chip")].map((c) => c.dataset.addr || "");
+  addrPaint(inputSel, chipsSel, list.concat(parts));
+  input.value = "";
+}
+for (const [inputSel, chipsSel] of [["#cTo", "#cToChips"], ["#cCc", "#cCcChips"], ["#cBcc", "#cBccChips"]]) {
+  const input = $(inputSel);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === "," || e.key === ";") {
+      if (!input.value.trim()) return;
+      e.preventDefault();
+      addrChipify(inputSel, chipsSel);
+    } else if (e.key === "Tab" && input.value.trim() && looksAddr(input.value.trim())) {
+      // Tab chipsifies a finished address and still moves on. A half-typed
+      // one is left alone so Tab keeps being Tab.
+      addrChipify(inputSel, chipsSel);
+    } else if (e.key === "Backspace" && !input.value) {
+      const chips = $(chipsSel).querySelectorAll(".chip");
+      if (chips.length) chips[chips.length - 1].remove();
+      queueDraftSave();
+    }
+  });
+  input.addEventListener("blur", () => { addrChipify(inputSel, chipsSel); queueDraftSave(); });
+}
+for (const chipsSel of ["#cToChips", "#cCcChips", "#cBccChips"]) {
+  $(chipsSel).addEventListener("click", (e) => {
+    const x = e.target.closest(".x");
+    if (!x) return;
+    x.closest(".chip").remove();
+    queueDraftSave();
+  });
+}
+
+/* ── send from the keyboard ──
+   Cmd/Ctrl+Enter is what every composer has trained people to press. It used
+   to fall through to the body and start a new paragraph. */
+$("#composeSheet").addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    e.preventDefault();
+    $("#cSend").click();
+  }
+});
+
+/* ── drop to attach ── */
+(function dropToAttach() {
+  const sheet = $("#composeSheet");
+  let depth = 0;
+  const hasFiles = (e) =>
+    !!(e.dataTransfer && [...e.dataTransfer.types].includes("Files"));
+  sheet.addEventListener("dragenter", (e) => {
+    if (!hasFiles(e)) return;
+    depth++;
+    sheet.classList.add("dropping");
+    e.preventDefault();
+  });
+  sheet.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+  sheet.addEventListener("dragleave", () => {
+    if (--depth <= 0) { depth = 0; sheet.classList.remove("dropping"); }
+  });
+  sheet.addEventListener("drop", (e) => {
+    e.preventDefault();
+    depth = 0;
+    sheet.classList.remove("dropping");
+    const files = [...((e.dataTransfer && e.dataTransfer.files) || [])];
+    if (files.length) addFiles(files);
+  });
+})();
+
+/* ── swipe to archive, long-press to select ──
+   The row slides aside rather than the list scrolling sideways, and only a
+   committed right-swipe files anything. Left is left alone on purpose: two
+   gestures per row is two chances to lose mail, and archive is the one worth
+   the gesture. */
+(function swipeAndHold() {
+  const list = $("#list");
+  let wrap = null, startX = 0, startY = 0, dx = 0, holding = null, dragged = false;
+
+  const clearHold = () => { if (holding) { clearTimeout(holding); holding = null; } };
+
+  list.addEventListener("touchstart", (e) => {
+    if (document.body.classList.contains("selmode") || e.touches.length !== 1) return;
+    const w = e.target.closest(".rowwrap");
+    if (!w || e.target.closest("button")) return;
+    wrap = w;
+    dragged = false;
+    dx = 0;
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    wrap.classList.add("dragging");
+    // A held press marks the row without opening it. 420ms is long enough that
+    // a slow scroll never counts and short enough to feel like a press.
+    holding = setTimeout(() => {
+      holding = null;
+      if (!wrap) return;
+      const w2 = wrap;
+      wrap = null;
+      w2.classList.remove("dragging");
+      w2.querySelector(".row").style.transform = "";
+      enterSelmode();
+      togglePick(w2);
+      if (navigator.vibrate) navigator.vibrate(8);
+    }, 420);
+  }, { passive: true });
+
+  list.addEventListener("touchmove", (e) => {
+    if (!wrap) return;
+    const t = e.touches[0];
+    const mx = t.clientX - startX;
+    const my = t.clientY - startY;
+    // Scrolling, not swiping — hand the row back before it starts to slide.
+    if (Math.abs(my) > 12 && Math.abs(my) > Math.abs(mx)) {
+      clearHold();
+      wrap.classList.remove("dragging");
+      wrap.querySelector(".row").style.transform = "";
+      wrap = null;
+      return;
+    }
+    if (Math.abs(mx) > 8) { clearHold(); dragged = true; }
+    if (!dragged) return;
+    dx = Math.max(-120, Math.min(120, mx));
+    wrap.classList.toggle("left", dx < 0);
+    wrap.querySelector(".row").style.transform = `translateX(${dx}px)`;
+  }, { passive: true });
+
+  const end = () => {
+    clearHold();
+    if (!wrap) return;
+    const w = wrap;
+    wrap = null;
+    w.classList.remove("dragging");
+    w.querySelector(".row").style.transform = "";
+    const committed = dragged && dx > 72;
+    dx = 0;
+    dragged = false;
+    if (!committed) return;
+    const id = (w.querySelector(".row") || w).dataset.id;
+    const m = listRow(id);
+    if (!m) return;
+    say("Archived");
+    // A summarising row stands for the whole exchange, the same rule the
+    // reader's scope chip follows.
+    const whole = Number(m.n || 1) > 1 && !!m.thread_key;
+    messages = messages.filter((x) => x.id !== id);
+    if (whole && openThread === m.thread_key) { openThread = ""; threadRows = []; }
+    renderList();
+    if (whole) return fileThread(m.thread_key, m.folder || "inbox", "archive", "Archived");
+    fileMessage(id, "archive").then((d) => {
+      if (!d) return;
+      const back = d.from || m.folder || "inbox";
+      toast(d.queued ? "Archived — queued" : "Archived", async () => {
+        await fileMessage(id, back);
+        await Promise.all([loadList(), refreshCounts()]);
+      });
+      refreshCounts();
+    });
+  };
+  list.addEventListener("touchend", end, { passive: true });
+  list.addEventListener("touchcancel", end, { passive: true });
+})();
+
+/* ── bulk select ── */
+const picked = new Set();
+function enterSelmode() {
+  document.body.classList.add("selmode");
+  $("#bulkbar").hidden = false;
+  requestAnimationFrame(() => $("#bulkbar").classList.add("up"));
+  $("#bulkCount").textContent = `${picked.size} selected`;
+}
+function exitSelmode() {
+  picked.clear();
+  moveBulk = false;
+  document.body.classList.remove("selmode");
+  $("#bulkbar").classList.remove("up");
+  setTimeout(() => { $("#bulkbar").hidden = true; }, 250);
+  renderList();
+}
+function togglePick(wrap) {
+  if (!wrap) return;
+  const id = (wrap.querySelector(".row") || wrap).dataset.id;
+  if (!id) return;
+  if (picked.has(id)) picked.delete(id); else picked.add(id);
+  wrap.classList.toggle("picked", picked.has(id));
+  const box = wrap.querySelector(".selbox");
+  if (box) box.setAttribute("aria-pressed", String(picked.has(id)));
+  $("#bulkCount").textContent = `${picked.size} selected`;
+  say(`${picked.size} selected`);
+}
+/** Files every picked row at once. One message if one went, a count if many. */
+function bulkApply(target, said) {
+  const ids = [...picked];
+  if (!ids.length) return;
+  const n = ids.length;
+  exitSelmode();
+  messages = messages.filter((m) => !ids.includes(m.id));
+  renderList();
+  Promise.all(ids.map((id) => fileMessage(id, target))).then((rs) => {
+    const ok = rs.filter(Boolean).length;
+    if (!ok) return;
+    toast(ok > 1 ? `${said} — ${ok} messages` : said);
+    say(ok > 1 ? `${said} ${ok} messages` : said);
+    refreshCounts();
+  });
+}
+$("#bulkArchive").addEventListener("click", () => bulkApply("archive", "Archived"));
+$("#bulkDelete").addEventListener("click", async () => {
+  const n = picked.size;
+  if (!n) return;
+  if (!(await ask(
+    n > 1 ? `Delete these ${n} messages?` : "Delete this message?",
+    "They are moved to Trash at iCloud. Undo is offered on the next single action, not on a batch.",
+    { ok: "Delete", danger: true }
+  ))) return;
+  bulkApply("trash", "Deleted");
+});
+$("#bulkMove").addEventListener("click", () => {
+  if (!picked.size) return;
+  moveBulk = true;
+  $("#moveList").innerHTML = folders
+    .map((f) => `<button class="mi" data-move="${esc(f.folder)}"><span class="grow">${esc(pretty(f.folder))}</span><span class="side num">${f.n}</span></button>`)
+    .join("");
+  $("#moveSub").textContent = "Filed at the provider, not just here.";
+  openSheet("#moveSheet");
+});
+$("#bulkDone").addEventListener("click", exitSelmode);
+
+// Rows are focusable, so Enter and Space have to open them. Without this,
+// tabbing to a row and pressing Enter does nothing at all.
+$("#list").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const r = e.target.closest(".row");
+  if (!r || e.target.closest("button")) return;
+  e.preventDefault();
+  r.click();
+});
 
 /* ── init ── */
 (async function init() {

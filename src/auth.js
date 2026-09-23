@@ -62,9 +62,52 @@ export function safeEqual(a, b) {
   return diff === 0;
 }
 
-/** Builds a `<payload>.<signature>` session token. */
-export async function issueSession(secret, ttl = SESSION_TTL) {
-  const payload = { exp: Math.floor(Date.now() / 1000) + ttl };
+async function hashHex(s, len) {
+  const d = await crypto.subtle.digest("SHA-256", enc.encode(s));
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, len);
+}
+
+/**
+ * A short, honest label for the device being activated.
+ *
+ * "iOS" is more useful than a raw User-Agent in a session list, and a name
+ * the person typed is better than both. Never anything identifying: this
+ * rides in a signed cookie and is meant for a human looking at their own
+ * devices, not for telemetry.
+ */
+function deviceLabel(name, userAgent) {
+  const given = String(name || "").trim().slice(0, 40);
+  if (given) return given;
+  const ua = String(userAgent || "");
+  if (/iPhone|iPad|iPod/i.test(ua)) return "iOS";
+  if (/Android/i.test(ua)) return "Android";
+  if (/Macintosh|Mac OS X/i.test(ua)) return "Mac";
+  if (/Windows/i.test(ua)) return "Windows";
+  if (/CrOS/i.test(ua)) return "ChromeOS";
+  return "device";
+}
+
+/**
+ * Builds a `<payload>.<signature>` session token.
+ *
+ * The payload carries who this is and which key signed it — `sub` for a
+ * device list, `kid` as `hashHex(secret, 8)` so two deployments can be told
+ * apart without the secret ever appearing. Verification still only requires
+ * `exp`, so a cookie minted before these fields existed keeps working.
+ *
+ * `opts` may be a bare ttl in seconds (the older call) or
+ * `{ ttl, name, userAgent }`.
+ */
+export async function issueSession(secret, opts = {}) {
+  const o = typeof opts === "number" ? { ttl: opts } : opts || {};
+  const ttl = o.ttl ?? SESSION_TTL;
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    exp: now + ttl,
+    iat: now,
+    sub: deviceLabel(o.name, o.userAgent),
+    kid: await hashHex(secret, 8),
+  };
   const body = b64urlEncode(enc.encode(JSON.stringify(payload)));
   const sig = await crypto.subtle.sign("HMAC", await hmacKey(secret), enc.encode(body));
   return `${body}.${b64urlEncode(sig)}`;
@@ -162,5 +205,7 @@ export async function isAuthed(request, env) {
 export async function renewedCookie(payload, env) {
   const age = SESSION_TTL - (payload.exp - Math.floor(Date.now() / 1000));
   if (age < RENEW_AFTER) return null;
-  return sessionCookie(await issueSession(env.AUTH_SECRET));
+  // The device label travels with the re-issue; without it every renewal
+  // would quietly rename the device back to "device".
+  return sessionCookie(await issueSession(env.AUTH_SECRET, { name: payload.sub }));
 }

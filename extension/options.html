@@ -4,28 +4,53 @@
 <meta charset="utf-8" />
 <title>dmzs-mail</title>
 <style>
-  :root { color-scheme: light dark; }
+  /* Same palette as the app (public/index.html :root). The extension is the
+     first screen a new install sees, so it wears the same clothes. */
+  :root {
+    color-scheme: light dark;
+    --bg:#ffffff; --elev:#f4f4f7; --elev2:#e9e9ef;
+    --line:rgba(0,0,0,.08); --line-strong:rgba(0,0,0,.15);
+    --t1:#16161a; --t2:#5b5b66; --t3:#6f6f7a;
+    --acc:#1f6fd0; --red:#c8352f; --on-acc:#ffffff;
+    --r:7px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#09090b; --elev:#141417; --elev2:#1d1d21;
+      --line:rgba(255,255,255,.075); --line-strong:rgba(255,255,255,.13);
+      --t1:#f4f4f5; --t2:#8b8b93; --t3:#7a7a84;
+      --acc:#5aa7f0; --red:#f2615c; --on-acc:#06121f;
+    }
+  }
   body {
-    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    font: 400 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
     max-width: 34rem;
     margin: 2.5rem auto;
     padding: 0 1.25rem;
+    background: var(--bg); color: var(--t1);
   }
-  h1 { font-size: 1.15rem; margin: 0 0 .35rem; }
-  p  { color: #6b7280; margin: 0 0 1.25rem; }
+  h1 { font-size: 17px; letter-spacing: -.011em; margin: 0 0 .35rem; }
+  p  { color: var(--t2); margin: 0 0 1.25rem; line-height: 1.5; }
   label { display: block; font-weight: 600; margin-bottom: .35rem; }
   input {
-    width: 100%; padding: .55rem .65rem; font: inherit;
-    border: 1px solid #d1d5db; border-radius: 7px; background: transparent; color: inherit;
+    width: 100%; padding: 0; height: 42px; padding: 0 12px;
+    font: inherit; color: inherit;
+    border: 1px solid var(--line-strong); border-radius: var(--r);
+    background: var(--bg); outline: 0;
   }
+  input:focus-visible { outline: 2px solid var(--acc); outline-offset: 1px; }
   button {
-    margin-top: .85rem; padding: .55rem 1.1rem; font: inherit; font-weight: 600;
-    border: 0; border-radius: 7px; background: #2563eb; color: #fff; cursor: pointer;
+    margin-top: .85rem; height: 42px; padding: 0 20px;
+    font: inherit; font-weight: 600;
+    border: 0; border-radius: var(--r);
+    background: var(--acc); color: var(--on-acc); cursor: pointer;
+    transition: opacity .12s, transform .08s;
   }
-  button:hover { background: #1d4ed8; }
+  button:active { transform: scale(.99); opacity: .85; }
+  button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
   #msg { margin-top: .85rem; min-height: 1.5em; font-weight: 600; }
-  .ok  { color: #15803d; }
-  .bad { color: #b91c1c; }
+  .ok  { color: var(--acc); }
+  .bad { color: var(--red); }
 </style>
 </head>
 <body>
@@ -36,7 +61,9 @@
   <label for="key">Bootstrap key</label>
   <input id="key" type="password" autocomplete="off" spellcheck="false" />
   <button id="save">Connect</button>
-  <div id="msg"></div>
+  <!-- Status is announced, not just coloured: a silent .ok/.bad div is
+       invisible to a screen reader. -->
+  <div id="msg" role="status" aria-live="polite"></div>
 
   <script src="options.js"></script>
 </body>

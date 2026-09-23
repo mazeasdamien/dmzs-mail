@@ -29,6 +29,8 @@ import {
   parseMessage,
 } from "./src/rfc822.js";
 import { seal, open } from "./src/crypto.js";
+import { BODY_VERSION, bodyFromParts, unsubFromHeaders } from "./src/body.js";
+import { MailAuthError, isAuthFailure } from "./src/errors.js";
 import { readFileSync } from "node:fs";
 
 let pass = 0;
@@ -583,6 +585,66 @@ console.log("\n-- client : signature de l'assistant -------");
   eq(sig("jean-luc.picard@x.fr"), "Jean-Luc", "prénom composé gardé entier");
   eq(sig("contact@x.fr"), "", "une boîte nommée contact ne signe rien");
   eq(sig("x@y.fr", "Jean Dupont"), "Jean Dupont", "le libellé du compte l'emporte");
+}
+
+console.log("\n── corps stockés : une seule forme ----------");
+{
+  // Trois endroits assemblaient ce document à la main et n'étaient pas d'accord
+  // sur quels champs étaient optionnels. `tooLarge` est passé entre les deux.
+  const base = bodyFromParts({ html: "<p>ok</p>", blocked: 1 });
+  eq(base.v, BODY_VERSION, "le corps porte sa version de défense");
+  eq(base.html, "<p>ok</p>", "html passé tel quel");
+  eq(base.blocked, 1, "blocages comptés");
+  eq(base.attachments, [], "pièces jointes : liste vide, jamais absente");
+  eq(base.unsubscribe, "", "désabonnement : chaîne vide, jamais absent");
+  eq(base.unsubscribeOneClick, false, "one-click faux par défaut");
+  ok(!("tooLarge" in base) && !("empty" in base) && !("missing" in base),
+     "aucun drapeau quand tout va bien");
+
+  // Trop gros : le drapeau est la vérité, le texte de remplacement est un
+  // pis-aller pour le client d'avant, et le texte du message sert de note
+  // quand il y en a un — mieux qu'une phrase inventée.
+  const grand = bodyFromParts({ text: "résumé lisible", tooLarge: true });
+  eq(grand.tooLarge, true, "tooLarge posé");
+  ok(grand.html.includes("résumé lisible"), "le texte du message sert de note");
+  ok(!/[<>]/.test(grand.html.replace(/<\/?p>/g, "")), "la note est échappée");
+
+  const sansTexte = bodyFromParts({ tooLarge: true });
+  ok(sansTexte.html.length > 0, "sans texte, un message de repli tout de même");
+  ok(sansTexte.html.startsWith("<p>"), "le repli est un paragraphe, pas du HTML cru");
+  eq(sansTexte.tooLarge, true, "le drapeau survit au repli");
+
+  // Ces deux-là ne sont pas des corps factices : le client parle à sa voix.
+  const vide = bodyFromParts({ html: "", empty: true });
+  eq(vide.empty, true, "empty posé");
+  eq(vide.html, "", "empty n'injecte pas de faux message");
+  const perdu = bodyFromParts({ missing: true });
+  eq(perdu.missing, true, "missing posé");
+  eq(perdu.html, "", "missing n'injecte pas de faux message");
+
+  // En-têtes de liste : RFC 2369 et 8058, presque jamais exposés ailleurs.
+  const unsub = unsubFromHeaders({
+    "list-unsubscribe": "<https://x.fr/unsub>, <mailto:u@x.fr>",
+    "list-unsubscribe-post": "List-Unsubscribe=One-Click",
+  });
+  eq(unsub.unsubscribe, "<https://x.fr/unsub>, <mailto:u@x.fr>", "List-Unsubscribe conservé");
+  eq(unsub.unsubscribeOneClick, true, "one-click reconnu");
+  eq(unsubFromHeaders({ "list-unsubscribe": "x".repeat(700) }).unsubscribe.length, 600,
+     "l'en-tête est borné");
+  eq(unsubFromHeaders({}).unsubscribe, "", "en-têtes absents : champs vides");
+}
+
+console.log("\n── échec d'authentification : une seule voix -");
+{
+  // Le drapeau `e.reauth` bricolé sur n'importe quelle Error est ce que
+  // MailAuthError remplace. Les deux formes doivent rester reconnues, sinon un
+  // ancien chemin se met à répondre 502 là où l'utilisateur doit se reconnecter.
+  ok(isAuthFailure(new MailAuthError()), "MailAuthError est un échec d'auth");
+  ok(isAuthFailure(new MailAuthError("refusé")), "le message ne change rien");
+  ok(isAuthFailure({ reauth: true }), "l'ancien drapeau est toujours lu");
+  ok(!isAuthFailure(new Error("pas de réseau")), "une erreur réseau n'en est pas une");
+  ok(!isAuthFailure(null) && !isAuthFailure(undefined), "null n'en est pas un");
+  ok(new MailAuthError().name === "MailAuthError", "le nom porte le type");
 }
 
 console.log(`\n${fail === 0 ? "✓" : "✗"} ${pass} assertions passées, ${fail} échec(s)\n`);

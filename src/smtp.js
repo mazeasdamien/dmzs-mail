@@ -14,6 +14,7 @@
 
 import { connect } from "cloudflare:sockets";
 import { b64encode } from "./mime.js";
+import { MailAuthError } from "./errors.js";
 
 const CRLF = "\r\n";
 const REPLY_MS = 20_000;
@@ -179,8 +180,8 @@ async function smtpConnect({ host = "smtp.mail.me.com", port = 587, user, pass }
   try {
     trace.push({ step: "auth", ...(await s.cmd(`AUTH PLAIN ${token}`, [235], { secret: true })) });
   } catch (e) {
-    e.reauth = true; // a rejected app password is the user's to fix
-    throw e;
+    // A rejected app password is the user's to fix.
+    throw new MailAuthError(String(e.message || e).slice(0, 200));
   }
   return s;
 }

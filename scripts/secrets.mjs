@@ -28,8 +28,7 @@ const b64url = (n) => randomBytes(n).toString("base64url");
 console.log("Generated secrets (stored, never shown):");
 const generated = {
   AUTH_SECRET: b64url(48), // signs session cookies
-  BOOTSTRAP_KEY: b64url(24), // one-time device activation: /auth?k=<this>
-  WORKER_TOKEN: b64url(32), // bearer token for the retired PC agent, if used
+  BOOTSTRAP_KEY: b64url(24), // one-time device activation: /auth#k=<this>
   ENC_KEY: randomBytes(32).toString("base64"), // AES-256-GCM for stored credentials
 };
 for (const [k, v] of Object.entries(generated)) {
@@ -38,11 +37,11 @@ for (const [k, v] of Object.entries(generated)) {
 }
 
 console.log(`
-Keep these two somewhere safe NOW (they are needed on other machines):
+Keep this somewhere safe NOW (it is needed on other machines):
 
-  Activation link : https://mail.agentxr.app/auth?k=${generated.BOOTSTRAP_KEY}
-  Agent token     : ${generated.WORKER_TOKEN}
+  Activation link : https://mail.agentxr.app/auth#k=${generated.BOOTSTRAP_KEY}
 
+The key rides in the fragment, so it never reaches a server log or a Referer.
 `);
 
 // Optional twice over: the compose assistant (Fix / Improve) is the only thing

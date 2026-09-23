@@ -63,7 +63,7 @@
   "observability": { "enabled": true }
 
   // Secrets (npm run secrets, or wrangler secret put):
-  //   AUTH_SECRET, BOOTSTRAP_KEY, WORKER_TOKEN, ENC_KEY   — generated
+  //   AUTH_SECRET, BOOTSTRAP_KEY, ENC_KEY   — generated
   //   GEMINI_API_KEY                                      — optional, for Fix/Improve
   //
   // The Gemini key is only a starting point: one typed into the app (account

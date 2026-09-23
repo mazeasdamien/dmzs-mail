@@ -1,11 +1,11 @@
 # dmzs-mail
 
-Your iCloud mailbox, served by a single Cloudflare Worker on the free tier
-and read from a PWA pinned to your phone. Read, archive, reply. No mail
-client installed anywhere, no ads read your mail, and the only party holding
-your messages besides Apple is your own Cloudflare account.
+Your iCloud mailbox, served by one Cloudflare Worker on the free tier and read
+from a PWA on your phone. Read, archive, reply. No mail client installed, no
+ads reading your mail, and the only party holding your messages besides Apple
+is your own Cloudflare account.
 
-**Running cost: $0.** Same free allowances as dmzs-drive and dmzs-music.
+**Running cost: $0.** MIT. No warranty; your mail is your responsibility.
 
 ---
 
@@ -14,200 +14,124 @@ your messages besides Apple is your own Cloudflare account.
 ```
                  ┌──────────────────────────────────────────────┐
                  │   Worker: API, auth, sync cron, defusing     │
- iCloud ◄──────► │   D1: accounts, message index, jobs          │◄──► phone / desktop (PWA)
+ iCloud ◄──────► │   D1: accounts, message index                │◄──► phone / desktop (PWA)
   IMAP/SMTP      │   R2: defused bodies                         │
                  └──────────────────────────────────────────────┘
 ```
 
-One provider, iCloud, over IMAP and SMTP spoken by the Worker itself using an
-app-specific password. Gmail and Outlook were supported once and have been
-removed outright — modules, routes, OAuth, branching and schema. There is no
-dispatch layer and no abstraction over "a mail account", because there is
-nothing to dispatch between.
+One provider, iCloud, spoken directly over IMAP and SMTP by the Worker using
+an app-specific password. There is no dispatch layer and no abstraction over
+"a mail account", because there is nothing to dispatch between.
 
-Apple has no mail API. v1 solved that with a Python agent on a PC you owned,
-which pulled jobs from the Worker — no open port, and the iCloud password
-never left your machine. It worked, but it meant your mail only moved while
-that PC was awake.
+**The trade, stated plainly:** the app-specific password is sealed in your own
+Cloudflare account (AES-256-GCM before it touches D1) rather than sitting only
+on a machine at home. In exchange, mail syncs every minute from anywhere with
+nothing of yours running. The password is an *app-specific* one from
+account.apple.com — revocable in seconds, and the only kind Apple will accept
+here.
 
-Workers can open outbound TLS sockets, so `src/imap.js` now speaks IMAP
-directly and the PC is gone. **The trade is deliberate and worth being clear
-about: the app-specific password now lives in Cloudflare** (sealed, see
-below) instead of only on your desk. In exchange, iCloud syncs every minute
-from anywhere, with nothing of yours running.
+### What "sync" means
 
-The old agent still sits in `agent/` and still works. Nothing points at it.
-
-### What "sync" means here
-
-- A cron fires **every minute** and refreshes the two least-recently-synced
-  accounts, a dozen messages each. With two accounts neither is ever more
-  than a minute behind, and the per-invocation limits of the free plan stay
-  respected (~15 subrequests against a ceiling of 50). The **Sync** button
-  on an account does the same immediately.
-- Every folder syncs, not just the inbox: every selectable IMAP mailbox,
-  including Sent, Spam and any you made yourself.
-- Message **bodies** are defused before storage — scripts, event handlers,
-  iframes and `javascript:` links stripped, remote loads rewritten to
-  `data-blocked-src` — then cached in R2 so the second read is instant.
-- **Remote images are a setting**, under the account button: *Load them* or
-  *Ask first*, kept per device. Bodies are stored with remote loads
-  neutralised whichever you pick, so switching costs nothing and refetches
-  nothing — it only decides whether they are restored on render. *Ask first*
-  holds them behind the Images button and with it keeps tracking pixels from
-  firing.
-- The reading surface is a sandboxed iframe: even if something survived the
-  server-side pass, it runs no scripts and shares nothing with the app.
-
-### What a leak would cost
-
-The iCloud app-specific password is sealed with AES-256-GCM before touching
-D1; the key (`ENC_KEY`) exists only as a Worker secret. Someone reading your
-D1 database would get headers, snippets and ciphertext — not a usable
-credential.
-
-Since IMAP moved into the Worker, that ciphertext is the whole story for
-iCloud too: there is no longer a copy of the password that exists only on
-your machine. If that matters more to you than being free of the PC, the
-agent in `agent/` is still there and still works — set `secret` back to NULL
-on the iCloud account row and the Worker stops touching it.
-
-An app-specific password is scoped to one app and revocable in seconds at
-account.apple.com, which is precisely why Apple issues them and why this is
-a defensible place to put one.
+- A cron fires **every minute** and refreshes the least-recently-synced
+  account, a dozen messages at a time. **Sync** does the same on demand.
+- Every selectable IMAP mailbox syncs — Inbox, Sent, Spam, Archive, and any
+  folder you made.
+- Bodies are **defused before storage**: scripts, event handlers, iframes and
+  `javascript:` links stripped, remote loads rewritten to `data-blocked-src`.
+  Cached in R2 so the second read is instant.
+- **Remote images are a setting** (account button): *Load them* or *Ask first*.
+  Stored bodies keep the blocked form either way, so switching costs nothing.
+- The reading surface is a **sandboxed iframe** — even if something survived
+  the server-side pass, it runs no scripts and shares nothing with the app.
 
 ---
 
 ## Setup
 
-Wrangler needs to be logged in (`npx wrangler login`) and the domain's zone
-must already be on your Cloudflare account — same as your other two apps.
-The D1 database and the R2 bucket (`dmzs-mail`, both) **already exist in
-your account** — created 2026-08-12; the database id is pinned in
-`wrangler.jsonc`. If you ever rebuild from scratch:
+Wrangler logged in (`npx wrangler login`), and the domain's zone already on
+your Cloudflare account. The D1 database and R2 bucket (`dmzs-mail`) already
+exist — ids pinned in `wrangler.jsonc`. From scratch:
 `wrangler d1 create dmzs-mail && wrangler r2 bucket create dmzs-mail`.
 
 ### 1. iCloud app-specific password
 
 <https://account.apple.com> → **Sign-In and Security → App-Specific
-Passwords** → generate one named `dmzs-mail`. iCloud Mail must be enabled on
-the account, and the Apple ID needs two-factor auth or the section does not
-appear at all.
+Passwords** → generate one named `dmzs-mail`. iCloud Mail must be on, and the
+Apple ID needs two-factor auth or the section does not appear. Not your Apple
+ID password — that will be rejected.
 
-You paste it into the app itself later — account button → **Connect
-iCloud**. It goes browser → Worker → sealed in D1, and is proved against
-Apple before anything is stored, so a typo fails at the form rather than
-silently every minute afterwards. Not your Apple ID password: that will be
-rejected.
-
-### 2. Schema, deploy, secrets
+### 2. Schema, deploy, secrets — in that order
 
 ```sh
 npm install
 npm run db:schema   # tables into the live D1 (all CREATE TABLE IF NOT EXISTS)
-npm run deploy      # Worker + PWA + cron, served at mail.agentxr.app
-npm run secrets     # generates AUTH_SECRET/BOOTSTRAP_KEY/WORKER_TOKEN/ENC_KEY,
-                    # prints your activation link and the agent token — SAVE BOTH —
-                    # then offers to store a Gemini key for the writing assistant
-                    # (optional, and changeable later in the app: account
-                    #  button → Writing assistant)
+npm run deploy      # Worker + PWA + cron → mail.agentxr.app
+npm run secrets     # generates AUTH_SECRET / BOOTSTRAP_KEY / ENC_KEY,
+                    # prints your activation link and offers a Gemini key for
+                    # the writing assistant (optional, changeable later)
 ```
 
-**Deploy before secrets, not after.** `wrangler secret put` writes to a Worker
-that has to already exist — against a name it has never seen it just stops with
-*Worker "dmzs-mail" not found*, and `npm run secrets` exits on the first one,
-before printing the activation link. Deploying first is harmless: with no
-secrets set yet the Worker is fail-closed, `/auth` refuses every key, and no
-mail can be reached. Secrets take effect the moment they land, so there is no
-second deploy to remember.
+**Deploy before secrets.** `wrangler secret put` needs a Worker that exists;
+with no secrets the Worker is fail-closed and `/auth` refuses every key. Secrets
+take effect the moment they land.
 
 ### 3. Activate devices, connect iCloud
 
-Open `https://mail.agentxr.app/auth?k=<BOOTSTRAP_KEY>` once per device
-(the link `npm run secrets` printed). Pin to the iPhone home screen like
-the others.
+Open `https://mail.agentxr.app/auth#k=<BOOTSTRAP_KEY>` once per device (the
+link `npm run secrets` printed). The key rides in the fragment, so it never
+reaches the server logs or the Referer header; the page POSTs it. The older
+`?k=` form still works, and pasting the key into the field on `/auth` works
+too. Pin the PWA to the iPhone home screen.
 
-Then, in the app: account button → **Connect iCloud** → your address and the
-app-specific password from step 1. That is the whole step: the Worker speaks IMAP itself,
-so there is nothing to install and nothing to keep running.
+Then: account button → **Connect iCloud** → your address and the app-specific
+password. The Worker proves it against Apple before storing anything, so a
+typo fails at the form. First sync lands within a minute; history fills in
+behind it, newest first, rotating between folders.
 
-First sync lands within a minute. History fills in behind it — each pass
-takes the newest mail first, then spends whatever budget is left walking
-backwards through older messages, rotating between folders so Sent and
-Archive are not starved by an inbox still catching up.
-
-Messages over 2 MB are listed from their headers with a placeholder body.
-A Worker cannot hold a 17 MB attachment in memory and parse it inside the
-CPU budget, and without this one such message blocks its folder forever.
-
-<details>
-<summary>The old PC agent (no longer used)</summary>
-
-`agent/icloud_agent.py` is the v1 approach: Python, standard library only,
-pulling jobs from the Worker over a bearer token. It still works. To go back
-to it, clear `secret` on the iCloud account row so the Worker leaves that
-mailbox alone, then run `npm run agent`.
-
-</details>
+Messages over 2 MB are listed from their headers with a placeholder body — a
+Worker cannot hold a 17 MB attachment in memory inside the CPU budget.
 
 ---
 
 ## Using the app
 
-Tap a message to read it — opening marks it read at iCloud too, so the
-iPhone agrees. **Archive**, **Delete**, star and mark-unread all write
-straight through over IMAP. **Reply** and **Reply all** answer in-thread;
-the compose button writes fresh mail. The folder list is the real one from
-the server, and folders can be created, renamed and deleted from it.
-Remote images stay blocked until you tap **Images**, once, per message.
+Tap a message to read it; opening marks it read at iCloud too. **Archive**,
+**Delete**, star and mark-unread write straight through over IMAP. **Swipe**
+a row to archive it, **long-press** or the select button for bulk actions.
+**Reply** / **Reply all** answer in-thread; the compose button writes fresh
+mail. Folders can be created, renamed and deleted from the folder list.
 
 Also live: attachments both ways, download-all as a zip, Bcc, rich text and
-pasted images with resizing, contact autocomplete and a contacts list,
-full-text search, one-click unsubscribe, empty trash, keyboard shortcuts,
-the AI grammar/rewrite pass, and a light theme by default.
+pasted images, contact autocomplete and a contacts list, full-text search,
+one-click unsubscribe, empty trash, keyboard shortcuts, an AI grammar/rewrite
+pass, and light/dark themes.
+
+### Keyboard
+
+`j`/`k` next/previous · `e` archive · `s` star · `u` unread · `v` move ·
+`r` reply · `a` reply all · `f` forward · `p` save as PDF · `/` search ·
+`Esc` back · `?` the full list.
 
 ## Knowing when mail arrives
-
-Three signals, for three situations:
 
 | Where you are | What tells you |
 | --- | --- |
 | The app is open | Unread count in the tab title, red dot on the favicon |
-| Installed as a PWA, closed | Web Push notification and the taskbar badge |
+| Installed as a PWA, closed | Web Push notification and the home-screen badge |
 | Chrome open, app not | The extension in `extension/` |
 
 The extension is not on the Web Store — load it unpacked from
-`chrome://extensions` with developer mode on. It polls once a minute, badges
-the toolbar with the unread count, and notifies when that count *rises*
-(reading mail on your phone lowers it, which is not news). Open its options
-page, paste `BOOTSTRAP_KEY` once, and it trades the key for a token; the key
-itself is never stored.
-
-## Not here yet
-
-Bulk selection, swipe gestures, threading (messages are listed flat), and
-signatures. The schema still carries several accounts per install, and the
-UI still shows an account filter when there is more than one — but iCloud is
-the only provider there is.
+`chrome://extensions` with developer mode on. It polls once a minute and
+notifies when the unread count *rises*. Paste `BOOTSTRAP_KEY` once in its
+options; the key itself is never stored.
 
 ## If something misbehaves
 
-- An account badge says **reconnect needed**, or iCloud stops syncing with
-  an authentication error: the app-specific
-  password was revoked or regenerated. Account button → **Connect iCloud**
-  again with a fresh one; same address overwrites in place.
-- A message shows "too large to render here": over 2 MB, listed from
-  its headers by design. Open it in Mail or at icloud.com.
+- **Reconnect needed** on an account: the app-specific password was revoked.
+  Account button → **Connect iCloud** with a fresh one.
+- **"Too large to render here"**: over 2 MB, by design. Open it in Mail.
 - Watch it live: `npm run tail`.
-
-## Costs
-
-Worker requests, D1 reads/writes, R2 storage: a personal mailbox's volume
-is orders of magnitude below every free-tier ceiling. The only number worth
-watching is R2 if you never clean archives of huge HTML bodies — tens of
-thousands of messages still fit in single-digit gigabytes.
 
 ## Licence
 
-MIT, same as the rest of the dmzs suite. No warranty; your mail is your
-responsibility.
+MIT, same as the rest of the dmzs suite.

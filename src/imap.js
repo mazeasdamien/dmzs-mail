@@ -17,6 +17,7 @@
  */
 
 import { connect } from "cloudflare:sockets";
+import { MailAuthError } from "./errors.js";
 
 const CRLF = "\r\n";
 const GREETING_MS = 15_000;
@@ -184,7 +185,9 @@ export async function imapOpen({ host = "imap.mail.me.com", port = 993, user, pa
     await im.logout();
     // Apple says NO AUTHENTICATIONFAILED for a bad app password; that is the
     // user's problem to fix, not something to retry forever.
-    e.reauth = /AUTHENTICATIONFAILED|Invalid credentials|LOGIN failed/i.test(String(e.message));
+    if (/AUTHENTICATIONFAILED|Invalid credentials|LOGIN failed/i.test(String(e.message))) {
+      throw new MailAuthError(String(e.message || e).slice(0, 200));
+    }
     throw e;
   }
   return im;
