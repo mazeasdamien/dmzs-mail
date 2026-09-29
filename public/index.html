@@ -167,8 +167,9 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
   border:2px solid var(--line-strong);border-top-color:var(--acc)}
 #ptr.snap .lift{transition:transform .28s cubic-bezier(.32,.72,0,1),opacity .2s}
 #ptr.spin .ring{animation:sp .7s linear infinite}
-.row{display:flex;gap:11px;padding:11px 16px;position:relative;align-items:flex-start;touch-action:pan-y}
-.row:active{background:var(--press)}
+.row{display:flex;gap:11px;padding:11px 16px;position:relative;align-items:flex-start;touch-action:pan-y;
+  transition:background-color .16s ease}
+.row:active{background:var(--press);transform:scale(.995)}
 /* Unread is the state you scan for, so it colours the whole row rather than
    hiding in a dot. Two signals, not one: a filled band you notice with your
    eyes unfocused, and a solid stripe down the leading edge that survives even
@@ -236,6 +237,16 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
 .rhead{flex:none;padding:calc(var(--sat) + 10px) 16px 10px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center}
 .rhead .mi-info{min-width:0}
 .rsubj{font-size:16px;font-weight:600;letter-spacing:-.011em;line-height:1.3;user-select:text;-webkit-user-select:text}
+/* The open message settles in rather than snapping onto the pane: a short
+   fade and lift on the header, so opening a row feels like the reader
+   arrived rather than jumped. Replay is handled by the .settle class. */
+#reader .rhead{animation:none}
+#reader .rhead.settle{animation:settle .26s cubic-bezier(.32,.72,0,1)}
+@keyframes settle{from{opacity:.35;transform:translateY(5px)}to{opacity:1;transform:none}}
+/* List rows soften as the reader takes over, then come back. Only the dim —
+   not a shift — so the row you clicked stays where your finger left it. */
+#list.dim{opacity:.55;transition:opacity .22s ease}
+#list{transition:opacity .22s ease}
 .rmeta{font-size:12px;color:var(--t2);margin-top:3px;user-select:text;-webkit-user-select:text;
   /* Wraps rather than ellipsising. A sent message with forty names on To: had
      its list cut off mid-address with no way to read the rest — and who got
@@ -272,8 +283,9 @@ button.who{cursor:pointer}
 /* Nothing stretches. Reply used to be flex:1.5 while the icons were fixed, so
    it absorbed every spare pixel and ended up a metre wide on a desktop. */
 .rbtn{flex:none;height:40px;padding:0 14px;border-radius:var(--r);
-  background:var(--elev);border:1px solid var(--line);font-size:14px;font-weight:500;gap:7px}
-.rbtn:active{background:var(--elev2)}
+  background:var(--elev);border:1px solid var(--line);font-size:14px;font-weight:500;gap:7px;
+  transition:background .14s,border-color .14s,color .14s,transform .08s}
+.rbtn:active{background:var(--elev2);transform:scale(.97)}
 /* Pushed to the far edge by the margin, at its natural width: the actions
    group on one side, the one thing you are most likely to do on the other. */
 .rbtn.acc{background:var(--acc);color:var(--on-acc);border-color:transparent;
@@ -382,8 +394,9 @@ body.composing:not(.overlay) #scrim{opacity:0;pointer-events:none}
    finish, so it sits where the eye already is rather than at the far end of a
    message that can be any length. */
 .crow-actions .cta{width:auto;height:34px;min-width:92px;margin-top:0;padding:0 20px;font-size:14px}
-.ghost{color:var(--t2);font-size:13px;padding:5px 9px;border-radius:6px;flex:none}
-.ghost:active{background:var(--press2)}
+.ghost{color:var(--t2);font-size:13px;padding:5px 9px;border-radius:6px;flex:none;
+  transition:background .14s,color .14s,transform .08s}
+.ghost:active{background:var(--press2);transform:scale(.97)}
 .afield{gap:8px}
 .flabel{color:var(--t3);font-size:13px;flex:none;min-width:34px}
 /* From reads as one of the address rows, because that is what it is. Without
@@ -465,10 +478,11 @@ textarea.field{width:100%;padding:11px 12px;font-size:14.5px;line-height:1.45;mi
 .dstate.warn{color:var(--red)}
 .formerr{display:none;font-size:13px;color:var(--red);margin-top:10px;line-height:1.45}
 .formerr.show{display:block}
-.mi{display:flex;align-items:center;gap:13px;min-height:50px;font-size:15px;width:100%;justify-content:flex-start;border-bottom:1px solid var(--line);text-align:left}
+.mi{display:flex;align-items:center;gap:13px;min-height:50px;font-size:15px;width:100%;justify-content:flex-start;border-bottom:1px solid var(--line);text-align:left;
+  transition:background .14s,opacity .12s}
 .mi:last-child{border-bottom:0}
 .mi svg{color:var(--t2)}
-.mi:active{opacity:.5}
+.mi:active{opacity:.55;background:var(--press)}
 .mi .sub{font-size:12px;color:var(--t3);margin-top:2px}
 .mi .grow{flex:1;min-width:0}
 .mi .side{font-size:12px;color:var(--t3);flex:none}
@@ -731,9 +745,13 @@ html.busy #bar{opacity:1}
 .mactions .rbtn{margin-left:0;min-width:92px}
 .rbtn.danger{background:var(--red);color:#fff;border-color:transparent}
 
-#toast{position:fixed;left:50%;bottom:calc(var(--sab) + 26px);transform:translate(-50%,14px);z-index:80;
+/* Slides up from below rather than fading in place: a toast that appears
+   under the thumb is one the eye already finds. */
+#toast{position:fixed;left:50%;bottom:calc(var(--sab) + 26px);transform:translate(-50%,22px);z-index:80;
   background:var(--toast-bg);color:var(--toast-fg);padding:9px 15px;border-radius:19px;font-size:13.5px;font-weight:500;
-  opacity:0;pointer-events:none;transition:opacity .22s,transform .22s;max-width:82vw;text-align:center;box-shadow:0 8px 26px var(--shadow)}
+  opacity:0;pointer-events:none;
+  transition:opacity .22s ease,transform .28s cubic-bezier(.32,.72,0,1);
+  max-width:82vw;text-align:center;box-shadow:0 8px 26px var(--shadow)}
 #toast.up{opacity:1;transform:translate(-50%,0)}
 
 /* ── triage: swipe and bulk select ──────────────────────────────────
@@ -759,7 +777,7 @@ html.busy #bar{opacity:1}
 .rowwrap.left .swipe-act{background:color-mix(in srgb,var(--red) 18%,var(--bg));color:var(--red)}
 .rowwrap .swipe-act svg{flex:none}
 .rowwrap .row{background:var(--bg);will-change:transform;position:relative;z-index:1;
-  transition:transform .22s cubic-bezier(.32,.72,0,1)}
+  transition:transform .22s cubic-bezier(.32,.72,0,1),background-color .16s ease}
 @media (hover:hover) and (pointer:fine){
   .rowwrap .swipe-act{display:none}
 }
@@ -1425,7 +1443,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v38";
+const CLIENT = "v39";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2260,7 +2278,18 @@ async function openMsg(id, threadRow = null) {
     )
     .join("");
   $("#reader").classList.add("up");
+  // Replay the settle on every open, including j/k between messages: a
+  // class that stays on would animate once and then never again.
+  const head = document.querySelector("#reader .rhead");
+  if (head) {
+    head.classList.remove("settle");
+    void head.offsetWidth;
+    head.classList.add("settle");
+  }
   renderList(); // repaint so the open row shows as selected
+  // The list softens behind the open message so the pane is what you read.
+  // Desktop only in effect — on a phone the reader covers it entirely.
+  $("#list").classList.add("dim");
   refreshCounts(); // opening marks it read, which moves a folder's count
 }
 
@@ -2281,6 +2310,7 @@ function closeReader() {
   $("#rUnsub").hidden = true;
   $("#rImages").hidden = true;
   $("#rNotSpam").hidden = true;
+  $("#list").classList.remove("dim");
 }
 
 // Back on a phone, × on a desktop — same function, two affordances. Binding
