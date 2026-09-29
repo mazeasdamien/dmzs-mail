@@ -243,10 +243,6 @@ main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior
 #reader .rhead{animation:none}
 #reader .rhead.settle{animation:settle .26s cubic-bezier(.32,.72,0,1)}
 @keyframes settle{from{opacity:.35;transform:translateY(5px)}to{opacity:1;transform:none}}
-/* List rows soften as the reader takes over, then come back. Only the dim —
-   not a shift — so the row you clicked stays where your finger left it. */
-#list.dim{opacity:.55;transition:opacity .22s ease}
-#list{transition:opacity .22s ease}
 .rmeta{font-size:12px;color:var(--t2);margin-top:3px;user-select:text;-webkit-user-select:text;
   /* Wraps rather than ellipsising. A sent message with forty names on To: had
      its list cut off mid-address with no way to read the rest — and who got
@@ -1443,7 +1439,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v39";
+const CLIENT = "v40";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2287,9 +2283,6 @@ async function openMsg(id, threadRow = null) {
     head.classList.add("settle");
   }
   renderList(); // repaint so the open row shows as selected
-  // The list softens behind the open message so the pane is what you read.
-  // Desktop only in effect — on a phone the reader covers it entirely.
-  $("#list").classList.add("dim");
   refreshCounts(); // opening marks it read, which moves a folder's count
 }
 
@@ -2310,7 +2303,6 @@ function closeReader() {
   $("#rUnsub").hidden = true;
   $("#rImages").hidden = true;
   $("#rNotSpam").hidden = true;
-  $("#list").classList.remove("dim");
 }
 
 // Back on a phone, × on a desktop — same function, two affordances. Binding

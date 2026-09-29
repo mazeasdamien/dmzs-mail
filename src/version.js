@@ -9,4 +9,4 @@
  * This is the only constant a human edits. scripts/check-client.mjs writes it
  * into the other three files and refuses to finish if any anchor is missing.
  */
-export const CLIENT_VERSION = "v39";
+export const CLIENT_VERSION = "v40";
