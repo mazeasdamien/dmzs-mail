@@ -37,17 +37,7 @@
   --shadow:rgba(0,0,0,.16);
   /* Three radii, used on purpose: --r-s for things that are nearly square
      (caps, chips), --r for anything you press, --r-l for panels and cards. */
-  --r-s:8px; --r:12px; --r-l:22px;
-  /* Liquid glass. A fill thin enough to show what is behind it, a sheen that
-     catches the light along the top, a rim one pixel bright, an edge one pixel
-     dark, and a shadow that lifts the piece off whatever it floats over.
-     --g-fill-strong is for glass that text sits on: a sheet, the toast. */
-  --g-fill:rgba(255,255,255,.88); --g-fill-strong:rgba(250,250,252,.97);
-  --g-sheen:rgba(255,255,255,.55); --g-rim:rgba(255,255,255,.9); --g-edge:rgba(20,20,40,.09);
-  --g-shade:0 1px 2px rgba(20,20,40,.05),0 10px 30px rgba(20,20,40,.11);
-  --g-blur:blur(22px) saturate(185%);
-  /* iOS's tertiary fill: the grey a control sits in when it is not glass. */
-  --fill:rgba(118,118,128,.12);
+  --r-s:5px; --r:7px; --r-l:14px;
   /* Spacing scale. Stops the drift between 10, 11, 12 and 13px gutters that
      had grown up one component at a time. */
   --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
@@ -73,11 +63,6 @@
       --glass:rgba(24,24,28,.97); --sheet:#17171b; --input:#0e0e11;
     --toast-bg:rgba(240,240,245,.96); --toast-fg:#101014; --undo:#0a58c2;
     --shadow:rgba(0,0,0,.4);
-    --g-fill:rgba(46,46,52,.86); --g-fill-strong:rgba(28,28,32,.96);
-    --g-sheen:rgba(255,255,255,.07); --g-rim:rgba(255,255,255,.17); --g-edge:rgba(0,0,0,.55);
-    --g-shade:0 1px 2px rgba(0,0,0,.35),0 12px 34px rgba(0,0,0,.5);
-    --g-blur:blur(22px) saturate(160%);
-    --fill:rgba(118,118,128,.24);
   }
 }
 :root[data-theme="dark"]{
@@ -90,11 +75,6 @@
   --glass:rgba(24,24,28,.97); --sheet:#17171b; --input:#0e0e11;
   --toast-bg:rgba(240,240,245,.96); --toast-fg:#101014; --undo:#0a58c2;
   --shadow:rgba(0,0,0,.4);
-  --g-fill:rgba(46,46,52,.86); --g-fill-strong:rgba(28,28,32,.96);
-  --g-sheen:rgba(255,255,255,.07); --g-rim:rgba(255,255,255,.17); --g-edge:rgba(0,0,0,.55);
-  --g-shade:0 1px 2px rgba(0,0,0,.35),0 12px 34px rgba(0,0,0,.5);
-  --g-blur:blur(22px) saturate(160%);
-  --fill:rgba(118,118,128,.24);
 }
 /* Motion is decoration. Turning it off must never cost information, so the
    spinner's rotation is the one thing that stays — it is the only thing that
@@ -284,7 +264,7 @@ button.who{cursor:pointer}
 /* flex:1 rather than height:100%: a percentage height needs a resolved height
    on the parent, and when that fails the frame collapses to nothing and the
    message reads as blank white space. */
-#rframe{flex:1;width:100%;min-height:0;border:0;display:block;background:#fff;box-sizing:border-box}
+#rframe{flex:1;width:100%;min-height:0;border:0;display:block;background:#fff}
 /* Where a message is laid out for paper. Present but not visible: a frame
    hidden with display:none has nothing to print, and one that is merely
    transparent and 1px does. */
@@ -894,279 +874,6 @@ details.repair summary::before{content:"▸";color:var(--t3);font-size:10px;tran
 details.repair[open] summary::before{transform:rotate(90deg)}
 details.repair .body{padding-top:8px}
 
-/* ── Liquid Glass ────────────────────────────────────────────────
-   The control layer is glass; the content is not. Mail is something you
-   read, and text on a frosted, moving backdrop is text you squint at — so
-   the list, the open message and the page you write on stay solid, and only
-   what floats over them is translucent: the header controls the list slides
-   under, the actions over the message, the sheets, the dialogs, the toast.
-
-   No refraction. CSS can blur, saturate, tint and light an edge, and that is
-   what this does. The lensing Apple does at the rim needs a displacement
-   filter Safari will not run on a backdrop, and a glass that only works in
-   one browser is a bug on the phone this app lives on.
-
-   And no blur at all, for now. With backdrop blur on the controls, some
-   messages were never drawn on the machine this app is used on — subject at
-   the top, white underneath — while every test elsewhere drew them fine. The
-   message is drawn in a sandboxed frame Chrome renders in a process of its
-   own, and blur is the one thing in this layer that version 40, which drew
-   every message, did not have. The material keeps its shape — the sheen,
-   the rim, the edge, the lift — with a fill thick enough to stand without
-   the blur behind it.
-
-   And never glass inside glass. A backdrop-filter makes its element the
-   backdrop root for everything in it, so a glass button inside a glass panel
-   frosts the panel and nothing else — in Chrome it simply goes flat. Every
-   piece here floats over content directly, or over something solid. */
-
-/* The material, in one place: what floats over the list and the message. */
-.iconbtn,.searchwrap,#folderBtn,.rgroup,#bulkbar,.tscope{
-  background:linear-gradient(180deg,var(--g-sheen),transparent 58%),var(--g-fill);
-  border:1px solid var(--g-edge);
-  box-shadow:inset 0 1px 0 var(--g-rim),var(--g-shade);
-  -webkit-backdrop-filter:none;backdrop-filter:none}
-/* Thicker glass for anything you read on. */
-.sheet,.mcard,#toast{
-  background:linear-gradient(180deg,var(--g-sheen),transparent 26%),var(--g-fill-strong);
-  border:1px solid var(--g-edge);
-  box-shadow:inset 0 1px 0 var(--g-rim),var(--g-shade);
-  -webkit-backdrop-filter:none;backdrop-filter:none}
-
-/* The header stops being a slab. Its controls float, the list runs up under
-   them, and the top edge of the list blurs into the header progressively —
-   strongest at the top, gone by the time you reach the messages — which is
-   iOS's scroll-edge effect rather than a bar with a line under it. The list
-   is pushed down by exactly the header's height, measured in the script,
-   because the header changes height with the safe area and the account
-   pills. */
-#app{position:relative}
-header{position:absolute;top:0;left:0;right:0;z-index:10;background:transparent;padding-bottom:4px}
-header::before{content:"";position:absolute;inset:0 0 -16px;z-index:-1;pointer-events:none;
-  background:linear-gradient(to bottom,
-    color-mix(in srgb,var(--bg) 94%,transparent) 0%,
-    color-mix(in srgb,var(--bg) 72%,transparent) 62%,
-    transparent 100%);
-  -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
-  -webkit-mask-image:linear-gradient(to bottom,#000 64%,transparent);
-  mask-image:linear-gradient(to bottom,#000 64%,transparent)}
-main{padding-top:var(--hh,112px);scroll-padding-top:var(--hh,112px)}
-
-.iconbtn{color:var(--t1)}
-.iconbtn:active{background:linear-gradient(180deg,var(--g-sheen),transparent 58%),
-  color-mix(in srgb,var(--t1) 9%,var(--g-fill))}
-.searchwrap{height:40px;padding:0 14px;border-radius:999px}
-.searchwrap input{height:38px}
-#folderBtn{height:40px;padding:0 15px;border-radius:999px}
-#folderBtn:active{background:linear-gradient(180deg,var(--g-sheen),transparent 58%),
-  color-mix(in srgb,var(--t1) 9%,var(--g-fill))}
-#folderBtn.hasnew{background:linear-gradient(180deg,var(--g-sheen),transparent 58%),
-  color-mix(in srgb,var(--acc) 14%,var(--g-fill));
-  border-color:color-mix(in srgb,var(--acc) 38%,transparent)}
-.tscope{height:30px;padding:0 12px;border-radius:999px}
-.tscope.on{background:linear-gradient(180deg,var(--g-sheen),transparent 58%),
-  color-mix(in srgb,var(--acc) 16%,var(--g-fill))}
-
-/* Things you press are capsules; things you type in are rounded wells. */
-.pill{border-radius:999px;background:var(--fill);border-color:transparent;color:var(--t1)}
-.count{border-radius:999px}
-.ghost{border-radius:999px;padding:6px 11px}
-.toolbar button,#imgTools button{border-radius:999px}
-.att{border-radius:18px}
-.cta{border-radius:999px;
-  background:linear-gradient(180deg,rgba(255,255,255,.28),rgba(255,255,255,0) 60%),var(--acc);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 6px 18px color-mix(in srgb,var(--acc) 26%,transparent)}
-/* The grey secondary buttons in Settings are .cta with their colour set
-   inline. The blue halo belongs to the blue button only; a grey one glowing
-   blue looks like it is the one to press. */
-.cta[style*="--elev2"]{box-shadow:inset 0 1px 0 var(--g-rim),0 1px 2px rgba(0,0,0,.05)}
-.cta.danger,.rbtn.danger{
-  background:linear-gradient(180deg,rgba(255,255,255,.26),rgba(255,255,255,0) 60%),var(--red);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 6px 18px color-mix(in srgb,var(--red) 26%,transparent)}
-
-/* ── the actions under the message ──
-   One glass capsule, Delete leading: it is what you do to most of what
-   arrives, and at the start of the row it is where a thumb finds it without
-   looking. Red, because it is the one in the group that cannot be put right
-   by pressing it again. Reply is its own tinted capsule at the far edge.
-
-   Under the message, never over it. For one release the capsule floated over
-   the foot of the message, and the message went blank: the frame is
-   sandboxed, Chrome draws a sandboxed frame in a process of its own, and with
-   anything painted on top of it, it skipped the frame's first paint — a
-   message opened straight after loading the page stayed white until
-   something else on the page happened to move. Measured, not guessed: the
-   frame was loaded, on top, full size and full of text, and the only change
-   that brought it back was taking the capsule off it. So the glass sits in a
-   strip of its own again, and the message is whole above it. */
-.rbar{position:static;gap:10px;padding:10px 14px max(var(--sab),14px);border-top:0;
-  background:none;-webkit-backdrop-filter:none;backdrop-filter:none;overflow:visible}
-/* Narrower than eleven buttons, the capsule scrolls sideways inside its own
-   rounded edge rather than shoving Reply off the pane. Delete, first, is
-   always on screen; so is Reply, which never shrinks. */
-.rgroup{display:flex;align-items:center;gap:2px;padding:4px;border-radius:999px;flex:0 1 auto;min-width:0;
-  overflow-x:auto;overflow-y:hidden;scrollbar-width:none;overscroll-behavior-x:contain}
-.rgroup::-webkit-scrollbar{display:none}
-.rgroup .rbtn,.rbar .rbtn.acc{flex:none}
-.rgroup .rbtn{background:transparent;border:0;box-shadow:none;height:40px;border-radius:999px}
-.rgroup .rbtn.ico{width:42px}
-.rgroup .rbtn.lab{padding:0 14px}
-.rgroup .rbtn:active{background:color-mix(in srgb,var(--t1) 9%,transparent);transform:scale(.94)}
-.rgroup .rbtn.on{border:0}
-/* The contextual group — Images, Unsubscribe, Not spam — only when it has
-   something in it. An empty capsule is a piece of glass with nothing to say. */
-.rgroup.ctx:not(:has(> .rbtn:not([hidden]))){display:none}
-#rDelete{color:var(--red)}
-.rbtn.acc{height:50px;padding:0 22px;border-radius:999px;font-weight:600;
-  background:linear-gradient(180deg,rgba(255,255,255,.3),rgba(255,255,255,0) 60%),var(--acc);
-  border:1px solid color-mix(in srgb,var(--acc) 80%,#000);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 8px 22px color-mix(in srgb,var(--acc) 32%,transparent)}
-/* Every reply on the right. The wrapper takes the spare width, so Reply no
-   longer needs a margin of its own to reach the edge. */
-.rreplies{display:flex;align-items:center;gap:8px;margin-left:auto;flex:none}
-/* When the bar is short of room, the labels go before anything is cut: AI
-   Reply and the contextual buttons fall back to their icons, which keep
-   their titles. Measured on the bar itself rather than the window, because
-   the list beside it is resizable — and on the bar rather than the reader,
-   so nothing about the frame the message is drawn in changes. The
-   contextual capsule never shrinks: "Unsubscribe" cut to "U" is worse than
-   no label at all. */
-.rbar{container-type:inline-size}
-.rgroup.ctx{flex:none}
-@container (max-width:860px){
-  #rReplyOneAI{width:50px;padding:0}
-  #rReplyOneAI .lbl,.rgroup.ctx .lbl{display:none}
-  .rgroup.ctx .rbtn.lab{width:42px;padding:0}
-}
-.rreplies .rbtn.acc{margin-left:0}
-/* The written reply: a button you can read rather than one more glyph in the
-   capsule. Tinted, not solid — Reply stays the strong one. */
-#rReplyOneAI{height:50px;padding:0 18px;border-radius:999px;gap:8px;font-weight:600;color:var(--acc);
-  background:linear-gradient(180deg,var(--g-sheen),transparent 58%),color-mix(in srgb,var(--acc) 13%,var(--g-fill));
-  border:1px solid color-mix(in srgb,var(--acc) 30%,transparent)}
-@media (hover:hover) and (pointer:fine){
-  #rReplyOneAI:hover{background:linear-gradient(180deg,var(--g-sheen),transparent 58%),
-    color-mix(in srgb,var(--acc) 22%,var(--g-fill))}
-}
-
-/* No backdrop blur anywhere near the message. The frame the message is drawn
-   in is sandboxed, and Chrome draws a sandboxed frame in a process of its
-   own; with blurred glass composited around it, some machines simply never
-   drew the message — subject at the top, white underneath — and drew the
-   Unsubscribe capsule washed out, as if under a sheet of frosting. The blur
-   bought nothing here anyway: the capsules sit on a plain strip, the close
-   button on a plain header, and a blur of a flat colour is the flat colour.
-   Shadows are kept short, so none of them reaches into the frame either.
-   The toast goes solid for the same reason: it floats over the message. */
-#reader .iconbtn,#reader .tscope,.rbar .rgroup,.rbar .rbtn,#toast{
-  -webkit-backdrop-filter:none;backdrop-filter:none}
-#reader .iconbtn,#reader .tscope{box-shadow:inset 0 1px 0 var(--g-rim),0 1px 2px rgba(0,0,0,.06)}
-.rbar .rgroup,#rReplyOneAI{box-shadow:inset 0 1px 0 var(--g-rim),0 1px 2px rgba(0,0,0,.06),0 3px 8px rgba(0,0,0,.06)}
-.rbar .rbtn.acc{box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 3px 8px color-mix(in srgb,var(--acc) 26%,transparent)}
-#toast{background:color-mix(in srgb,var(--sheet) 97%,transparent)}
-/* The list's scroll edge keeps its fade but loses the masked blur behind it:
-   a blur behind a mask is the most expensive thing a compositor is asked to
-   do, and the fade alone carries the effect. */
-header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-image:none;mask-image:none;
-  background:linear-gradient(to bottom,var(--bg) 0%,color-mix(in srgb,var(--bg) 90%,transparent) 72%,transparent 100%)}
-
-/* A destructive confirm stays red. The dialog's button carries .acc and
-   .danger at once, and the glass .acc above would otherwise win by coming
-   later — which turned "Delete these 3 drafts?" into a friendly blue Yes. */
-.rbtn.acc.danger{
-  background:linear-gradient(180deg,rgba(255,255,255,.26),rgba(255,255,255,0) 60%),var(--red);
-  border-color:color-mix(in srgb,var(--red) 80%,#000);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 6px 18px color-mix(in srgb,var(--red) 26%,transparent);
-  color:#fff}
-#rAtts{padding:8px 16px 0}
-
-/* A draft's delete, out of hiding. It was a grey glyph beside the date that
-   read as decoration; it is a red disc now, the same red as every other
-   delete, and wide enough to hit on purpose. */
-.rowdel{width:30px;height:30px;border-radius:50%;color:var(--red);
-  background:color-mix(in srgb,var(--red) 11%,transparent)}
-.rowdel svg{width:15px;height:15px}
-/* Throwing a draft away is a delete, and says so in the same colour. */
-#cDiscard{color:var(--red)}
-
-/* Selection mode's bar floats too, as a capsule over the foot of the list. */
-#bulkbar{left:12px;right:12px;bottom:max(var(--sab),12px);border-radius:999px;
-  padding:5px 5px 5px 18px;transform:translateY(calc(100% + 40px))}
-#bulkbar .rbtn{background:transparent;border:0;border-radius:999px;height:40px;box-shadow:none}
-#bulkbar .rbtn.danger{background:color-mix(in srgb,var(--red) 14%,transparent);color:var(--red)}
-
-/* Sheets lift off the edges and round right off, the way iOS presents one
-   that does not fill the screen. */
-.sheet{left:8px;right:8px;bottom:8px;border-radius:30px;padding:10px 18px max(var(--sab),18px);
-  transform:translateY(calc(100% + 64px));max-height:calc(100% - var(--sat) - 24px)}
-/* A closed sheet is not drawn at all. Off-screen is not the same as absent:
-   each one still carried a 30px backdrop blur and a shadow wide enough to
-   reach back on screen, and nine of them were enough to make the page stall
-   while it painted. Hidden only once the slide out has finished, so closing
-   still animates; visible the instant it opens, so focus can land in it. */
-.sheet{visibility:hidden;transition:transform .3s cubic-bezier(.32,.72,0,1),visibility 0s linear .3s}
-.sheet.up{visibility:visible;transition:transform .3s cubic-bezier(.32,.72,0,1),visibility 0s}
-#scrim{background:rgba(0,0,0,.3)}
-#modal{background:rgba(0,0,0,.3)}
-.mcard{border-radius:28px}
-.mactions .rbtn{border-radius:999px;height:44px}
-#toast{color:var(--t1);border-radius:999px;padding:11px 18px}
-#toast .undo{color:var(--acc)}
-
-/* The page you write on is a page, not a pane of glass over one. */
-#composeSheet{background:var(--bg);border:0;box-shadow:none;
-  -webkit-backdrop-filter:none;backdrop-filter:none}
-
-@media (max-width:899px){
-  #composeSheet{left:0;right:0;border-radius:0}
-  .rbar{gap:8px;padding:8px 12px max(var(--sab),12px)}
-  /* On a phone the contextual three live behind "⋯" with everything else,
-     and so do Forward and the reply-alls; the written reply keeps its place,
-     as an icon. */
-  .rgroup.ctx,.rgroup.morereplies{display:none}
-  #rReplyOneAI{width:50px;padding:0}
-}
-@media (min-width:900px){
-  .sheet{left:auto;right:10px;top:10px;bottom:10px;width:min(600px,52vw);max-height:none;
-    border-radius:26px;padding:22px 24px calc(var(--sab) + 20px);
-    transform:translateX(calc(100% + 64px))}
-  #composeSheet{border-radius:0}
-  #folderSheet{border-radius:22px;border:1px solid var(--g-edge);
-    box-shadow:inset 0 1px 0 var(--g-rim),var(--g-shade)}
-  #bulkbar{right:auto;width:calc(var(--left,430px) - 24px)}
-  /* A hairline between the panes rather than a 6px bar; the hit area stays. */
-  #grip{background:transparent;position:relative}
-  #grip::after{content:"";position:absolute;top:0;bottom:0;left:50%;width:1px;
-    transform:translateX(-50%);background:var(--line-strong);transition:background .12s,width .12s}
-  #grip:hover,#grip.drag{background:transparent}
-  #grip:hover::after,#grip.drag::after{background:var(--acc);width:3px}
-}
-
-@media (hover:hover) and (pointer:fine){
-  .iconbtn:hover,#folderBtn:hover{
-    background:linear-gradient(180deg,var(--g-sheen),transparent 58%),
-      color-mix(in srgb,var(--acc) 12%,var(--g-fill));color:var(--acc)}
-  .rgroup .rbtn:hover{background:color-mix(in srgb,var(--t1) 7%,transparent);border-color:transparent;color:var(--acc)}
-  #rDelete:hover,#cDiscard:hover{background:color-mix(in srgb,var(--red) 14%,transparent);color:var(--red)}
-  .rowdel:hover{background:var(--red);color:#fff}
-  .rbtn.acc:hover{background:linear-gradient(180deg,rgba(255,255,255,.3),rgba(255,255,255,0) 60%),
-    color-mix(in srgb,var(--acc) 88%,#fff)}
-  .pill:hover{background:color-mix(in srgb,var(--acc) 12%,var(--fill));border-color:transparent}
-  .rbtn.acc.danger:hover{background:linear-gradient(180deg,rgba(255,255,255,.26),rgba(255,255,255,0) 60%),
-    color-mix(in srgb,var(--red) 88%,#fff);color:#fff}
-}
-
-/* Reduce Transparency means it. Every piece of glass becomes the solid
-   surface it was standing in for, and the scroll edge becomes the page. */
-@media (prefers-reduced-transparency: reduce){
-  .iconbtn,.searchwrap,#folderBtn,.rgroup,#bulkbar,.tscope,.sheet,.mcard,#toast,header::before{
-    -webkit-backdrop-filter:none;backdrop-filter:none}
-  .iconbtn,.searchwrap,#folderBtn,.rgroup,#bulkbar,.tscope{background:var(--elev2)}
-  .sheet,.mcard,#toast{background:var(--sheet)}
-  #composeSheet{background:var(--bg)}
-  header::before{background:var(--bg);-webkit-mask-image:none;mask-image:none}
-}
-
 /* Visually hidden, still announced. Used for the live region that names what
    a key command or a swipe just did. */
 .sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
@@ -1254,69 +961,55 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
          announces "frame" and offers no way to tell this from the print frame. -->
     <iframe id="rframe" title="Message body" sandbox="allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe>
   </div>
-  <div class="attbar" id="rAtts"></div>
+  <div class="attbar" id="rAtts" style="padding:8px 16px 0"></div>
   <div class="rbar">
-    <!-- What you do to the message, on the left, Delete first and in red.
-         `.overflowable` folds behind "⋯" below 900px; Delete, Archive and
-         Star stay, so the thing you reach for blind is where you left it. -->
-    <div class="rgroup" role="group" aria-label="Message actions">
-      <!-- `#` is bound to Delete. It used to be printed on the title and
-           pressed by nobody, because there was nothing behind it. -->
-      <button class="rbtn ico" id="rDelete" aria-label="Delete" title="Delete (#)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5.2A1.2 1.2 0 0 1 10.2 4h3.6A1.2 1.2 0 0 1 15 5.2V7"/><path d="M6 7v12a1.5 1.5 0 0 0 1.5 1.5h9A1.5 1.5 0 0 0 18 19V7"/><path d="M10 11v6M14 11v6"/></svg>
-        </button>
-      <button class="rbtn ico" id="rArchive" aria-label="Archive" title="Archive (e)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1.4"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9"/><path d="M10 13h4"/></svg>
-        </button>
-      <button class="rbtn ico" id="rStar" aria-label="Star" aria-pressed="false" title="Star (s)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3.6 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.8l5.9-.9Z"/></svg>
-        </button>
-      <button class="rbtn ico overflowable" id="rUnread" aria-label="Mark unread" title="Mark unread (u)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 7 8.5 6 8.5-6"/></svg>
-        </button>
-      <button class="rbtn ico overflowable" id="rMove" aria-label="Move to folder" title="Move (v)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 18Z"/></svg>
-        </button>
-      <button class="rbtn ico overflowable" id="rPdf" aria-label="Save as PDF" title="Save as PDF (p)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M12 11.5v5"/><path d="m9.8 14.5 2.2 2.2 2.2-2.2"/></svg>
-        </button>
-      <button class="rbtn ico" id="rMore" aria-haspopup="dialog" aria-expanded="false" aria-label="More actions" title="More actions">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="5" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="19" cy="12" r="1.4" fill="currentColor"/></svg>
-        </button>
-    </div>
-    <!-- About this particular message, and only there when it applies. -->
-    <div class="rgroup ctx" role="group" aria-label="About this message">
-      <button class="rbtn lab overflowable" id="rImages" hidden>
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m5 18 5-5 3.5 3.5L17 13l2.5 2.5"/></svg><span class="lbl">Images</span>
-        </button>
-      <button class="rbtn lab overflowable" id="rUnsub" hidden aria-label="Unsubscribe" title="Unsubscribe from this sender">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 12.5V9a6.5 6.5 0 0 0-13 0c0 6-2.5 7.5-2.5 7.5h11"/><path d="M10.3 20a2 2 0 0 0 3.4 0"/><path d="M16 18h6"/></svg><span class="lbl">Unsubscribe</span>
-        </button>
-      <button class="rbtn lab overflowable" id="rNotSpam" hidden aria-label="Not spam" title="Not spam — move it to the Inbox">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 5 6v5.6c0 4 2.9 7.4 7 8.4 4.1-1 7-4.4 7-8.4V6Z"/><path d="m8.8 12 2.3 2.3 4.1-4.6"/></svg><span class="lbl">Not spam</span>
-        </button>
-    </div>
-    <!-- Every way of answering, together on the right: forward and the two
-         reply-alls in one capsule, then the written reply, then Reply. -->
-    <div class="rreplies" role="group" aria-label="Reply">
-      <div class="rgroup morereplies">
-        <button class="rbtn ico overflowable" id="rForward" aria-label="Forward" title="Forward (f)">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 8 19 12l-4.5 4"/><path d="M19 12h-7a6 6 0 0 0-6 6v1"/></svg>
-          </button>
-        <button class="rbtn ico overflowable" id="rReplyAll" aria-label="Reply all" title="Reply all (a)">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 8 3 12l4.5 4"/><path d="M12.5 8 8 12l4.5 4"/><path d="M8 12h7a6 6 0 0 1 6 6v1"/></svg>
-          </button>
-        <button class="rbtn ico overflowable" id="rReplyAI" aria-label="Reply all, written for you" title="Reply all, with the reply already written (Shift+A)">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9 2.5 13l4.5 4"/><path d="M12 9l-4.5 4 4.5 4"/><path d="M7.5 13h7a6 6 0 0 1 6 6v.5"/><path d="m19 3.4.8 1.6 1.6.8-1.6.8-.8 1.6-.8-1.6-1.6-.8 1.6-.8z" fill="currentColor"/></svg>
-          </button>
-      </div>
-      <button class="rbtn aireply" id="rReplyOneAI" aria-label="Reply, written for you" title="Reply to the sender, with the reply already written (Shift+R)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 9 4 13l4.5 4"/><path d="M4.5 13h8a6 6 0 0 1 6 6v.5"/><path d="m19 3.4.8 1.6 1.6.8-1.6.8-.8 1.6-.8-1.6-1.6-.8 1.6-.8z" fill="currentColor"/></svg><span class="lbl">AI Reply</span>
-        </button>
-      <button class="rbtn acc" id="rReply">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 9 4 13.5 9.5 18"/><path d="M4 13.5h9a7 7 0 0 0 7-7V5"/></svg>Reply
-        </button>
-    </div>
+    <button class="rbtn ico" id="rMore" aria-haspopup="dialog" aria-expanded="false" aria-label="More actions" title="More actions">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="5" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="19" cy="12" r="1.4" fill="currentColor"/></svg>
+    </button>
+    <!-- `.overflowable` is what moves into the sheet below 900px. The four that
+         stay — Star, Archive, Delete, Reply — never change place, so the thing
+         you reach for blind is where you left it. -->
+    <button class="rbtn lab overflowable" id="rImages" hidden>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m5 18 5-5 3.5 3.5L17 13l2.5 2.5"/></svg><span class="lbl">Images</span>
+    </button>
+    <button class="rbtn lab overflowable" id="rUnsub" hidden aria-label="Unsubscribe" title="Unsubscribe from this sender">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 12.5V9a6.5 6.5 0 0 0-13 0c0 6-2.5 7.5-2.5 7.5h11"/><path d="M10.3 20a2 2 0 0 0 3.4 0"/><path d="M16 18h6"/></svg><span class="lbl">Unsubscribe</span>
+    </button>
+    <button class="rbtn lab overflowable" id="rNotSpam" hidden aria-label="Not spam" title="Not spam — move it to the Inbox">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 5 6v5.6c0 4 2.9 7.4 7 8.4 4.1-1 7-4.4 7-8.4V6Z"/><path d="m8.8 12 2.3 2.3 4.1-4.6"/></svg><span class="lbl">Not spam</span>
+    </button>
+    <button class="rbtn ico" id="rStar" aria-label="Star" aria-pressed="false" title="Star (s)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3.6 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.8l5.9-.9Z"/></svg>
+    </button>
+    <button class="rbtn ico overflowable" id="rUnread" aria-label="Mark unread" title="Mark unread (u)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 7 8.5 6 8.5-6"/></svg>
+    </button>
+    <button class="rbtn ico" id="rArchive" aria-label="Archive" title="Archive (e)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1.4"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9"/><path d="M10 13h4"/></svg>
+    </button>
+    <!-- `#` is bound to Delete now. It used to be printed on the title and
+         pressed by nobody, because there was nothing behind it. -->
+    <button class="rbtn ico" id="rDelete" aria-label="Delete" title="Delete (#)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5.2A1.2 1.2 0 0 1 10.2 4h3.6A1.2 1.2 0 0 1 15 5.2V7"/><path d="M6 7v12a1.5 1.5 0 0 0 1.5 1.5h9A1.5 1.5 0 0 0 18 19V7"/><path d="M10 11v6M14 11v6"/></svg>
+    </button>
+    <button class="rbtn ico overflowable" id="rMove" aria-label="Move to folder" title="Move (v)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 18Z"/></svg>
+    </button>
+    <button class="rbtn ico overflowable" id="rPdf" aria-label="Save as PDF" title="Save as PDF (p)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M12 11.5v5"/><path d="m9.8 14.5 2.2 2.2 2.2-2.2"/></svg>
+    </button>
+    <button class="rbtn ico overflowable" id="rForward" aria-label="Forward" title="Forward (f)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 8 19 12l-4.5 4"/><path d="M19 12h-7a6 6 0 0 0-6 6v1"/></svg>
+    </button>
+    <button class="rbtn ico overflowable" id="rReplyAI" aria-label="Reply all, written for you" title="Reply all, with the reply already written (Shift+A)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9 2.5 13l4.5 4"/><path d="M12 9l-4.5 4 4.5 4"/><path d="M7.5 13h7a6 6 0 0 1 6 6v.5"/><path d="m19 3.4.8 1.6 1.6.8-1.6.8-.8 1.6-.8-1.6-1.6-.8 1.6-.8z" fill="currentColor"/></svg>
+    </button>
+    <button class="rbtn ico overflowable" id="rReplyAll" aria-label="Reply all" title="Reply all (a)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 8 3 12l4.5 4"/><path d="M12.5 8 8 12l4.5 4"/><path d="M8 12h7a6 6 0 0 1 6 6v1"/></svg>
+    </button>
+    <button class="rbtn acc" id="rReply">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 9 4 13.5 9.5 18"/><path d="M4 13.5h9a7 7 0 0 0 7-7V5"/></svg>Reply
+    </button>
   </div>
 </div>
 
@@ -1746,7 +1439,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v46";
+const CLIENT = "v40";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2381,80 +2074,13 @@ img{max-width:100%;height:auto}a{color:#1a63c9}</style></head><body>${body}</bod
 }
 
 /**
- * Puts a document in the message pane — in a new frame, every time.
- *
- * The message is drawn in a sandboxed frame with no origin of its own, which
- * Chrome renders in a separate process and shows through a surface the
- * parent's compositor is handed. Navigating that frame to the next message
- * reuses the surface, and on the machine this app is used on the handoff
- * sometimes never happened: the new document loaded, laid out and painted in
- * its process, and the pane kept showing the old surface — white, because
- * closing the reader blanks it — until anything at all made the parent
- * recompose. Subject at the top, nothing underneath, for some messages and
- * not others, and never in headless Chrome, which has no GPU surface to get
- * stuck on.
- *
- * So the frame is never navigated. Each document gets a fresh element, which
- * gets a fresh surface, and the old one is thrown away with whatever it was
- * showing. And because the first paint of a fresh surface is the one that
- * was being lost, the frame is also nudged after the child has had time to
- * paint: one pixel of padding on, then off, at three points in the first
- * second and a half. A resize is the one thing a child frame cannot ignore —
- * it has to produce a new picture at the new size and the parent has to show
- * it — and a pixel of padding on a white frame is nothing anyone can see.
- */
-function showInFrame(doc) {
-  const old = $("#rframe");
-  const f = document.createElement("iframe");
-  f.id = "rframe";
-  f.title = "Message body";
-  f.setAttribute("sandbox", "allow-popups allow-popups-to-escape-sandbox");
-  f.setAttribute("referrerpolicy", "no-referrer");
-  // Inserted empty. A frame with no document is an in-process about:blank
-  // with nothing to compose; it gets its box, its place and its size first,
-  // and only then something to draw. Creating it with the document already
-  // in it — v45 — was measured in this very browser profile to come up white
-  // six times out of six, where the version before it never did: the child
-  // process started on a frame that had no size yet.
-  old.replaceWith(f);
-  // Closing the reader: an empty in-process frame is all the pane needs, and
-  // it is never a sandboxed child waiting under display:none.
-  if (!doc) return;
-  f.getBoundingClientRect();
-  let loaded = false;
-  const load = () => {
-    if (loaded || f !== $("#rframe") || !f.isConnected) return;
-    loaded = true;
-    f.srcdoc = doc;
-    // After the child has had time to paint, a pixel of padding on and off:
-    // a resize is the one thing a child frame cannot ignore — it has to draw
-    // again at the new size and the parent has to show it.
-    for (const ms of [120, 450, 1500]) setTimeout(() => nudgeFrame(f), ms);
-  };
-  // The next animation frame, so the layout above has been committed — with
-  // a timer behind it that wins when the page is hidden and no frame comes.
-  requestAnimationFrame(load);
-  setTimeout(load, 32);
-}
-function nudgeFrame(f) {
-  if (!f || f !== $("#rframe") || !f.isConnected || !f.srcdoc) return;
-  f.style.paddingBottom = "1px";
-  setTimeout(() => { f.style.paddingBottom = ""; }, 40);
-}
-// A tab that was hidden when the message loaded has had no frames at all;
-// coming back is the moment to ask for one.
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") setTimeout(() => nudgeFrame($("#rframe")), 60);
-});
-
-/**
  * Paints the open message, under whatever the image setting currently is.
  *
  * Separate from openMsg because it is called again when that setting changes,
  * so the message on screen follows the switch instead of staying as it was
  * rendered a moment earlier.
  */
-async function renderBody() {
+function renderBody() {
   if (!current) return;
   const m = current.message;
   const load = autoImages || showImagesOnce;
@@ -2471,32 +2097,20 @@ async function renderBody() {
     : load
     ? unblockImages(current.body.html)
     : current.body.html || "";
+  // Render immediately, then swap in inline images once fetched: a message
+  // should never wait on its pictures to become readable.
+  $("#rframe").srcdoc = frameDoc(html);
   // Kept, because this is what a reply quotes. The stored body still says
   // src="cid:…", which points at a part inside the original message and means
   // nothing outside it: quoting that put a broken image at the end of every
   // reply to anyone with a logo in their signature.
   current.body.shown = html;
-  // One document, where it can be. Inline pictures come from our own
-  // attachment endpoint and are usually back within a few hundred
-  // milliseconds, so the frame waits that long for them and is created once,
-  // complete. Only when they are slower does the text go up first and a
-  // second frame follow — a message should never wait on its pictures to
-  // become readable, but it should not be drawn twice for pictures that were
-  // nearly there either.
-  const pictures = resolveInlineImages(html, m.id, current.body.attachments || []);
-  const first = await Promise.race([pictures, new Promise((r) => setTimeout(() => r(null), 350))]);
-  if (!current || current.message.id !== m.id) return;
-  showInFrame(frameDoc(first === null ? html : first));
-  if (first !== null) {
-    if (first !== html) current.body.shown = first;
-  } else {
-    pictures.then((withImages) => {
-      if (withImages !== html && current && current.message.id === m.id) {
-        showInFrame(frameDoc(withImages));
-        current.body.shown = withImages;
-      }
-    });
-  }
+  resolveInlineImages(html, m.id, current.body.attachments || []).then((withImages) => {
+    if (withImages !== html && current && current.message.id === m.id) {
+      $("#rframe").srcdoc = frameDoc(withImages);
+      current.body.shown = withImages;
+    }
+  });
   // Offered only when there is something held back to load.
   $("#rImages").hidden = load || !(current.body.blocked > 0);
 }
@@ -2627,6 +2241,7 @@ async function openMsg(id, threadRow = null) {
   // blank white pane, which is what this used to be and is indistinguishable
   // from the app being broken.
   showImagesOnce = false; // a fresh message asks again
+  renderBody();
   $("#rStar").classList.toggle("on", !!Number(m.starred));
   $("#rStar").setAttribute("aria-pressed", String(!!Number(m.starred)));
 
@@ -2659,12 +2274,6 @@ async function openMsg(id, threadRow = null) {
     )
     .join("");
   $("#reader").classList.add("up");
-  // The reader's own boxes — header, bar, attachments — are laid out before
-  // the message frame is created, so the child starts in a pane that already
-  // has its final shape rather than one going display:none to block around
-  // it. Reading a height is what forces that layout to happen now.
-  void $("#rbody").offsetHeight;
-  renderBody();
   // Replay the settle on every open, including j/k between messages: a
   // class that stays on would animate once and then never again.
   const head = document.querySelector("#reader .rhead");
@@ -2689,7 +2298,7 @@ function closeReader() {
   renderScope();
   $("#rSubj").textContent = "—";
   $("#rMeta").textContent = "—";
-  showInFrame("");
+  $("#rframe").srcdoc = "";
   // All three belong to the message that was open, not to the pane.
   $("#rUnsub").hidden = true;
   $("#rImages").hidden = true;
@@ -2791,14 +2400,10 @@ addEventListener("keydown", (e) => {
       e.preventDefault();
       startForward();
       break;
-    // Shift+A and Shift+R: the same two replies, already written.
+    // Shift+A: the same reply, already written.
     case "A":
       e.preventDefault();
-      replyWritten(true);
-      break;
-    case "R":
-      e.preventDefault();
-      replyWritten(false);
+      replyWritten();
       break;
   }
 });
@@ -3414,7 +3019,7 @@ $("#rReply").addEventListener("click", () => startReply(false));
 $("#rReplyAll").addEventListener("click", () => startReply(true));
 
 /**
- * A reply with the reply already written — to everyone, or to the sender.
+ * Reply all, with the reply already written.
  *
  * The same two things you would have done by hand — open the reply, press
  * Draft — with nothing in between, because for the mail this is for there is
@@ -3424,15 +3029,11 @@ $("#rReplyAll").addEventListener("click", () => startReply(true));
  * it. When there is something to say first, Reply all and then Draft is still
  * the way round: what you type above the quote is what the reply is built on.
  */
-async function replyWritten(all = true) {
-  startReply(all);
+async function replyWritten() {
+  startReply(true);
   await draftReply($("#aiDraft"));
 }
-// Arrow functions, not the bare handler: a listener is handed the click event,
-// and an event is truthy, so passing replyWritten itself would answer everyone
-// from the button meant for the sender alone.
-$("#rReplyAI").addEventListener("click", () => replyWritten(true));
-$("#rReplyOneAI").addEventListener("click", () => replyWritten(false));
+$("#rReplyAI").addEventListener("click", replyWritten);
 
 /* ── on paper ── */
 
@@ -5728,18 +5329,6 @@ $("#list").addEventListener("keydown", (e) => {
   e.preventDefault();
   r.click();
 });
-
-/* ── the header the list runs under ──
-   The header floats over the list now, so the list has to start exactly one
-   header-height down — and that height moves with the safe area, the account
-   pills and the window. Measured rather than guessed, and kept measured. */
-{
-  const hdr = document.querySelector("header");
-  const setHeaderHeight = () =>
-    $("#app").style.setProperty("--hh", `${Math.ceil(hdr.getBoundingClientRect().height)}px`);
-  if ("ResizeObserver" in window) new ResizeObserver(setHeaderHeight).observe(hdr);
-  setHeaderHeight();
-}
 
 /* ── init ── */
 (async function init() {
