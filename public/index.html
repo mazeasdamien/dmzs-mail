@@ -42,7 +42,7 @@
      catches the light along the top, a rim one pixel bright, an edge one pixel
      dark, and a shadow that lifts the piece off whatever it floats over.
      --g-fill-strong is for glass that text sits on: a sheet, the toast. */
-  --g-fill:rgba(255,255,255,.6); --g-fill-strong:rgba(250,250,252,.84);
+  --g-fill:rgba(255,255,255,.88); --g-fill-strong:rgba(250,250,252,.97);
   --g-sheen:rgba(255,255,255,.55); --g-rim:rgba(255,255,255,.9); --g-edge:rgba(20,20,40,.09);
   --g-shade:0 1px 2px rgba(20,20,40,.05),0 10px 30px rgba(20,20,40,.11);
   --g-blur:blur(22px) saturate(185%);
@@ -73,7 +73,7 @@
       --glass:rgba(24,24,28,.97); --sheet:#17171b; --input:#0e0e11;
     --toast-bg:rgba(240,240,245,.96); --toast-fg:#101014; --undo:#0a58c2;
     --shadow:rgba(0,0,0,.4);
-    --g-fill:rgba(46,46,52,.5); --g-fill-strong:rgba(28,28,32,.82);
+    --g-fill:rgba(46,46,52,.86); --g-fill-strong:rgba(28,28,32,.96);
     --g-sheen:rgba(255,255,255,.07); --g-rim:rgba(255,255,255,.17); --g-edge:rgba(0,0,0,.55);
     --g-shade:0 1px 2px rgba(0,0,0,.35),0 12px 34px rgba(0,0,0,.5);
     --g-blur:blur(22px) saturate(160%);
@@ -90,7 +90,7 @@
   --glass:rgba(24,24,28,.97); --sheet:#17171b; --input:#0e0e11;
   --toast-bg:rgba(240,240,245,.96); --toast-fg:#101014; --undo:#0a58c2;
   --shadow:rgba(0,0,0,.4);
-  --g-fill:rgba(46,46,52,.5); --g-fill-strong:rgba(28,28,32,.82);
+  --g-fill:rgba(46,46,52,.86); --g-fill-strong:rgba(28,28,32,.96);
   --g-sheen:rgba(255,255,255,.07); --g-rim:rgba(255,255,255,.17); --g-edge:rgba(0,0,0,.55);
   --g-shade:0 1px 2px rgba(0,0,0,.35),0 12px 34px rgba(0,0,0,.5);
   --g-blur:blur(22px) saturate(160%);
@@ -906,6 +906,15 @@ details.repair .body{padding-top:8px}
    filter Safari will not run on a backdrop, and a glass that only works in
    one browser is a bug on the phone this app lives on.
 
+   And no blur at all, for now. With backdrop blur on the controls, some
+   messages were never drawn on the machine this app is used on — subject at
+   the top, white underneath — while every test elsewhere drew them fine. The
+   message is drawn in a sandboxed frame Chrome renders in a process of its
+   own, and blur is the one thing in this layer that version 40, which drew
+   every message, did not have. The material keeps its shape — the sheen,
+   the rim, the edge, the lift — with a fill thick enough to stand without
+   the blur behind it.
+
    And never glass inside glass. A backdrop-filter makes its element the
    backdrop root for everything in it, so a glass button inside a glass panel
    frosts the panel and nothing else — in Chrome it simply goes flat. Every
@@ -916,13 +925,13 @@ details.repair .body{padding-top:8px}
   background:linear-gradient(180deg,var(--g-sheen),transparent 58%),var(--g-fill);
   border:1px solid var(--g-edge);
   box-shadow:inset 0 1px 0 var(--g-rim),var(--g-shade);
-  -webkit-backdrop-filter:var(--g-blur);backdrop-filter:var(--g-blur)}
+  -webkit-backdrop-filter:none;backdrop-filter:none}
 /* Thicker glass for anything you read on. */
 .sheet,.mcard,#toast{
   background:linear-gradient(180deg,var(--g-sheen),transparent 26%),var(--g-fill-strong);
   border:1px solid var(--g-edge);
   box-shadow:inset 0 1px 0 var(--g-rim),var(--g-shade);
-  -webkit-backdrop-filter:blur(30px) saturate(180%);backdrop-filter:blur(30px) saturate(180%)}
+  -webkit-backdrop-filter:none;backdrop-filter:none}
 
 /* The header stops being a slab. Its controls float, the list runs up under
    them, and the top edge of the list blurs into the header progressively —
@@ -1737,7 +1746,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v43";
+const CLIENT = "v44";
 
 async function api(path, opts = {}) {
   busy(1);
