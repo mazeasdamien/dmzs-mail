@@ -975,31 +975,30 @@ main{padding-top:var(--hh,112px);scroll-padding-top:var(--hh,112px)}
   background:linear-gradient(180deg,rgba(255,255,255,.26),rgba(255,255,255,0) 60%),var(--red);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 6px 18px color-mix(in srgb,var(--red) 26%,transparent)}
 
-/* ── the actions over the message ──
-   They float now, in one glass capsule, over the bottom of the message
-   rather than in a bar that took its own strip of the screen. Delete leads:
-   it is what you do to most of what arrives, and at the start of the row it
-   is where a thumb finds it without looking. Red, because it is the one in
-   the group that cannot be put right by pressing it again. Reply is its own
-   tinted capsule at the far edge, the way it has always been the one thing
-   on the other side. The message is padded at the foot, inside its frame,
-   so its last line scrolls clear of the glass rather than ending under it. */
-.rbar{position:absolute;left:0;right:0;bottom:0;z-index:6;gap:10px;
-  padding:0 14px max(var(--sab),14px);border-top:0;background:none;
-  -webkit-backdrop-filter:none;backdrop-filter:none;pointer-events:none;overflow:visible}
-.rbar > *{pointer-events:auto}
-/* Light glass over the message in both themes, because what it floats over
-   always is light: mail is drawn on white paper whatever the app is wearing.
-   iOS tints its glass by what is behind it, and here that is known in
-   advance — dark glass on a white page was a grey slab with the red of
-   Delete and the blue of Star sunk into it. */
-.rbar{
-  --g-fill:rgba(255,255,255,.62); --g-sheen:rgba(255,255,255,.55); --g-rim:rgba(255,255,255,.9);
-  --g-edge:rgba(20,20,40,.1); --g-shade:0 1px 2px rgba(20,20,40,.06),0 10px 30px rgba(20,20,40,.14);
-  --g-blur:blur(22px) saturate(185%);
-  --t1:#16161a; --acc:#1f6fd0; --red:#c8352f; --on-acc:#ffffff;
-  color:#16161a;color-scheme:light}
-.rgroup{display:flex;align-items:center;gap:2px;padding:4px;border-radius:999px;flex:none;min-width:0}
+/* ── the actions under the message ──
+   One glass capsule, Delete leading: it is what you do to most of what
+   arrives, and at the start of the row it is where a thumb finds it without
+   looking. Red, because it is the one in the group that cannot be put right
+   by pressing it again. Reply is its own tinted capsule at the far edge.
+
+   Under the message, never over it. For one release the capsule floated over
+   the foot of the message, and the message went blank: the frame is
+   sandboxed, Chrome draws a sandboxed frame in a process of its own, and with
+   anything painted on top of it, it skipped the frame's first paint — a
+   message opened straight after loading the page stayed white until
+   something else on the page happened to move. Measured, not guessed: the
+   frame was loaded, on top, full size and full of text, and the only change
+   that brought it back was taking the capsule off it. So the glass sits in a
+   strip of its own again, and the message is whole above it. */
+.rbar{position:static;gap:10px;padding:10px 14px max(var(--sab),14px);border-top:0;
+  background:none;-webkit-backdrop-filter:none;backdrop-filter:none;overflow:visible}
+/* Narrower than eleven buttons, the capsule scrolls sideways inside its own
+   rounded edge rather than shoving Reply off the pane. Delete, first, is
+   always on screen; so is Reply, which never shrinks. */
+.rgroup{display:flex;align-items:center;gap:2px;padding:4px;border-radius:999px;flex:0 1 auto;min-width:0;
+  overflow-x:auto;overflow-y:hidden;scrollbar-width:none;overscroll-behavior-x:contain}
+.rgroup::-webkit-scrollbar{display:none}
+.rgroup .rbtn,.rbar .rbtn.acc{flex:none}
 .rgroup .rbtn{background:transparent;border:0;box-shadow:none;height:40px;border-radius:999px}
 .rgroup .rbtn.ico{width:42px}
 .rgroup .rbtn.lab{padding:0 14px}
@@ -1021,9 +1020,7 @@ main{padding-top:var(--hh,112px);scroll-padding-top:var(--hh,112px)}
   border-color:color-mix(in srgb,var(--red) 80%,#000);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 6px 18px color-mix(in srgb,var(--red) 26%,transparent);
   color:#fff}
-/* Room under the attachments for the glass to float in, so a file chip is
-   never the thing it covers. */
-#rAtts{padding:8px 16px calc(max(var(--sab),14px) + 66px)}
+#rAtts{padding:8px 16px 0}
 
 /* A draft's delete, out of hiding. It was a grey glyph beside the date that
    read as decoration; it is a red disc now, the same red as every other
@@ -1064,12 +1061,11 @@ main{padding-top:var(--hh,112px);scroll-padding-top:var(--hh,112px)}
 
 @media (max-width:899px){
   #composeSheet{left:0;right:0;border-radius:0}
-  .rbar{gap:8px;padding:0 12px max(var(--sab),12px)}
+  .rbar{gap:8px;padding:8px 12px max(var(--sab),12px)}
   /* On a phone the contextual three live behind "⋯" with everything else. */
   .rgroup.ctx{display:none}
 }
 @media (min-width:900px){
-  #reader{position:relative}
   .sheet{left:auto;right:10px;top:10px;bottom:10px;width:min(600px,52vw);max-height:none;
     border-radius:26px;padding:22px 24px calc(var(--sab) + 20px);
     transform:translateX(calc(100% + 64px))}
@@ -1227,7 +1223,10 @@ main{padding-top:var(--hh,112px);scroll-padding-top:var(--hh,112px)}
       <button class="rbtn ico overflowable" id="rForward" aria-label="Forward" title="Forward (f)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 8 19 12l-4.5 4"/><path d="M19 12h-7a6 6 0 0 0-6 6v1"/></svg>
       </button>
-      <button class="rbtn ico overflowable" id="rReplyAI" aria-label="Reply all, written for you" title="Reply all, with the reply already written (Shift+A)">
+      <button class="rbtn ico overflowable" id="rReplyOneAI" aria-label="Reply, written for you" title="Reply to the sender, with the reply already written (Shift+R)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 9 4 13l4.5 4"/><path d="M4.5 13h8a6 6 0 0 1 6 6v.5"/><path d="m19 3.4.8 1.6 1.6.8-1.6.8-.8 1.6-.8-1.6-1.6-.8 1.6-.8z" fill="currentColor"/></svg>
+    </button>
+    <button class="rbtn ico overflowable" id="rReplyAI" aria-label="Reply all, written for you" title="Reply all, with the reply already written (Shift+A)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9 2.5 13l4.5 4"/><path d="M12 9l-4.5 4 4.5 4"/><path d="M7.5 13h7a6 6 0 0 1 6 6v.5"/><path d="m19 3.4.8 1.6 1.6.8-1.6.8-.8 1.6-.8-1.6-1.6-.8 1.6-.8z" fill="currentColor"/></svg>
       </button>
       <button class="rbtn ico overflowable" id="rReplyAll" aria-label="Reply all" title="Reply all (a)">
@@ -1681,7 +1680,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v41";
+const CLIENT = "v42";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2311,7 +2310,7 @@ function frameDoc(body) {
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <base target="_blank">
-<style>body{margin:14px;padding-bottom:84px;font:15px/1.5 -apple-system,Segoe UI,system-ui,sans-serif;color:#111;background:#fff;word-break:break-word}
+<style>body{margin:14px;font:15px/1.5 -apple-system,Segoe UI,system-ui,sans-serif;color:#111;background:#fff;word-break:break-word}
 img{max-width:100%;height:auto}a{color:#1a63c9}</style></head><body>${body}</body></html>`;
 }
 
@@ -2642,10 +2641,14 @@ addEventListener("keydown", (e) => {
       e.preventDefault();
       startForward();
       break;
-    // Shift+A: the same reply, already written.
+    // Shift+A and Shift+R: the same two replies, already written.
     case "A":
       e.preventDefault();
-      replyWritten();
+      replyWritten(true);
+      break;
+    case "R":
+      e.preventDefault();
+      replyWritten(false);
       break;
   }
 });
@@ -3261,7 +3264,7 @@ $("#rReply").addEventListener("click", () => startReply(false));
 $("#rReplyAll").addEventListener("click", () => startReply(true));
 
 /**
- * Reply all, with the reply already written.
+ * A reply with the reply already written — to everyone, or to the sender.
  *
  * The same two things you would have done by hand — open the reply, press
  * Draft — with nothing in between, because for the mail this is for there is
@@ -3271,11 +3274,15 @@ $("#rReplyAll").addEventListener("click", () => startReply(true));
  * it. When there is something to say first, Reply all and then Draft is still
  * the way round: what you type above the quote is what the reply is built on.
  */
-async function replyWritten() {
-  startReply(true);
+async function replyWritten(all = true) {
+  startReply(all);
   await draftReply($("#aiDraft"));
 }
-$("#rReplyAI").addEventListener("click", replyWritten);
+// Arrow functions, not the bare handler: a listener is handed the click event,
+// and an event is truthy, so passing replyWritten itself would answer everyone
+// from the button meant for the sender alone.
+$("#rReplyAI").addEventListener("click", () => replyWritten(true));
+$("#rReplyOneAI").addEventListener("click", () => replyWritten(false));
 
 /* ── on paper ── */
 
@@ -5289,7 +5296,7 @@ $("#openBlocked2").addEventListener("click", () => $("#openBlocked").click());
    them, so a label and an icon are decided in one place. */
 const OVERFLOW_IDS = [
   "#rImages", "#rUnsub", "#rNotSpam",
-  "#rUnread", "#rMove", "#rPdf", "#rForward", "#rReplyAI", "#rReplyAll",
+  "#rUnread", "#rMove", "#rPdf", "#rForward", "#rReplyOneAI", "#rReplyAI", "#rReplyAll",
 ];
 function renderMoreSheet() {
   $("#moreList").innerHTML = OVERFLOW_IDS.map((id) => {
