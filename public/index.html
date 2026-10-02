@@ -1012,6 +1012,55 @@ main{padding-top:var(--hh,112px);scroll-padding-top:var(--hh,112px)}
   background:linear-gradient(180deg,rgba(255,255,255,.3),rgba(255,255,255,0) 60%),var(--acc);
   border:1px solid color-mix(in srgb,var(--acc) 80%,#000);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 8px 22px color-mix(in srgb,var(--acc) 32%,transparent)}
+/* Every reply on the right. The wrapper takes the spare width, so Reply no
+   longer needs a margin of its own to reach the edge. */
+.rreplies{display:flex;align-items:center;gap:8px;margin-left:auto;flex:none}
+/* When the bar is short of room, the labels go before anything is cut: AI
+   Reply and the contextual buttons fall back to their icons, which keep
+   their titles. Measured on the bar itself rather than the window, because
+   the list beside it is resizable — and on the bar rather than the reader,
+   so nothing about the frame the message is drawn in changes. The
+   contextual capsule never shrinks: "Unsubscribe" cut to "U" is worse than
+   no label at all. */
+.rbar{container-type:inline-size}
+.rgroup.ctx{flex:none}
+@container (max-width:860px){
+  #rReplyOneAI{width:50px;padding:0}
+  #rReplyOneAI .lbl,.rgroup.ctx .lbl{display:none}
+  .rgroup.ctx .rbtn.lab{width:42px;padding:0}
+}
+.rreplies .rbtn.acc{margin-left:0}
+/* The written reply: a button you can read rather than one more glyph in the
+   capsule. Tinted, not solid — Reply stays the strong one. */
+#rReplyOneAI{height:50px;padding:0 18px;border-radius:999px;gap:8px;font-weight:600;color:var(--acc);
+  background:linear-gradient(180deg,var(--g-sheen),transparent 58%),color-mix(in srgb,var(--acc) 13%,var(--g-fill));
+  border:1px solid color-mix(in srgb,var(--acc) 30%,transparent)}
+@media (hover:hover) and (pointer:fine){
+  #rReplyOneAI:hover{background:linear-gradient(180deg,var(--g-sheen),transparent 58%),
+    color-mix(in srgb,var(--acc) 22%,var(--g-fill))}
+}
+
+/* No backdrop blur anywhere near the message. The frame the message is drawn
+   in is sandboxed, and Chrome draws a sandboxed frame in a process of its
+   own; with blurred glass composited around it, some machines simply never
+   drew the message — subject at the top, white underneath — and drew the
+   Unsubscribe capsule washed out, as if under a sheet of frosting. The blur
+   bought nothing here anyway: the capsules sit on a plain strip, the close
+   button on a plain header, and a blur of a flat colour is the flat colour.
+   Shadows are kept short, so none of them reaches into the frame either.
+   The toast goes solid for the same reason: it floats over the message. */
+#reader .iconbtn,#reader .tscope,.rbar .rgroup,.rbar .rbtn,#toast{
+  -webkit-backdrop-filter:none;backdrop-filter:none}
+#reader .iconbtn,#reader .tscope{box-shadow:inset 0 1px 0 var(--g-rim),0 1px 2px rgba(0,0,0,.06)}
+.rbar .rgroup,#rReplyOneAI{box-shadow:inset 0 1px 0 var(--g-rim),0 1px 2px rgba(0,0,0,.06),0 3px 8px rgba(0,0,0,.06)}
+.rbar .rbtn.acc{box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 3px 8px color-mix(in srgb,var(--acc) 26%,transparent)}
+#toast{background:color-mix(in srgb,var(--sheet) 97%,transparent)}
+/* The list's scroll edge keeps its fade but loses the masked blur behind it:
+   a blur behind a mask is the most expensive thing a compositor is asked to
+   do, and the fade alone carries the effect. */
+header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-image:none;mask-image:none;
+  background:linear-gradient(to bottom,var(--bg) 0%,color-mix(in srgb,var(--bg) 90%,transparent) 72%,transparent 100%)}
+
 /* A destructive confirm stays red. The dialog's button carries .acc and
    .danger at once, and the glass .acc above would otherwise win by coming
    later — which turned "Delete these 3 drafts?" into a friendly blue Yes. */
@@ -1062,8 +1111,11 @@ main{padding-top:var(--hh,112px);scroll-padding-top:var(--hh,112px)}
 @media (max-width:899px){
   #composeSheet{left:0;right:0;border-radius:0}
   .rbar{gap:8px;padding:8px 12px max(var(--sab),12px)}
-  /* On a phone the contextual three live behind "⋯" with everything else. */
-  .rgroup.ctx{display:none}
+  /* On a phone the contextual three live behind "⋯" with everything else,
+     and so do Forward and the reply-alls; the written reply keeps its place,
+     as an icon. */
+  .rgroup.ctx,.rgroup.morereplies{display:none}
+  #rReplyOneAI{width:50px;padding:0}
 }
 @media (min-width:900px){
   .sheet{left:auto;right:10px;top:10px;bottom:10px;width:min(600px,52vw);max-height:none;
@@ -1195,62 +1247,67 @@ main{padding-top:var(--hh,112px);scroll-padding-top:var(--hh,112px)}
   </div>
   <div class="attbar" id="rAtts"></div>
   <div class="rbar">
-    <!-- One capsule of glass for what you do to the message, Delete first and
-         in red, then the rest. `.overflowable` is what folds behind "⋯" below
-         900px; what stays on a phone — Delete, Archive, Star — keeps its place,
-         so the thing you reach for blind is where you left it. -->
+    <!-- What you do to the message, on the left, Delete first and in red.
+         `.overflowable` folds behind "⋯" below 900px; Delete, Archive and
+         Star stay, so the thing you reach for blind is where you left it. -->
     <div class="rgroup" role="group" aria-label="Message actions">
       <!-- `#` is bound to Delete. It used to be printed on the title and
            pressed by nobody, because there was nothing behind it. -->
       <button class="rbtn ico" id="rDelete" aria-label="Delete" title="Delete (#)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5.2A1.2 1.2 0 0 1 10.2 4h3.6A1.2 1.2 0 0 1 15 5.2V7"/><path d="M6 7v12a1.5 1.5 0 0 0 1.5 1.5h9A1.5 1.5 0 0 0 18 19V7"/><path d="M10 11v6M14 11v6"/></svg>
-      </button>
+        </button>
       <button class="rbtn ico" id="rArchive" aria-label="Archive" title="Archive (e)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1.4"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9"/><path d="M10 13h4"/></svg>
-      </button>
+        </button>
       <button class="rbtn ico" id="rStar" aria-label="Star" aria-pressed="false" title="Star (s)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3.6 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.5 9.8l5.9-.9Z"/></svg>
-      </button>
+        </button>
       <button class="rbtn ico overflowable" id="rUnread" aria-label="Mark unread" title="Mark unread (u)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 7 8.5 6 8.5-6"/></svg>
-      </button>
+        </button>
       <button class="rbtn ico overflowable" id="rMove" aria-label="Move to folder" title="Move (v)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 3 18Z"/></svg>
-      </button>
+        </button>
       <button class="rbtn ico overflowable" id="rPdf" aria-label="Save as PDF" title="Save as PDF (p)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M12 11.5v5"/><path d="m9.8 14.5 2.2 2.2 2.2-2.2"/></svg>
-      </button>
-      <button class="rbtn ico overflowable" id="rForward" aria-label="Forward" title="Forward (f)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 8 19 12l-4.5 4"/><path d="M19 12h-7a6 6 0 0 0-6 6v1"/></svg>
-      </button>
-      <button class="rbtn ico overflowable" id="rReplyOneAI" aria-label="Reply, written for you" title="Reply to the sender, with the reply already written (Shift+R)">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 9 4 13l4.5 4"/><path d="M4.5 13h8a6 6 0 0 1 6 6v.5"/><path d="m19 3.4.8 1.6 1.6.8-1.6.8-.8 1.6-.8-1.6-1.6-.8 1.6-.8z" fill="currentColor"/></svg>
-    </button>
-    <button class="rbtn ico overflowable" id="rReplyAI" aria-label="Reply all, written for you" title="Reply all, with the reply already written (Shift+A)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9 2.5 13l4.5 4"/><path d="M12 9l-4.5 4 4.5 4"/><path d="M7.5 13h7a6 6 0 0 1 6 6v.5"/><path d="m19 3.4.8 1.6 1.6.8-1.6.8-.8 1.6-.8-1.6-1.6-.8 1.6-.8z" fill="currentColor"/></svg>
-      </button>
-      <button class="rbtn ico overflowable" id="rReplyAll" aria-label="Reply all" title="Reply all (a)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 8 3 12l4.5 4"/><path d="M12.5 8 8 12l4.5 4"/><path d="M8 12h7a6 6 0 0 1 6 6v1"/></svg>
-      </button>
+        </button>
       <button class="rbtn ico" id="rMore" aria-haspopup="dialog" aria-expanded="false" aria-label="More actions" title="More actions">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="5" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="19" cy="12" r="1.4" fill="currentColor"/></svg>
-      </button>
+        </button>
     </div>
     <!-- About this particular message, and only there when it applies. -->
     <div class="rgroup ctx" role="group" aria-label="About this message">
       <button class="rbtn lab overflowable" id="rImages" hidden>
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m5 18 5-5 3.5 3.5L17 13l2.5 2.5"/></svg><span class="lbl">Images</span>
-      </button>
+        </button>
       <button class="rbtn lab overflowable" id="rUnsub" hidden aria-label="Unsubscribe" title="Unsubscribe from this sender">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.5 12.5V9a6.5 6.5 0 0 0-13 0c0 6-2.5 7.5-2.5 7.5h11"/><path d="M10.3 20a2 2 0 0 0 3.4 0"/><path d="M16 18h6"/></svg><span class="lbl">Unsubscribe</span>
-      </button>
+        </button>
       <button class="rbtn lab overflowable" id="rNotSpam" hidden aria-label="Not spam" title="Not spam — move it to the Inbox">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 5 6v5.6c0 4 2.9 7.4 7 8.4 4.1-1 7-4.4 7-8.4V6Z"/><path d="m8.8 12 2.3 2.3 4.1-4.6"/></svg><span class="lbl">Not spam</span>
-      </button>
+        </button>
     </div>
-    <button class="rbtn acc" id="rReply">
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 9 4 13.5 9.5 18"/><path d="M4 13.5h9a7 7 0 0 0 7-7V5"/></svg>Reply
-    </button>
+    <!-- Every way of answering, together on the right: forward and the two
+         reply-alls in one capsule, then the written reply, then Reply. -->
+    <div class="rreplies" role="group" aria-label="Reply">
+      <div class="rgroup morereplies">
+        <button class="rbtn ico overflowable" id="rForward" aria-label="Forward" title="Forward (f)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 8 19 12l-4.5 4"/><path d="M19 12h-7a6 6 0 0 0-6 6v1"/></svg>
+          </button>
+        <button class="rbtn ico overflowable" id="rReplyAll" aria-label="Reply all" title="Reply all (a)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 8 3 12l4.5 4"/><path d="M12.5 8 8 12l4.5 4"/><path d="M8 12h7a6 6 0 0 1 6 6v1"/></svg>
+          </button>
+        <button class="rbtn ico overflowable" id="rReplyAI" aria-label="Reply all, written for you" title="Reply all, with the reply already written (Shift+A)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9 2.5 13l4.5 4"/><path d="M12 9l-4.5 4 4.5 4"/><path d="M7.5 13h7a6 6 0 0 1 6 6v.5"/><path d="m19 3.4.8 1.6 1.6.8-1.6.8-.8 1.6-.8-1.6-1.6-.8 1.6-.8z" fill="currentColor"/></svg>
+          </button>
+      </div>
+      <button class="rbtn aireply" id="rReplyOneAI" aria-label="Reply, written for you" title="Reply to the sender, with the reply already written (Shift+R)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 9 4 13l4.5 4"/><path d="M4.5 13h8a6 6 0 0 1 6 6v.5"/><path d="m19 3.4.8 1.6 1.6.8-1.6.8-.8 1.6-.8-1.6-1.6-.8 1.6-.8z" fill="currentColor"/></svg><span class="lbl">AI Reply</span>
+        </button>
+      <button class="rbtn acc" id="rReply">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 9 4 13.5 9.5 18"/><path d="M4 13.5h9a7 7 0 0 0 7-7V5"/></svg>Reply
+        </button>
+    </div>
   </div>
 </div>
 
@@ -1680,7 +1737,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v42";
+const CLIENT = "v43";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2313,6 +2370,22 @@ function frameDoc(body) {
 <style>body{margin:14px;font:15px/1.5 -apple-system,Segoe UI,system-ui,sans-serif;color:#111;background:#fff;word-break:break-word}
 img{max-width:100%;height:auto}a{color:#1a63c9}</style></head><body>${body}</body></html>`;
 }
+
+/* A second chance at a paint Chrome sometimes skips.
+
+   The message is drawn in a sandboxed frame, which Chrome renders in a process
+   of its own, and on some machines it loaded the message and then never drew
+   it: subject at the top, white underneath, until something else on the page
+   moved. Hiding the frame for a frame after every load and showing it again
+   asks for that paint a second time. Nothing is visible in between — the
+   frame has only just been given its content — and it costs one frame. This
+   is a safety net, not the fix: the fix is in the stylesheet, where no blur
+   and no shadow is allowed to reach the frame. */
+$("#rframe").addEventListener("load", () => {
+  const f = $("#rframe");
+  f.style.visibility = "hidden";
+  requestAnimationFrame(() => requestAnimationFrame(() => { f.style.visibility = ""; }));
+});
 
 /**
  * Paints the open message, under whatever the image setting currently is.
@@ -5296,7 +5369,7 @@ $("#openBlocked2").addEventListener("click", () => $("#openBlocked").click());
    them, so a label and an icon are decided in one place. */
 const OVERFLOW_IDS = [
   "#rImages", "#rUnsub", "#rNotSpam",
-  "#rUnread", "#rMove", "#rPdf", "#rForward", "#rReplyOneAI", "#rReplyAI", "#rReplyAll",
+  "#rUnread", "#rMove", "#rPdf", "#rForward", "#rReplyAI", "#rReplyAll",
 ];
 function renderMoreSheet() {
   $("#moreList").innerHTML = OVERFLOW_IDS.map((id) => {
