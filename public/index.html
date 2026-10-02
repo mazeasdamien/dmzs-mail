@@ -284,7 +284,7 @@ button.who{cursor:pointer}
 /* flex:1 rather than height:100%: a percentage height needs a resolved height
    on the parent, and when that fails the frame collapses to nothing and the
    message reads as blank white space. */
-#rframe{flex:1;width:100%;min-height:0;border:0;display:block;background:#fff}
+#rframe{flex:1;width:100%;min-height:0;border:0;display:block;background:#fff;box-sizing:border-box}
 /* Where a message is laid out for paper. Present but not visible: a frame
    hidden with display:none has nothing to print, and one that is merely
    transparent and 1px does. */
@@ -1746,7 +1746,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v44";
+const CLIENT = "v45";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2380,21 +2380,48 @@ function frameDoc(body) {
 img{max-width:100%;height:auto}a{color:#1a63c9}</style></head><body>${body}</body></html>`;
 }
 
-/* A second chance at a paint Chrome sometimes skips.
-
-   The message is drawn in a sandboxed frame, which Chrome renders in a process
-   of its own, and on some machines it loaded the message and then never drew
-   it: subject at the top, white underneath, until something else on the page
-   moved. Hiding the frame for a frame after every load and showing it again
-   asks for that paint a second time. Nothing is visible in between — the
-   frame has only just been given its content — and it costs one frame. This
-   is a safety net, not the fix: the fix is in the stylesheet, where no blur
-   and no shadow is allowed to reach the frame. */
-$("#rframe").addEventListener("load", () => {
-  const f = $("#rframe");
-  f.style.visibility = "hidden";
-  requestAnimationFrame(() => requestAnimationFrame(() => { f.style.visibility = ""; }));
-});
+/**
+ * Puts a document in the message pane — in a new frame, every time.
+ *
+ * The message is drawn in a sandboxed frame with no origin of its own, which
+ * Chrome renders in a separate process and shows through a surface the
+ * parent's compositor is handed. Navigating that frame to the next message
+ * reuses the surface, and on the machine this app is used on the handoff
+ * sometimes never happened: the new document loaded, laid out and painted in
+ * its process, and the pane kept showing the old surface — white, because
+ * closing the reader blanks it — until anything at all made the parent
+ * recompose. Subject at the top, nothing underneath, for some messages and
+ * not others, and never in headless Chrome, which has no GPU surface to get
+ * stuck on.
+ *
+ * So the frame is never navigated. Each document gets a fresh element, which
+ * gets a fresh surface, and the old one is thrown away with whatever it was
+ * showing. And because the first paint of a fresh surface is the one that
+ * was being lost, the frame is also nudged after the child has had time to
+ * paint: one pixel of padding on, then off, at three points in the first
+ * second and a half. A resize is the one thing a child frame cannot ignore —
+ * it has to produce a new picture at the new size and the parent has to show
+ * it — and a pixel of padding on a white frame is nothing anyone can see.
+ */
+function showInFrame(doc) {
+  const old = $("#rframe");
+  const f = document.createElement("iframe");
+  f.id = "rframe";
+  f.title = "Message body";
+  f.setAttribute("sandbox", "allow-popups allow-popups-to-escape-sandbox");
+  f.setAttribute("referrerpolicy", "no-referrer");
+  f.srcdoc = doc;
+  old.replaceWith(f);
+  if (!doc) return;
+  for (const ms of [120, 450, 1500]) {
+    setTimeout(() => {
+      // Already replaced by the next document: nothing to nudge.
+      if (f !== $("#rframe") || !f.isConnected) return;
+      f.style.paddingBottom = "1px";
+      setTimeout(() => { f.style.paddingBottom = ""; }, 40);
+    }, ms);
+  }
+}
 
 /**
  * Paints the open message, under whatever the image setting currently is.
@@ -2422,7 +2449,7 @@ function renderBody() {
     : current.body.html || "";
   // Render immediately, then swap in inline images once fetched: a message
   // should never wait on its pictures to become readable.
-  $("#rframe").srcdoc = frameDoc(html);
+  showInFrame(frameDoc(html));
   // Kept, because this is what a reply quotes. The stored body still says
   // src="cid:…", which points at a part inside the original message and means
   // nothing outside it: quoting that put a broken image at the end of every
@@ -2430,7 +2457,7 @@ function renderBody() {
   current.body.shown = html;
   resolveInlineImages(html, m.id, current.body.attachments || []).then((withImages) => {
     if (withImages !== html && current && current.message.id === m.id) {
-      $("#rframe").srcdoc = frameDoc(withImages);
+      showInFrame(frameDoc(withImages));
       current.body.shown = withImages;
     }
   });
@@ -2621,7 +2648,7 @@ function closeReader() {
   renderScope();
   $("#rSubj").textContent = "—";
   $("#rMeta").textContent = "—";
-  $("#rframe").srcdoc = "";
+  showInFrame("");
   // All three belong to the message that was open, not to the pane.
   $("#rUnsub").hidden = true;
   $("#rImages").hidden = true;
