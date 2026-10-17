@@ -293,6 +293,21 @@ export function encodeHeader(s) {
 }
 
 /**
+ * A From: value with a display name, when there is one worth showing.
+ *
+ * Quoted when it holds anything RFC 5322 treats as structure (a comma would
+ * otherwise split one sender into two), encoded when it is not ASCII, and
+ * left off entirely when it is empty or just the address again.
+ */
+export function formatFrom(name, email) {
+  const n = String(name ?? "").replace(/[\r\n"<>]/g, "").trim();
+  const e = String(email ?? "").trim();
+  if (!n || n.toLowerCase() === e.toLowerCase()) return e;
+  if (needsEncoding(n)) return `${encodeHeader(n)} <${e}>`;
+  return /[()<>\[\]:;@\\,."]/.test(n) ? `"${n}" <${e}>` : `${n} <${e}>`;
+}
+
+/**
  * Folds a header line at 78 columns, breaking only at a space (after the
  * comma between two addresses, between encoded words, between References
  * ids). A long To: or References: line went out whole, and some servers

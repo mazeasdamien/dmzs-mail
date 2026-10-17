@@ -39,6 +39,7 @@ import {
   htmlToText,
   parseAddress,
   parseAddressList,
+  formatFrom,
   decodeWords,
   sanitizeHtml,
   textToHtml,
@@ -124,7 +125,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * edit, and the page, this file and the service worker all agree on it or the
  * deploy never starts.
  */
-const CLIENT_SHELL = "v54";
+const CLIENT_SHELL = "v55";
 
 /**
  * IMAP system flags, spelled once.
@@ -1629,6 +1630,40 @@ async function accountById(env, id) {
   return env.DB.prepare("SELECT * FROM accounts WHERE id=?").bind(id).first();
 }
 
+/** The other addresses an account sends from: iCloud aliases, a custom domain. */
+async function aliasesOf(env, acct) {
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key=?").bind(`aliases_${acct.id}`).first();
+  try {
+    return row ? JSON.parse(row.value) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Who a message goes out as: the address, and the From: header that names it.
+ *
+ * Every reply used to leave from the account's main address — including the
+ * reply to mail that arrived at an alias or a Hide My Email address, which
+ * handed the sender the very address the alias existed to keep from them.
+ * An address is accepted if it is the account's own, one of its listed
+ * aliases, or the address the message being answered was sent to.
+ * Anything else falls back to the main address rather than letting a request
+ * pick an arbitrary sender.
+ */
+async function senderFor(env, acct, wanted, orig) {
+  const want = String(wanted || "").trim().toLowerCase();
+  let address = acct.email;
+  if (want && want !== acct.email.toLowerCase()) {
+    const own = (await aliasesOf(env, acct)).map((a) => a.toLowerCase());
+    const received = orig
+      ? parseAddressList(`${orig.to_line || ""}, ${orig.cc_line || ""}`).map((a) => a.email)
+      : [];
+    if (own.includes(want) || received.includes(want)) address = want;
+  }
+  return { address, header: formatFrom(acct.label, address) };
+}
+
 /**
  * The key the writing assistant runs on: the one typed into the app first,
  * the deploy-time secret second.
@@ -1670,9 +1705,32 @@ async function handleApi(request, env, path, ctx, session) {
       ),
     ]);
     const unread = Object.fromEntries((u.results ?? []).map((r) => [r.account_id, r.n]));
+    const rows = a.results ?? [];
+    const aliases = await Promise.all(rows.map((r) => aliasesOf(env, r)));
     return json({
-      accounts: (a.results ?? []).map((r) => ({ ...r, unread: unread[r.id] || 0 })),
+      accounts: rows.map((r, i) => ({ ...r, unread: unread[r.id] || 0, aliases: aliases[i] })),
     });
+  }
+
+  // POST /api/accounts/:id/identity { name, aliases } — the name on the From:
+  // line, and the other addresses this account may send from.
+  const acctId = path.match(/^\/api\/accounts\/([a-f0-9]{8})\/identity$/);
+  if (acctId && request.method === "POST") {
+    const acct = await accountById(env, acctId[1]);
+    if (!acct) return json({ error: "Unknown account" }, 404);
+    const b = await request.json().catch(() => ({}));
+    const name = String(b.name ?? "").replace(/[\r\n"<>]/g, "").trim().slice(0, 80);
+    const list = parseAddressList(String(Array.isArray(b.aliases) ? b.aliases.join(",") : b.aliases || ""))
+      .map((x) => x.email)
+      .filter((e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) && e !== acct.email.toLowerCase());
+    const aliases = [...new Set(list)].slice(0, 20);
+    await env.DB.batch([
+      env.DB.prepare("UPDATE accounts SET label=? WHERE id=?").bind(name || acct.email, acct.id),
+      env.DB.prepare(
+        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+      ).bind(`aliases_${acct.id}`, JSON.stringify(aliases)),
+    ]);
+    return json({ ok: true, name: name || acct.email, aliases });
   }
 
   // POST /api/accounts/icloud { email, password }
@@ -3071,8 +3129,9 @@ No invented facts, no commitment to anything the brief does not cover, and no br
     // its next save supersedes, and a failed append is exactly when a stale
     // handle would start leaving duplicates behind.
     const messageId = newMessageId(acct.email);
+    const sender = await senderFor(env, acct, b.from, orig);
     const raw = buildRfc822({
-      from: acct.email,
+      from: sender.header,
       to: to.map((a) => a.email).join(", "),
       cc: cc.map((a) => a.email).join(", ") || undefined,
       // A draft keeps its blind recipients in the message, which is how they
@@ -3203,8 +3262,9 @@ No invented facts, no commitment to anything the brief does not cover, and no br
         // Built once, then used twice: this is both what goes out over SMTP
         // and what is appended to Sent, so the copy you keep is the message
         // that was actually delivered rather than a re-rendering of it.
+        const sender = await senderFor(env, acct, b.from, orig);
         const raw = buildRfc822({
-          from: acct.email,
+          from: sender.header,
           to: to.map((a) => a.email).join(", "),
           cc: cc.map((a) => a.email).join(", ") || undefined,
           subject,
@@ -3222,7 +3282,7 @@ No invented facts, no commitment to anything the brief does not cover, and no br
         await smtpSend({
           user: acct.email,
           pass,
-          from: acct.email,
+          from: sender.address,
           // Once each: someone on both To and Cc is one recipient, not two
           // RCPT TOs and possibly two copies.
           to: [...new Set([...to, ...cc, ...bcc].map((a) => a.email))],
@@ -3457,23 +3517,25 @@ const ACTIVATION_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf
 <meta name="color-scheme" content="dark light">
 <title>Activate this device</title>
 <style>
+ :root{--bg:#ffffff;--t1:#111114;--t2:#5b5b63;--line:#d9d9de;--field:#ffffff;--bad:#c62828}
+ @media (prefers-color-scheme: dark){:root{--bg:#09090b;--t1:#f4f4f5;--t2:#8b8b93;--line:#27272a;--field:#111114;--bad:#f87171}}
  html,body{height:100%;margin:0}
- body{background:#09090b;color:#8b8b93;display:flex;align-items:center;justify-content:center;
+ body{background:var(--bg);color:var(--t2);display:flex;align-items:center;justify-content:center;
       font:400 15px/1.6 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;padding:24px}
  .card{max-width:360px;width:100%}
- strong{display:block;color:#f4f4f5;font-size:17px;font-weight:600;margin-bottom:6px}
+ strong{display:block;color:var(--t1);font-size:17px;font-weight:600;margin-bottom:6px}
  p{margin:0 0 16px}
  form{display:flex;gap:8px}
- input,button{font:inherit;border-radius:10px;border:1px solid #27272a;background:#111114;color:#f4f4f5}
+ input,button{font:inherit;font-size:16px;border-radius:10px;border:1px solid var(--line);background:var(--field);color:var(--t1)}
  input{flex:1;padding:10px 12px;min-width:0}
- button{padding:10px 16px;background:#3f6df6;border-color:#3f6df6;color:#fff;cursor:pointer}
+ button{padding:10px 16px;background:#1f6fd0;border-color:#1f6fd0;color:#fff;cursor:pointer}
  #msg{margin:12px 0 0;min-height:1.4em}
- #msg[data-bad="1"]{color:#f87171}
+ #msg[data-bad="1"]{color:var(--bad)}
 </style></head>
 <body><div class="card">
 <strong>Activate this device</strong>
-<p>Enter the bootstrap key for this deployment.</p>
-<form id="f" autocomplete="off"><input id="k" name="k" type="password" placeholder="Bootstrap key" required>
+<p>Paste the activation key you were given when this mailbox was set up. Each phone or computer is activated once, and stays signed in.</p>
+<form id="f" autocomplete="off"><input id="k" name="k" type="password" placeholder="Activation key" aria-label="Activation key" required>
 <button type="submit">Activate</button></form>
 <p id="msg" role="status"></p>
 </div>

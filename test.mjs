@@ -527,8 +527,8 @@ function clientFns(names, globals = {}) {
 console.log("\n-- client : adresses d'une reponse ---------");
 {
   const me = "moi@x.fr";
-  const { addressesIn, replyTargets } = clientFns(["addressesIn", "replyTargets"], {
-    acctById: () => ({ email: me }),
+  const { addressesIn, replyTargets, replyFrom } = clientFns(["addressesIn", "identitiesOf", "replyFrom", "replyTargets"], {
+    acctById: () => ({ email: me, aliases: ["alias@x.fr"] }),
   });
   const msg = (from, to, cc) => ({ account_id: "a", from_email: from, to_line: to, cc_line: cc });
 
@@ -560,6 +560,33 @@ console.log("\n-- client : adresses d'une reponse ---------");
     { to: ["claire@z.fr"], cc: [] },
     "rien en To : le premier du Cc est promu"
   );
+
+  // Répondre depuis l'adresse qui a reçu le message.
+  eq(replyFrom(msg("jean@y.fr", "alias@x.fr", "")), "alias@x.fr", "reçu sur un alias : on répond depuis l'alias");
+  eq(replyFrom(msg("jean@y.fr", me, "")), "", "reçu sur l'adresse principale : rien à changer");
+  eq(replyFrom(msg("shop@y.fr", "rand-om.12@icloud.com", "")), "rand-om.12@icloud.com", "Hide My Email : on répond depuis lui");
+  eq(replyFrom(msg("shop@y.fr", "a@icloud.com, b@icloud.com", "")), "", "deux adresses Apple : on ne devine pas");
+  eq(
+    replyTargets(msg("jean@y.fr", "alias@x.fr", "claire@z.fr"), true),
+    { to: ["jean@y.fr"], cc: ["claire@z.fr"] },
+    "répondre à tous n'écrit à aucune de ses propres adresses"
+  );
+  eq(
+    replyTargets(msg("shop@y.fr", "rand-om.12@icloud.com", "claire@z.fr"), true),
+    { to: ["shop@y.fr"], cc: ["claire@z.fr"] },
+    "ni à l'adresse Hide My Email qui a reçu le message"
+  );
+}
+
+console.log("\n-- en-tête From : nom affiché --------------");
+{
+  const { formatFrom } = await import("./src/mime.js");
+  eq(formatFrom("", "d@x.fr"), "d@x.fr", "sans nom : l'adresse seule");
+  eq(formatFrom("d@x.fr", "d@x.fr"), "d@x.fr", "le nom qui répète l'adresse est omis");
+  eq(formatFrom("Damien", "d@x.fr"), "Damien <d@x.fr>", "nom simple");
+  eq(formatFrom("Mazeas, Damien", "d@x.fr"), '"Mazeas, Damien" <d@x.fr>', "une virgule impose les guillemets");
+  ok(/^=\?utf-8\?B\?.+\?= <d@x\.fr>$/.test(formatFrom("Éloïse", "d@x.fr")), "non-ASCII encodé");
+  eq(formatFrom('A"\r\nBcc: z@z.fr', "d@x.fr"), "ABcc: z@z.fr <d@x.fr>".replace("ABcc: z@z.fr", '"ABcc: z@z.fr"'), "ni guillemet ni saut de ligne ne passent");
 }
 
 /* Les deux bouts d'une même phrase, dans deux fonctions qui ne se voient pas :

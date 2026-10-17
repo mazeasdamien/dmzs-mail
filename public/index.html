@@ -1413,6 +1413,12 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
   </section>
 
   <section class="setsec" data-set="writing" role="tabpanel" aria-label="Writing" hidden>
+    <div class="sh-s">Your name</div>
+    <div class="field"><input id="idName" type="text" placeholder="As it appears on the From line" autocomplete="name" spellcheck="false" aria-label="Your name"></div>
+    <div class="sh-s" style="margin:10px 0 6px">Also send from</div>
+    <textarea class="field" id="idAliases" rows="2" placeholder="alias@icloud.com, you@your-domain.com" spellcheck="false" aria-label="Other addresses to send from" style="min-height:60px"></textarea>
+    <button class="ghost" id="idSave" style="width:100%;justify-content:center;min-height:34px">Save name and addresses</button>
+    <div class="sh-s" style="margin:6px 0 14px;font-size:12px">Your name goes on the From line instead of the bare address. The addresses are your iCloud aliases or custom-domain addresses; each becomes a From choice in the composer. A reply to mail that arrived at one of them &mdash; or at a Hide My Email address &mdash; goes out from that address, so the sender never learns your main one.</div>
     <div class="sh-s">Signature</div>
     <textarea class="field" id="sigText" rows="4" placeholder="Your name" spellcheck="false" style="min-height:96px"></textarea>
     <button class="ghost" id="sigSave" style="width:100%;justify-content:center;min-height:34px">Save the signature</button>
@@ -1835,7 +1841,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v54";
+const CLIENT = "v55";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -1914,6 +1920,7 @@ async function loadAccounts() {
   if (!composeAcct || !accounts.some((a) => a.id === composeAcct)) composeAcct = chosen || "";
 
   renderAccounts();
+  fillIdentity();
 }
 
 const acctById = (id) => accounts.find((a) => a.id === id);
@@ -3538,8 +3545,9 @@ const addressesIn = (line) =>
  */
 function replyTargets(msg, all) {
   const me = String((acctById(msg.account_id) || {}).email || "").toLowerCase();
+  const own = new Set([...identitiesOf(acctById(msg.account_id)), replyFrom(msg)].filter(Boolean));
   const from = String(msg.from_email || "").toLowerCase();
-  const mine = !!me && from === me;
+  const mine = !!me && own.has(from);
   const first = mine ? addressesIn(msg.to_line) : [from];
   const rest = all
     ? mine
@@ -3547,7 +3555,7 @@ function replyTargets(msg, all) {
       : [...addressesIn(msg.to_line), ...addressesIn(msg.cc_line)]
     : [];
   const seen = new Set();
-  const keep = (list) => list.filter((e) => e && e !== me && !seen.has(e) && seen.add(e));
+  const keep = (list) => list.filter((e) => e && !own.has(e) && !seen.has(e) && seen.add(e));
   const to = keep(first);
   const cc = keep(rest);
   // An empty To with a full Cc is that same bug from whichever side it
@@ -3719,6 +3727,9 @@ async function startForward() {
   openCompose({
     title: "Forward",
     account: m.account_id,
+    // Only a listed alias: a forward is not an answer to anyone, so the
+    // server has no message to check an unlisted address against.
+    from: identitiesOf(acctById(m.account_id)).includes(replyFrom(m)) ? replyFrom(m) : "",
     subject: /^\s*fwd?\s*:/i.test(m.subject || "") ? m.subject : `Fwd: ${m.subject || ""}`,
     html: forwardedBody(m, shown),
   });
@@ -3780,6 +3791,7 @@ function startReply(all) {
     title: all ? "Reply all" : "Reply",
     reply: m.id,
     account: m.account_id,
+    from: replyFrom(m),
     to: to.join(", "),
     cc: cc.join(", "),
     subject: /^re\s*:/i.test(m.subject || "") ? m.subject : `Re: ${m.subject || ""}`,
@@ -4149,6 +4161,7 @@ let draftRowId = "";
 function draftSnapshot() {
   return {
     account_id: composeAcct,
+    from: composeFrom || undefined,
     to: addrGet("#cTo", "#cToChips"),
     cc: addrGet("#cCc", "#cCcChips"),
     bcc: addrGet("#cBcc", "#cBccChips"),
@@ -4242,6 +4255,7 @@ function resumeKept(d) {
   openCompose({
     title: d.title || "Draft",
     account: d.account_id,
+    from: d.from,
     to: d.to,
     cc: d.cc,
     subject: d.subject,
@@ -4593,6 +4607,31 @@ $("#acctList").addEventListener("click", async (e) => {
 
 /* compose sheet */
 let composeAcct = "";
+/** The address this message goes out from; "" is the account's main one. */
+let composeFrom = "";
+
+/** Every address an account sends from, main one first. */
+const identitiesOf = (a) => (a ? [a.email, ...(a.aliases || [])].map((e) => String(e).toLowerCase()) : []);
+
+/**
+ * The address a reply should leave from.
+ *
+ * A listed alias the message was sent to, first. Failing that, when the
+ * main address is nowhere on it and it came from someone else, the one
+ * Apple address it was sent to: that is a Hide My Email address, or an alias
+ * not listed yet, and answering from the main address would give it away.
+ */
+function replyFrom(m) {
+  const a = acctById(m.account_id);
+  if (!a) return "";
+  const own = identitiesOf(a);
+  const got = [...addressesIn(m.to_line), ...addressesIn(m.cc_line)];
+  const alias = got.find((e) => own.includes(e) && e !== own[0]);
+  if (alias) return alias;
+  if (got.includes(own[0]) || String(m.from_email || "").toLowerCase() === own[0]) return "";
+  const apple = got.filter((e) => /@(icloud|me|mac)\.com$/.test(e));
+  return apple.length === 1 ? apple[0] : "";
+}
 let contacts = [];
 
 /** Addresses out of your own sent mail; loaded once, filtered as you type. */
@@ -4607,6 +4646,7 @@ async function loadContacts() {
 function openCompose(opts = {}) {
   replyTo = opts.reply || null;
   composeAcct = opts.account || composeAcct || (accounts[0] && accounts[0].id) || "";
+  composeFrom = String(opts.from || "").toLowerCase();
   $("#cTitle").textContent = opts.title || (replyTo ? "Reply" : "New message");
   addrSet("#cTo", "#cToChips", opts.to || "");
   addrSet("#cCc", "#cCcChips", opts.cc || "");
@@ -4646,14 +4686,21 @@ function openCompose(opts = {}) {
   setTimeout(() => (replyTo ? $("#cBody") : $("#cTo")).focus(), 80);
 }
 
-/** The mailboxes a message can be sent from. */
+/** The mailboxes a message can be sent from, and each one's other addresses. */
 function renderFromPicker() {
-  $("#cAccounts").innerHTML = accounts
-    .map(
-      (a) => `<button class="pill${a.id === composeAcct ? " on" : ""}" data-cacc="${a.id}">
-      <span class="dot" style="background:${acctColor(a)}"></span>${esc(a.email)}</button>`
-    )
-    .join("");
+  const a = acctById(composeAcct);
+  const own = identitiesOf(a);
+  // An address this reply was sent to that is not listed yet still gets a
+  // pill, so you can see what it will leave from and change it.
+  const extra = composeFrom && !own.includes(composeFrom) ? [composeFrom] : [];
+  const pills = accounts.map(
+    (x) => `<button class="pill${x.id === composeAcct && !composeFrom ? " on" : ""}" data-cacc="${x.id}">
+      <span class="dot" style="background:${acctColor(x)}"></span>${esc(x.email)}</button>`
+  );
+  for (const e of [...own.slice(1), ...extra]) {
+    pills.push(`<button class="pill${e === composeFrom ? " on" : ""}" data-cfrom="${esc(e)}">${esc(e)}</button>`);
+  }
+  $("#cAccounts").innerHTML = pills.join("");
 }
 
 /* Bold, Italic and the rest light up while the caret sits in text that has
@@ -5603,9 +5650,16 @@ $("#composeBtn").addEventListener("click", () => {
   openCompose();
 });
 $("#cAccounts").addEventListener("click", (e) => {
+  const f = e.target.closest("[data-cfrom]");
+  if (f) {
+    composeFrom = f.dataset.cfrom;
+    renderFromPicker();
+    return;
+  }
   const b = e.target.closest("[data-cacc]");
   if (!b) return;
   composeAcct = b.dataset.cacc;
+  composeFrom = "";
   renderFromPicker();
 });
 $("#cSend").addEventListener("click", async () => {
@@ -5622,6 +5676,7 @@ $("#cSend").addEventListener("click", async () => {
   }
   const body = {
     account_id: composeAcct,
+    from: composeFrom || undefined,
     to: addrGet("#cTo", "#cToChips"),
     cc: addrGet("#cCc", "#cCcChips") || undefined,
     bcc: addrGet("#cBcc", "#cBccChips") || undefined,
@@ -5791,6 +5846,7 @@ async function resumeDraft(id) {
   openCompose({
     title: "Draft",
     account: d.message.account_id,
+    from: d.message.from_email,
     to: d.message.to_line || "",
     cc: d.message.cc_line || "",
     subject: d.message.subject || "",
@@ -6111,6 +6167,31 @@ for (const s of document.querySelectorAll(".sheet")) {
 
 // Blocked senders is offered from two sections. One handler, two doors.
 $("#openBlocked2").addEventListener("click", () => $("#openBlocked").click());
+
+/** Name and aliases of the main account, unless you are typing in them. */
+function fillIdentity() {
+  const a = accounts[0];
+  if (!a || [$("#idName"), $("#idAliases")].includes(document.activeElement)) return;
+  $("#idName").value = a.label && a.label !== a.email ? a.label : "";
+  $("#idAliases").value = (a.aliases || []).join(", ");
+}
+$("#idSave").addEventListener("click", async (e) => {
+  const a = accounts[0];
+  if (!a) { toast("Connect an account first"); return; }
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const res = await api(`/api/accounts/${a.id}/identity`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: $("#idName").value, aliases: $("#idAliases").value }),
+  }).catch(() => null);
+  btn.disabled = false;
+  const d = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { toast(d.error || "Could not save"); return; }
+  $("#idAliases").value = (d.aliases || []).join(", ");
+  toast(d.aliases?.length ? `Saved — ${d.aliases.length} other address${d.aliases.length > 1 ? "es" : ""}` : "Saved");
+  loadAccounts();
+});
 $("#openKeys").addEventListener("click", () => {
   closeSheets();
   setTimeout(() => openSheet("#keysSheet"), 60);
