@@ -5,14 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "node scripts/check-client.mjs && node scripts/gen-schema.mjs --check && node test.mjs && wrangler deploy",
+    "deploy": "node scripts/check-client.mjs && node scripts/gen-schema.mjs --check && node test.mjs && npm run test:sync && wrangler deploy",
     "db:schema": "node scripts/gen-schema.mjs && wrangler d1 execute dmzs-mail --remote --file=./schema.sql",
     "db:schema:local": "node scripts/gen-schema.mjs && wrangler d1 execute dmzs-mail --local --file=./schema.sql",
     "secrets": "node scripts/secrets.mjs",
     "icons": "node scripts/make-icons.mjs",
     "tail": "wrangler tail",
     "test": "node test.mjs",
-    "check": "node scripts/check-client.mjs && node scripts/gen-schema.mjs --check && node test.mjs"
+    "test:sync": "node --no-warnings scripts/sync-harness/run.mjs",
+    "check": "node scripts/check-client.mjs && node scripts/gen-schema.mjs --check && node test.mjs && npm run test:sync"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"
