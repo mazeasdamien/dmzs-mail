@@ -85,6 +85,19 @@ CREATE TABLE IF NOT EXISTS contacts_added (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS outbox (
+  id          TEXT PRIMARY KEY,
+  account_id  TEXT NOT NULL,
+  at          INTEGER NOT NULL,             -- ms, when it goes
+  subject     TEXT NOT NULL DEFAULT '',
+  to_line     TEXT NOT NULL DEFAULT '',
+  tries       INTEGER NOT NULL DEFAULT 0,
+  last_error  TEXT,
+  created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_at ON outbox(at);
+
 CREATE TABLE IF NOT EXISTS blocked_senders (
   pattern    TEXT PRIMARY KEY,             -- lowercase: a whole address, or a bare domain
   n          INTEGER NOT NULL DEFAULT 0,   -- messages destroyed by this rule

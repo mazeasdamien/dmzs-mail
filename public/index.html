@@ -435,6 +435,11 @@ body.composing:not(.overlay) #scrim{opacity:0;pointer-events:none}
 .keys dt{white-space:nowrap}.keys dd{color:var(--t2)}
 .keys kbd{font:600 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;padding:3px 6px;border-radius:5px;
   border:1px solid var(--line-strong);background:var(--elev);color:var(--t1)}
+.obox{display:flex;flex-direction:column;gap:6px;padding:10px 0;border-bottom:1px solid var(--line)}
+.obox .grow{display:flex;flex-direction:column;gap:2px;min-width:0}
+.obox .grow span{font-size:var(--t-s,12px);color:var(--t2);overflow-wrap:anywhere}
+.obox .grow .bad{color:var(--red)}
+.obox .acts{display:flex;gap:6px;flex-wrap:wrap}
 .ftag{flex:none;font-size:11px;font-weight:600;color:var(--t2);background:var(--fill);
   border-radius:6px;padding:1px 6px;margin-left:6px;max-width:9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .suggest .em{color:var(--t3);font-size:12px}
@@ -1454,6 +1459,21 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
   </section>
 </div>
 
+<div class="sheet" id="laterSheet">
+  <div class="grab"></div>
+  <div class="sh-t">Send later</div>
+  <div class="sh-s">Sent by the server at that time, whether or not this app is open.</div>
+  <div id="laterList"></div>
+  <div class="field"><input id="laterAt" type="datetime-local" aria-label="Date and time to send"></div>
+  <button class="cta" id="laterGo">Schedule</button>
+</div>
+
+<div class="sheet" id="outboxSheet">
+  <div class="grab"></div>
+  <div class="sh-t">Scheduled</div>
+  <div id="outboxList"></div>
+</div>
+
 <div class="sheet" id="keysSheet" tabindex="-1">
   <div class="grab"></div>
   <div class="sh-t">Keyboard shortcuts</div>
@@ -1469,7 +1489,7 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
     <dt><kbd>R</kbd> <kbd>A</kbd></dt><dd>Reply, reply all &mdash; written by Claude</dd>
     <dt><kbd>p</kbd></dt><dd>Save as PDF</dd>
     <dt><kbd>z</kbd></dt><dd>Undo the last action</dd>
-    <dt><kbd>Ctrl</kbd> <kbd>Enter</kbd></dt><dd>Send</dd>
+    <dt><kbd>Ctrl</kbd> <kbd>Enter</kbd></dt><dd>Send (with five seconds to undo)</dd>
     <dt><kbd>Esc</kbd></dt><dd>Close, one layer at a time</dd>
     <dt><kbd>?</kbd></dt><dd>This list</dd>
   </dl>
@@ -1512,6 +1532,7 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
   </div>
   <div id="folderList"></div>
   <button class="ghost" id="folderNew">+ New folder</button>
+  <button class="ghost" id="openOutbox" hidden>Scheduled</button>
 </div>
 
 <div class="sheet" id="senderSheet">
@@ -1560,6 +1581,7 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
       <button class="iconbtn" id="cDiscard" aria-label="Discard draft" title="Throw this draft away">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
       </button>
+      <button class="ghost" id="cLater" title="Send later">Later</button>
       <button class="cta" id="cSend">Send</button>
     </div>
   </div>
@@ -1841,7 +1863,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v55";
+const CLIENT = "v56";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -4115,6 +4137,7 @@ function closeSheets() {
   //
   // Not awaited, and it does not need to be: keepDraft reads the composer
   // before it yields, so the fields being cleared next changes nothing.
+  cancelPendingSend();
   if (document.body.classList.contains("composing")) keepDraft();
   $("#scrim").classList.remove("up");
   document.body.classList.remove("composing", "picking", "overlay");
@@ -5662,22 +5685,24 @@ $("#cAccounts").addEventListener("click", (e) => {
   composeFrom = "";
   renderFromPicker();
 });
-$("#cSend").addEventListener("click", async () => {
+/** What the composer would send, or null with the reason shown under it. */
+function outgoing() {
   const err = $("#cErr");
   err.classList.remove("show");
   // The draft is kept as the editor wrote it, because it comes back into the
   // editor. What leaves has to stand on its own.
   const html = mailHtml();
   const text = $("#cBody").innerText.trim();
-  if (!text) {
-    err.textContent = "Nothing to send";
+  const to = addrGet("#cTo", "#cToChips");
+  if (!text || !to) {
+    err.textContent = !to ? "Nobody to send it to" : "Nothing to send";
     err.classList.add("show");
-    return;
+    return null;
   }
-  const body = {
+  return {
     account_id: composeAcct,
     from: composeFrom || undefined,
-    to: addrGet("#cTo", "#cToChips"),
+    to,
     cc: addrGet("#cCc", "#cCcChips") || undefined,
     bcc: addrGet("#cBcc", "#cBccChips") || undefined,
     attachments: attached.map(({ filename, type, data }) => ({ filename, type, data })),
@@ -5688,46 +5713,190 @@ $("#cSend").addEventListener("click", async () => {
     html,
     reply_to: replyTo || undefined,
   };
-  // The last chance to notice the wrong recipient. Listed rather than counted,
-  // and Bcc named too — a blind copy is the one that costs most to get wrong,
-  // and it is the one nothing else on screen shows.
-  const lines = [`To: ${body.to || "(nobody)"}`];
-  if (body.cc) lines.push(`Cc: ${body.cc}`);
-  if (body.bcc) lines.push(`Bcc: ${body.bcc}`);
-  if (attached.length) lines.push(`${attached.length} attachment${attached.length > 1 ? "s" : ""}`);
-  if (!(await ask(body.subject ? `Send “${body.subject}”?` : "Send this message?", lines.join(NL), { ok: "Send" }))) return;
+}
 
-  const btn = $("#cSend");
-  btn.disabled = true;
-  btn.textContent = "Sending…";
+/** Hands a message to the server — now, or at `at`. Leaves the composer on failure. */
+async function postSend(body, at) {
   const res = await api("/api/send", {
     method: "POST",
     headers: { "Content-Type": "application/json", "Idempotency-Key": sendKey },
-    body: JSON.stringify(body),
+    body: JSON.stringify(at ? { ...body, at } : body),
   }).catch(() => null);
-  btn.disabled = false;
-  btn.textContent = "Send";
+  const d = res ? await res.json().catch(() => ({})) : {};
   if (!res || !res.ok) {
-    const d = res ? await res.json().catch(() => ({})) : {};
-    err.textContent = d.error || "Could not send";
+    const err = $("#cErr");
+    err.textContent = d.error || (at ? "Could not schedule" : "Could not send");
     err.classList.add("show");
-    return;
+    return null;
   }
-  const d = await res.json().catch(() => ({}));
-  // It has gone, so the draft of it has no reason to survive — in this browser
-  // or in the Drafts folder on every device.
+  // It has gone, or it is queued at the server, so the draft of it has no
+  // reason to survive — in this browser or in Drafts on every device.
   const dropped = await dropDraft();
   closeSheets();
   if (!dropped) toast("Sent — but its draft could not be removed from Drafts");
-  toast(
-    d.filed === false
-      // It went, and it is in your Sent folder here. What failed is the copy at
-      // Apple, so the reason travels with the message — an unexplained "could
-      // not file" is the thing that makes this impossible to diagnose.
-      ? `Sent — Apple would not keep a copy: ${d.filedError || "unknown reason"}`
-      : "Sent"
-  );
-  // The copy is filed by now, so Sent and its counts are already stale.
+  return d;
+}
+
+/**
+ * Send, with five seconds to take it back.
+ *
+ * It used to ask "Send this message?" every time, which is a tap on every
+ * message to guard against the rare wrong one. Now it simply goes — after a
+ * pause long enough to catch a wrong recipient or a missing attachment, with
+ * Undo in the toast (or z). The composer holds still in the meantime;
+ * leaving the page asks first, and closing the composer counts as Undo.
+ */
+let pendingSend = null;
+function cancelPendingSend(quiet) {
+  if (!pendingSend) return;
+  clearTimeout(pendingSend.timer);
+  pendingSend = null;
+  $("#composeSheet").inert = false;
+  $("#cSend").textContent = "Send";
+  if (!quiet) toast("Not sent — it is back in the composer");
+}
+addEventListener("beforeunload", (e) => {
+  if (pendingSend) e.preventDefault();
+});
+$("#cSend").addEventListener("click", () => {
+  if (pendingSend) return;
+  const body = outgoing();
+  if (!body) return;
+  $("#composeSheet").inert = true;
+  $("#cSend").textContent = "Sending…";
+  const who = body.to.split(",")[0].trim() + (body.to.includes(",") || body.cc || body.bcc ? " and others" : "");
+  toast(`Sending to ${who}`, () => cancelPendingSend(), "Undo");
+  pendingSend = {
+    timer: setTimeout(async () => {
+      pendingSend = null;
+      const d = await postSend(body);
+      $("#composeSheet").inert = false;
+      $("#cSend").textContent = "Send";
+      if (!d) return;
+      toast(
+        d.filed === false
+          // It went, and it is in your Sent folder here. What failed is the copy
+          // at Apple, so the reason travels with the message.
+          ? `Sent — Apple would not keep a copy: ${d.filedError || "unknown reason"}`
+          : "Sent"
+      );
+      // The copy is filed by now, so Sent and its counts are already stale.
+      refreshAll();
+    }, 5000),
+  };
+});
+
+/* ── send later ── */
+function laterChoices(now = new Date()) {
+  const at = (days, h) => {
+    const d = new Date(now);
+    d.setDate(d.getDate() + days);
+    d.setHours(h, 0, 0, 0);
+    return d;
+  };
+  const out = [];
+  if (now.getHours() < 17) out.push(["This evening", at(0, 18)]);
+  out.push(["Tomorrow morning", at(1, 8)]);
+  // Monday, unless tomorrow already is.
+  const toMonday = (8 - now.getDay()) % 7 || 7;
+  if (toMonday > 1) out.push(["Monday morning", at(toMonday, 8)]);
+  return out;
+}
+const whenText = (ms) =>
+  new Date(ms).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+$("#cLater").addEventListener("click", () => {
+  if (pendingSend || !outgoing()) return;
+  $("#laterList").innerHTML = laterChoices()
+    .map(([label, d]) => `<button class="mi" data-at="${d.getTime()}"><span class="grow">${esc(label)}</span><span class="side">${esc(whenText(d))}</span></button>`)
+    .join("");
+  const soon = new Date(Date.now() + 3600_000);
+  soon.setMinutes(0, 0, 0);
+  $("#laterAt").value = new Date(soon - soon.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  openSheet("#laterSheet");
+});
+async function scheduleAt(ms) {
+  if (!(ms > Date.now() + 60_000)) { toast("Pick a time at least a minute from now"); return; }
+  const body = outgoing();
+  if (!body) { closeOverlays(); return; }
+  closeOverlays();
+  const d = await postSend(body, ms);
+  if (d) {
+    toast(`Scheduled — ${whenText(d.scheduled)}`);
+    loadOutbox();
+  }
+}
+$("#laterList").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-at]");
+  if (b) scheduleAt(Number(b.dataset.at));
+});
+$("#laterGo").addEventListener("click", () => scheduleAt(new Date($("#laterAt").value).getTime()));
+
+/* ── scheduled messages ── */
+let outbox = [];
+async function loadOutbox() {
+  const res = await api("/api/outbox").catch(() => null);
+  outbox = res && res.ok ? (await res.json().catch(() => ({}))).outbox || [] : outbox;
+  const btn = $("#openOutbox");
+  btn.hidden = !outbox.length;
+  btn.textContent = `Scheduled (${outbox.length})${outbox.some((o) => o.last_error) ? " — one needs a look" : ""}`;
+  if ($("#outboxSheet").classList.contains("up")) renderOutbox();
+}
+function renderOutbox() {
+  $("#outboxList").innerHTML = outbox.length
+    ? outbox
+        .map(
+          (o) => `<div class="obox">
+        <div class="grow"><b>${esc(o.subject || "(no subject)")}</b>
+          <span>To ${esc(o.to_line)} · ${esc(whenText(o.at))}</span>
+          ${o.last_error ? `<span class="bad">Not sent yet: ${esc(o.last_error)}</span>` : ""}</div>
+        <div class="acts">
+          <button class="ghost" data-osend="${o.id}">Send now</button>
+          <button class="ghost" data-oedit="${o.id}">Edit</button>
+          <button class="ghost danger" data-ocancel="${o.id}">Cancel</button>
+        </div></div>`
+        )
+        .join("")
+    : `<div class="sh-s">Nothing waiting to go.</div>`;
+}
+$("#openOutbox").addEventListener("click", () => {
+  closeSheets();
+  renderOutbox();
+  setTimeout(() => openSheet("#outboxSheet"), 60);
+});
+$("#outboxList").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-osend],[data-oedit],[data-ocancel]");
+  if (!b) return;
+  const id = b.dataset.osend || b.dataset.oedit || b.dataset.ocancel;
+  const act = b.dataset.osend ? "send" : "cancel";
+  if (b.dataset.ocancel && !(await ask("Cancel this message?", "It will not be sent, and is not kept anywhere.", { ok: "Cancel it", danger: true }))) return;
+  b.disabled = true;
+  const res = await api(`/api/outbox/${id}/${act}`, { method: "POST" }).catch(() => null);
+  const d = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { toast(d.error || "That didn't work"); b.disabled = false; return; }
+  if (b.dataset.oedit && d.message) {
+    const m = d.message;
+    closeSheets();
+    openCompose({
+      title: "Scheduled message",
+      account: m.account_id,
+      from: m.from,
+      to: m.to,
+      cc: m.cc,
+      subject: m.subject,
+      html: m.html,
+      reply: m.reply_to || null,
+    });
+    if (m.bcc) {
+      addrSet("#cBcc", "#cBccChips", m.bcc);
+      $("#cBccWrap").hidden = false;
+    }
+    attached = (m.attachments || []).map((x) => ({ ...x, bytes: Math.round((x.data.length * 3) / 4) }));
+    renderAtts();
+    toast("Taken out of the schedule — send it or schedule it again");
+  } else {
+    toast(b.dataset.osend ? "Sent" : "Cancelled");
+  }
+  loadOutbox();
   refreshAll();
 });
 
@@ -5873,7 +6042,7 @@ async function resumeDraft(id) {
 
 async function refreshAll(spin = false) {
   if (spin) $("#syncBtn").classList.add("busy");
-  await Promise.all([loadAccounts(), loadFolders(), loadList(false, { keep: true })]);
+  await Promise.all([loadAccounts(), loadFolders(), loadList(false, { keep: true }), loadOutbox()]);
   if (spin) $("#syncBtn").classList.remove("busy");
 
   // Tell the Chrome extension, if it is installed, that the count just moved.

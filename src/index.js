@@ -125,7 +125,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * edit, and the page, this file and the service worker all agree on it or the
  * deploy never starts.
  */
-const CLIENT_SHELL = "v55";
+const CLIENT_SHELL = "v56";
 
 /**
  * IMAP system flags, spelled once.
@@ -3190,6 +3190,82 @@ No invented facts, no commitment to anything the brief does not cover, and no br
       if (seen) return json({ ...JSON.parse(seen.value).res, repeat: true }, 202);
     }
     const b = await request.json().catch(() => ({}));
+
+    // Send later: checked now, exactly as a send would be, so a message that
+    // could never go is refused while you are still looking at it rather than
+    // failing at 8 o'clock tomorrow with nobody watching.
+    const at = Number(b.at) || 0;
+    if (at > Date.now() + 30_000) {
+      const check = await deliver(env, b, { dryRun: true });
+      if (check.status !== 200) return check;
+      const id = crypto.randomUUID();
+      const payload = { ...b };
+      delete payload.at;
+      await env.MAIL.put(`outbox/${id}.json`, JSON.stringify(payload), {
+        httpMetadata: { contentType: "application/json" },
+      });
+      await env.DB.prepare(
+        `INSERT INTO outbox (id, account_id, at, subject, to_line, created_at) VALUES (?,?,?,?,?,?)`
+      )
+        .bind(id, String(b.account_id || ""), Math.floor(at), String(b.subject || "").slice(0, 300), String(b.to || "").slice(0, 500), Date.now())
+        .run();
+      return json({ ok: true, scheduled: Math.floor(at), id }, 202);
+    }
+
+    const res = await deliver(env, b);
+    if (idem && res.status === 202) {
+      const body = await res.clone().json().catch(() => ({}));
+      await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+        .bind(`sent:${idem}`, JSON.stringify({ at: Date.now(), res: body }))
+        .run()
+        .catch(() => {});
+    }
+    return res;
+  }
+
+  // GET /api/outbox — what is waiting to go, soonest first.
+  if (path === "/api/outbox" && request.method === "GET") {
+    const { results } = await env.DB.prepare(
+      "SELECT id, account_id, at, subject, to_line, tries, last_error FROM outbox ORDER BY at"
+    ).all();
+    return json({ outbox: results ?? [] });
+  }
+
+  // POST /api/outbox/:id/cancel — takes it out of the queue and hands the
+  // message back, so Edit can put it in the composer.
+  // POST /api/outbox/:id/send — sends it now.
+  const outAct = path.match(/^\/api\/outbox\/([0-9a-f-]{36})\/(cancel|send)$/);
+  if (outAct && request.method === "POST") {
+    const [, id, act] = outAct;
+    const row = await env.DB.prepare("SELECT * FROM outbox WHERE id=?").bind(id).first();
+    if (!row) return json({ error: "Already sent or cancelled" }, 404);
+    const obj = await env.MAIL.get(`outbox/${id}.json`);
+    const payload = obj ? JSON.parse(await obj.text()) : null;
+    if (act === "cancel") {
+      await env.DB.prepare("DELETE FROM outbox WHERE id=?").bind(id).run();
+      await env.MAIL.delete(`outbox/${id}.json`);
+      return json({ ok: true, message: payload });
+    }
+    if (!payload) return json({ error: "The scheduled message is missing" }, 410);
+    const res = await deliver(env, payload);
+    if (res.status === 202) {
+      await env.DB.prepare("DELETE FROM outbox WHERE id=?").bind(id).run();
+      await env.MAIL.delete(`outbox/${id}.json`);
+    }
+    return res;
+  }
+
+  return json({ error: "Unknown route" }, 404);
+}
+
+/**
+ * Checks one outgoing message and sends it: the Send button, a scheduled
+ * message coming due, and "send now" on one that is waiting all go through
+ * here. Returns the Response the route would. With dryRun it stops before
+ * anything leaves, which is how a scheduled message is checked up front.
+ */
+async function deliver(env, b, { dryRun = false } = {}) {
+  {
     const acct = await accountById(env, String(b.account_id || ""));
     if (!acct) return json({ error: "Pick an account to send from" }, 400);
 
@@ -3246,6 +3322,8 @@ No invented facts, no commitment to anything the brief does not cover, and no br
     const subject = String(
       b.subject || (orig ? (orig.subject.match(/^re\s*:/i) ? orig.subject : `Re: ${orig.subject}`) : "")
     ).slice(0, 500);
+
+    if (dryRun) return json({ ok: true });
 
     // Whether a copy reached Sent. Reported rather than thrown: by the time it
     // could fail the message has already gone, and an error at that point reads
@@ -3307,17 +3385,50 @@ No invented facts, no commitment to anything the brief does not cover, and no br
     } catch (e) {
       return imapError(e, acct, env);
     }
-    const res = { ok: true, filed, filedError };
-    if (idem) {
-      await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
-        .bind(`sent:${idem}`, JSON.stringify({ at: Date.now(), res }))
-        .run()
-        .catch(() => {});
-    }
-    return json(res, 202);
+    return json({ ok: true, filed, filedError }, 202);
   }
+}
 
-  return json({ error: "Unknown route" }, 404);
+/**
+ * Sends what has come due. Every minute, after the sync.
+ *
+ * Each message is claimed before it is touched, by moving its time ten
+ * minutes on in the same statement that checks it has not moved: a second
+ * cron overlapping this one finds nothing to claim, so nothing goes twice.
+ * A failure is kept with its reason and tried again later, five times in
+ * all; after that it stays in Scheduled, marked, for you to see.
+ */
+async function flushOutbox(env) {
+  const now = Date.now();
+  const { results } = await env.DB.prepare(
+    "SELECT * FROM outbox WHERE at <= ? AND tries < 5 ORDER BY at LIMIT 3"
+  )
+    .bind(now)
+    .all();
+  for (const row of results ?? []) {
+    const claimed = await env.DB.prepare("UPDATE outbox SET at=?, tries=tries+1 WHERE id=? AND at=?")
+      .bind(now + 10 * 60_000, row.id, row.at)
+      .run();
+    if (!claimed.meta?.changes) continue;
+    const obj = await env.MAIL.get(`outbox/${row.id}.json`);
+    if (!obj) {
+      await env.DB.prepare("UPDATE outbox SET last_error=?, tries=5 WHERE id=?")
+        .bind("The scheduled message is missing", row.id)
+        .run();
+      continue;
+    }
+    const res = await deliver(env, JSON.parse(await obj.text())).catch((e) => json({ error: String(e.message || e) }, 500));
+    if (res.status === 202) {
+      await env.DB.prepare("DELETE FROM outbox WHERE id=?").bind(row.id).run();
+      await env.MAIL.delete(`outbox/${row.id}.json`);
+    } else {
+      const d = await res.json().catch(() => ({}));
+      // Backing off: 10 minutes, then 20, 40, 80.
+      await env.DB.prepare("UPDATE outbox SET last_error=?, at=? WHERE id=?")
+        .bind(String(d.error || `HTTP ${res.status}`).slice(0, 300), now + 10 * 60_000 * 2 ** row.tries, row.id)
+        .run();
+    }
+  }
 }
 
 /**
@@ -3650,6 +3761,8 @@ export default {
         const after = await env.DB.prepare(NEWEST).first();
         const fresh = (after?.d || 0) > (before?.d || 0) && (after?.d || 0) > Date.now() - 2 * 86_400_000;
         if (fresh) await pushAll(env);
+
+        await flushOutbox(env).catch((e) => console.log(`outbox: ${e.message || e}`));
       })()
     );
   },

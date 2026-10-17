@@ -108,6 +108,20 @@ export const SCHEMA = [
   // no notification fires. `n` is the only trace kept — the rule is invisible
   // by design, and a rule that silently eats mail with no way to tell how much
   // is not one you can ever audit.
+  // Messages written now and sent later. The message itself (attachments and
+  // all, up to 20 MB) waits in R2 under outbox/<id>.json; this is the index
+  // the cron reads every minute and the Scheduled sheet lists.
+  `CREATE TABLE IF NOT EXISTS outbox (
+  id          TEXT PRIMARY KEY,
+  account_id  TEXT NOT NULL,
+  at          INTEGER NOT NULL,             -- ms, when it goes
+  subject     TEXT NOT NULL DEFAULT '',
+  to_line     TEXT NOT NULL DEFAULT '',
+  tries       INTEGER NOT NULL DEFAULT 0,
+  last_error  TEXT,
+  created_at  INTEGER NOT NULL
+)`,
+  `CREATE INDEX IF NOT EXISTS idx_outbox_at ON outbox(at)`,
   `CREATE TABLE IF NOT EXISTS blocked_senders (
   pattern    TEXT PRIMARY KEY,             -- lowercase: a whole address, or a bare domain
   n          INTEGER NOT NULL DEFAULT 0,   -- messages destroyed by this rule
