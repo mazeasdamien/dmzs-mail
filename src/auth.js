@@ -192,6 +192,26 @@ export async function requestSession(request, env) {
   return readSession(token, env.AUTH_SECRET);
 }
 
+/**
+ * Whether a cookie-borne request that changes something came from this app.
+ *
+ * SameSite=Lax is per site, not per origin: every other *.agentxr.app page
+ * sends this cookie along with its own requests, and request.json() reads a
+ * text/plain form body as happily as a fetch. So the browser's own word on
+ * where the request started decides — Sec-Fetch-Site, or Origin where an old
+ * browser sends only that. A request with neither is not a browser being
+ * steered by a page, and X-Session is a token no other page can know, so
+ * both pass.
+ */
+export function sameOriginWrite(request) {
+  if (request.method === "GET" || request.method === "HEAD") return true;
+  if (request.headers.get("X-Session")) return true;
+  const site = request.headers.get("Sec-Fetch-Site");
+  if (site) return site === "same-origin" || site === "none";
+  const origin = request.headers.get("Origin");
+  return !origin || origin === new URL(request.url).origin;
+}
+
 /** true when the request carries a valid session. */
 export async function isAuthed(request, env) {
   return (await requestSession(request, env)) !== null;

@@ -19,6 +19,7 @@ import {
   sessionCookie,
   clearCookie,
   safeEqual,
+  sameOriginWrite,
 } from "./auth.js";
 import { CLIENT_VERSION } from "./version.js";
 import { MailAuthError, isAuthFailure } from "./errors.js";
@@ -95,7 +96,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * edit, and the page, this file and the service worker all agree on it or the
  * deploy never starts.
  */
-const CLIENT_SHELL = "v47";
+const CLIENT_SHELL = "v48";
 
 /**
  * IMAP system flags, spelled once.
@@ -249,7 +250,12 @@ function ftsQuery(term) {
  */
 async function forgetMessages(env, ids) {
   if (!ids?.length) return;
-  for (const id of ids) await env.MAIL.delete(bodyKey(id));
+  // R2 takes up to 1,000 keys per delete. One call per key ran a 3,000-message
+  // Trash or a whole account past the subrequest ceiling halfway through,
+  // leaving the rows in D1 and the bodies orphaned in R2.
+  for (let i = 0; i < ids.length; i += 1000) {
+    await env.MAIL.delete(ids.slice(i, i + 1000).map(bodyKey));
+  }
   // Chunked: D1 caps the number of bound parameters per statement, and a
   // mailbox being emptied can carry thousands of ids.
   for (let i = 0; i < ids.length; i += 100) {
@@ -548,6 +554,13 @@ async function noteMailbox(env, account, box) {
 
 /** Indexes up to `limit` already-stored messages that the index has not seen. */
 async function backfillSearch(env, account, limit) {
+  // The NOT IN reads every message and every index row, so once a pass finds
+  // nothing left to index the next look waits an hour. New mail is indexed
+  // as it is stored; this only ever catches stragglers.
+  const key = `search_idle_${account.id}`;
+  const idle = await env.DB.prepare("SELECT value FROM settings WHERE key=?").bind(key).first();
+  if (idle && Date.now() - Number(idle.value) < 3_600_000) return 0;
+
   const { results } = await env.DB.prepare(
     `SELECT m.id, m.subject, m.from_name, m.from_email
        FROM messages m
@@ -567,6 +580,13 @@ async function backfillSearch(env, account, limit) {
       /* a body we cannot read still gets its headers indexed */
     }
     await indexMessage(env, row.id, row, text);
+  }
+  if (!results?.length) {
+    await env.DB.prepare(
+      "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+    )
+      .bind(key, String(Date.now()))
+      .run();
   }
   return (results ?? []).length;
 }
@@ -718,7 +738,25 @@ async function syncIcloud(env, account) {
         const oversized = (sizes.get(uid) || 0) > MAX_BODY_BYTES;
         const msg = oversized ? await imapFetchHead(im, uid) : await imapFetchRaw(im, uid);
         if (!msg?.raw) continue;
-        const { row, body, attachments } = rowFromRaw(msg, app);
+        // One message the parser cannot read must not stop the folder. It
+        // used to throw straight out of the pass before the cursor was saved,
+        // so the next minute fetched the same message, threw again, and no
+        // mail arrived anywhere from then on. Its headers alone are tried
+        // instead, and failing that it is skipped and the pass goes on.
+        let parsed;
+        try {
+          parsed = rowFromRaw(msg, app);
+        } catch (e) {
+          console.log(`sync: ${mb.name} uid ${uid} unreadable (${e.message || e}), trying headers`);
+          const head = oversized ? null : await imapFetchHead(im, uid).catch(() => null);
+          try {
+            parsed = head?.raw ? rowFromRaw(head, app) : null;
+          } catch {
+            parsed = null;
+          }
+          if (!parsed) continue;
+        }
+        const { row, body, attachments } = parsed;
         let doc = bodyFromParts({ ...body, attachments });
 
         // A blocked sender never becomes a message here. Expunged where it
@@ -2840,6 +2878,15 @@ async function route(request, env, ctx) {
   }
 
   if (path === "/logout") {
+    // Only a page you navigate to signs you out. Message bodies keep their
+    // relative URLs, and the print frame is same-origin, so an
+    // <img src="/logout"> in a mail would otherwise end the session the
+    // moment it was printed — as would the same tag on any sibling site.
+    const dest = request.headers.get("Sec-Fetch-Dest");
+    const site = request.headers.get("Sec-Fetch-Site");
+    if ((dest && dest !== "document") || (site && site !== "same-origin" && site !== "none")) {
+      return new Response(null, { status: 204 });
+    }
     return new Response(null, {
       status: 302,
       headers: { Location: "/", "Set-Cookie": clearCookie() },
@@ -2850,6 +2897,7 @@ async function route(request, env, ctx) {
   if (!session) return denied();
 
   if (path.startsWith("/api/")) {
+    if (!sameOriginWrite(request)) return json({ error: "Cross-site request refused" }, 403);
     const res = await handleApi(request, env, path, ctx);
     const fresh = await renewedCookie(session, env);
     const out = new Response(res.body, res);

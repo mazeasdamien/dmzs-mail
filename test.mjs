@@ -668,5 +668,45 @@ console.log("\n── échec d'authentification : une seule voix -");
   ok(new MailAuthError().name === "MailAuthError", "le nom porte le type");
 }
 
+console.log("\n── audit 2026-10-17 : failles fermées ──────");
+{
+  // Un attribut collé au guillemet fermant du précédent est un second
+  // attribut pour un navigateur. Le filtre exigeait un espace avant « on… ».
+  const colle = sanitizeHtml(`<img src="x"onerror="alert(1)"><p title='a'onclick='b()'>t</p>`).html;
+  ok(!/onerror|onclick/i.test(colle), `gestionnaire collé au guillemet supprimé — ${colle}`);
+  ok(/src="x"/.test(colle), "l'attribut précédent garde son guillemet fermant");
+  const pixel = sanitizeHtml(`<img alt="a"src="https://t.example/p.gif">`);
+  ok(pixel.blocked === 1 && !/(?<!data-blocked-)src="https/.test(pixel.html), `pixel collé bloqué — ${pixel.html}`);
+  ok(!/javascript/i.test(sanitizeHtml(`<a href=" javascript:alert(1)">x</a>`).html), "javascript: précédé d'un espace neutralisé");
+  ok(!/image-set/i.test(sanitizeHtml(`<div style="background:image-set('https://t.example/p.png' 1x)">x</div>`).html),
+     "image-set() retiré comme url()");
+
+  // Un nom affiché encodé ne doit pas pouvoir fournir l'adresse.
+  const nom = Buffer.from("PayPal <service@paypal.com>").toString("base64");
+  const usurpe = parseAddress(`=?utf-8?B?${nom}?= <attaquant@evil.example>`);
+  eq(usurpe.email, "attaquant@evil.example", "l'adresse réelle l'emporte sur celle du nom encodé");
+  eq(parseAddress("=?utf-8?Q?Ren=C3=A9?= <rene@x.fr>").name, "René", "le nom est toujours décodé");
+  eq(parseAddress("rene@x.fr").email, "rene@x.fr", "adresse nue");
+
+  // Une base64 abîmée ne doit plus jamais lever d'exception.
+  const dec = (s) => new TextDecoder().decode(b64decode(s));
+  eq(dec("aGVsbG8=aGVsbG8="), "hellohello", "rembourrage au milieu : deux morceaux");
+  eq(dec("aGVsbG8gd29ybGQ"), "hello world", "rembourrage absent");
+  eq(dec("aGVs\r\nbG8=\r\n"), "hello", "retours à la ligne ignorés");
+  ok((() => { try { b64decode("aGVsbG8gd"); return true; } catch { return false; } })(), "base64 tronquée : pas d'exception");
+}
+{
+  const { sameOriginWrite } = await import("./src/auth.js");
+  const req = (method, headers = {}) => new Request("https://mail.agentxr.app/api/send", { method, headers });
+  ok(sameOriginWrite(req("GET", { "Sec-Fetch-Site": "cross-site" })), "une lecture passe toujours");
+  ok(sameOriginWrite(req("POST", { "Sec-Fetch-Site": "same-origin" })), "l'app elle-même passe");
+  ok(!sameOriginWrite(req("POST", { "Sec-Fetch-Site": "same-site" })), "un autre *.agentxr.app est refusé");
+  ok(!sameOriginWrite(req("POST", { "Sec-Fetch-Site": "cross-site" })), "un site tiers est refusé");
+  ok(!sameOriginWrite(req("POST", { Origin: "https://save.agentxr.app" })), "Origin étrangère refusée");
+  ok(sameOriginWrite(req("POST", { Origin: "https://mail.agentxr.app" })), "Origin identique acceptée");
+  ok(sameOriginWrite(req("POST", { "X-Session": "t", "Sec-Fetch-Site": "cross-site" })), "l'extension (X-Session) passe");
+  ok(sameOriginWrite(req("POST")), "sans en-tête de navigateur : pas une page piégée");
+}
+
 console.log(`\n${fail === 0 ? "✓" : "✗"} ${pass} assertions passées, ${fail} échec(s)\n`);
 process.exit(fail ? 1 : 0);

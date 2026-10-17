@@ -1746,7 +1746,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v47";
+const CLIENT = "v48";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2736,6 +2736,10 @@ addEventListener("keydown", (e) => {
   // Never take a keystroke from a field, and never from one the browser owns:
   // Ctrl+R has to keep reloading the page.
   if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
+  // A question on screen owns the keyboard. Arrows used to move to the next
+  // message behind "Delete this message permanently?", and Enter then
+  // deleted that one instead.
+  if (!$("#modal").hidden) return;
 
   if (e.key === "/") {
     e.preventDefault();
@@ -2899,11 +2903,13 @@ $("#rDelete").addEventListener("click", async () => {
 
   const thread = currentThread;
   const many = thread ? thread.n : 1;
+  // Taken before the question, not after: whatever is open when you answer
+  // is not necessarily what the question was about.
+  const id = current.message.id;
   if (!(await ask(
       many > 1 ? "Delete this conversation permanently?" : "Delete this message permanently?",
       `${many > 1 ? `All ${many} messages are` : "It is"} removed from iCloud itself and cannot be recovered.`,
       { ok: "Delete", danger: true }))) return;
-  const id = current.message.id;
   const at = messages.findIndex((m) => m.id === id);
   messages = messages.filter((m) => m.id !== id);
   const next = messages[at] || messages[at - 1] || null;
@@ -3221,6 +3227,37 @@ function replyTargets(msg, all) {
   // copied on. Somebody has to be addressed.
   if (!to.length && cc.length) to.push(cc.shift());
   return { to, cc };
+}
+
+/**
+ * Someone else's HTML, made safe to put in this page.
+ *
+ * The server's defusing is regexes, written for a sandboxed frame that runs
+ * nothing. The composer is not that frame: it is this page, with your
+ * session, so anything quoted or forwarded into it has to be inert here too.
+ * Parsed into a detached document (nothing in it loads or runs), then walked
+ * with an allowlist of what a quote can need: no scripts or handlers, no
+ * <style> blocks (their rules would restyle the whole app while the composer
+ * is open), and no link that runs code.
+ */
+const DROP_TAGS = "script,style,iframe,frame,frameset,object,embed,form,input,button,select,textarea,link,meta,base,svg,math,template,noscript,portal";
+function cleanHtml(html) {
+  const doc = new DOMParser().parseFromString(`<body>${html || ""}`, "text/html");
+  doc.body.querySelectorAll(DROP_TAGS).forEach((el) => el.remove());
+  for (const el of doc.body.querySelectorAll("*")) {
+    for (const { name, value } of [...el.attributes]) {
+      const n = name.toLowerCase();
+      // Leading spaces and control characters do not survive the URL parser.
+      const v = value.replace(/[\x00-\x20]+/g, "").toLowerCase();
+      const runs = /^(?:javascript|vbscript):/.test(v) || (n !== "src" && v.startsWith("data:"));
+      if (n.startsWith("on") || n === "srcdoc" || n === "formaction" || n.includes(":") ||
+          (/^(?:href|src|action|background|poster|xlink)/.test(n) && runs) ||
+          (n === "src" && v.startsWith("data:") && !v.startsWith("data:image/"))) {
+        el.removeAttribute(name);
+      }
+    }
+  }
+  return doc.body.innerHTML;
 }
 
 /**
@@ -4077,6 +4114,14 @@ $("#acctList").addEventListener("click", async (e) => {
       { ok: "Disconnect", danger: true }
     );
     if (!yes) return;
+    // This used to say "Removed" without ever asking the server, so the
+    // account, its password and its mail all stayed exactly where they were.
+    const res = await api(`/api/accounts/${del.dataset.delacc}`, { method: "DELETE" }).catch(() => null);
+    if (!res || !res.ok) {
+      const d = res ? await res.json().catch(() => ({})) : {};
+      toast(d.error || "Could not disconnect — nothing was removed");
+      return;
+    }
     toast(`Removed ${a ? a.email : "account"}`);
     if (accountFilter === del.dataset.delacc) accountFilter = "";
     await Promise.all([loadAccounts(), loadList()]);
@@ -4111,7 +4156,7 @@ function openCompose(opts = {}) {
   // chips host instead, and both buttons read "+ #cCcChips".
   for (const [btn, wrap, , , name] of CC_TOGGLES) markToggle(btn, wrap, name);
   $("#cSubj").value = opts.subject || "";
-  $("#cBody").innerHTML = withSignature(opts.html);
+  $("#cBody").innerHTML = withSignature(cleanHtml(opts.html));
   // Nothing to answer in a message that is not a reply to anything.
   $("#aiDraft").hidden = !replyTo;
   $("#cErr").classList.remove("show");

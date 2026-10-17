@@ -8,8 +8,23 @@
 
 /* ── bytes and base64 ── */
 
-export const b64decode = (s) =>
-  Uint8Array.from(atob(String(s).replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+/**
+ * Lenient on purpose: atob throws on anything off-spec, and mail is full of
+ * it — a part cut short, two encoded chunks glued together with padding in
+ * the middle. One throw here used to stop the whole sync on that message,
+ * every minute, for good. What decodes is kept; the junk is dropped.
+ */
+export const b64decode = (s) => {
+  // Padding in the middle ends one chunk and starts the next, so each chunk
+  // is decoded on its own rather than run together out of alignment.
+  const chunks = String(s).replace(/-/g, "+").replace(/_/g, "/").replace(/[^A-Za-z0-9+/=]/g, "").split(/=+/);
+  let bin = "";
+  for (let t of chunks) {
+    if (t.length % 4 === 1) t = t.slice(0, -1);
+    if (t) bin += atob(t + "=".repeat((4 - (t.length % 4)) % 4));
+  }
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+};
 
 export function b64encode(bytes, url = false) {
   let s = "";
@@ -95,13 +110,18 @@ export function qpDecode(input, charset = "utf-8") {
 const unquote = (s) => String(s).replace(/^['"]+/, "").replace(/['"]+$/, "");
 
 export function parseAddress(input) {
-  const s = decodeWords(String(input ?? "").trim());
-  const angle = /<([^<>\s]+@[^<>\s]+)>/.exec(s);
+  // The address is found before anything is decoded, and only the name is
+  // decoded after. Decoding first let an encoded display name carry an
+  // address of its own — =?utf-8?B?…?= standing for "PayPal
+  // <service@paypal.com>" — and that one was taken as the sender, ahead of
+  // the real address sitting after it.
+  const raw = String(input ?? "").trim();
+  const angle = /<([^<>\s]+@[^<>\s]+)>/.exec(raw);
   if (angle) {
-    const name = s.slice(0, angle.index).replace(/^["']|["']\s*$/g, "").replace(/"/g, "").trim();
+    const name = decodeWords(raw.slice(0, angle.index)).replace(/^["']|["']\s*$/g, "").replace(/"/g, "").trim();
     return { name, email: unquote(angle[1]).toLowerCase() };
   }
-  const bare = /([^\s"<>]+@[^\s"<>]+)/.exec(s);
+  const bare = /([^\s"<>]+@[^\s"<>]+)/.exec(raw) || /([^\s"<>]+@[^\s"<>]+)/.exec(decodeWords(raw));
   return { name: "", email: bare ? unquote(bare[1]).toLowerCase() : "" };
 }
 
@@ -414,17 +434,25 @@ export function sanitizeHtml(input) {
   html = html.replace(/<\/?(script|iframe|object|embed|form|input|button|link|meta|base|svg|math)\b[^>]*>/gi, "");
   // Event handlers, style with url(), javascript: targets.
   //
-  // `[\s/]` rather than `\s` throughout: browsers accept `<img/src=…>` as a
-  // separator, so anchoring on whitespace alone leaves a way past every rule
-  // below.
-  html = html.replace(/[\s/]on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, " ");
+  // `[\s/"']` rather than `\s` throughout: browsers accept `<img/src=…>` as a
+  // separator, and an attribute glued straight onto the closing quote of the
+  // one before it — `<img src="x"onerror="…">` — is a second attribute, not
+  // part of the first. Anchoring on whitespace alone left a way past every
+  // rule below. The quote is captured and put back, since it closes the
+  // previous value.
+  html = html.replace(/([\s/"'])on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "$1 ");
   // Any style carrying url() goes entirely — quoted or bare. Dropped rather
   // than deferred: a CSS background is never the message, and unlike <img>
   // there is nothing meaningful to restore behind the Images tap.
-  html = html.replace(/[\s/]style\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, (m) =>
-    /url\s*\(/i.test(m) ? " " : m
+  html = html.replace(/([\s/"'])style\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, (m, sep) =>
+    /url\s*\(|image-set\s*\(/i.test(m) ? `${sep} ` : m
   );
-  html = html.replace(/[\s/](href|src|action|formaction|background)\s*=\s*("javascript:[^"]*"|'javascript:[^']*'|javascript:[^\s>]+)/gi, " ");
+  // Leading spaces and control characters are dropped by the URL parser, so
+  // `href=" javascript:…"` is as live as the unspaced form.
+  html = html.replace(
+    /([\s/"'])(href|src|action|formaction|background)\s*=\s*("[\x00-\x20]*(?:java|vb)script:[^"]*"|'[\x00-\x20]*(?:java|vb)script:[^']*'|(?:java|vb)script:[^\s>]+)/gi,
+    "$1 "
+  );
 
   /**
    * Remote loads (images, mostly): neutralized, counted, reversible client-side.
@@ -439,13 +467,13 @@ export function sanitizeHtml(input) {
     /(?:^|[\s,])[\x00-\x20]*(?:https?:)?\/\//i.test(v); // ,/space covers srcset lists
 
   html = html.replace(
-    /[\s/](src|srcset|background|poster)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
-    (m, attr, dq, sq, bare) => {
+    /([\s/"'])(src|srcset|background|poster)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
+    (m, sep, attr, dq, sq, bare) => {
       const val = dq ?? sq ?? bare ?? "";
       if (!remote(val)) return m; // relative, cid:, data: — leave it alone
       blocked++;
       // Re-emitted quoted, so a bare value cannot break the tag on restore.
-      return ` data-blocked-${attr.toLowerCase()}="${val.replace(/"/g, "&quot;")}"`;
+      return `${sep === "/" ? "" : sep} data-blocked-${attr.toLowerCase()}="${val.replace(/"/g, "&quot;")}"`;
     }
   );
 
