@@ -49,13 +49,13 @@ The key rides in the fragment, so it never reaches a server log or a Referer.
 // a key can be typed into the app later instead — account button → Writing
 // assistant, which stores it in D1 and uses it ahead of this secret.
 const rl = createInterface({ input: process.stdin, output: process.stdout });
-const gemini = (
-  await rl.question("Gemini API key for the writing assistant (empty to skip): ")
+const anthropic = (
+  await rl.question("Anthropic API key for the writing assistant (empty to skip): ")
 ).trim();
 rl.close();
-if (gemini) {
-  put("GEMINI_API_KEY", gemini);
-  console.log("  stored GEMINI_API_KEY");
+if (anthropic) {
+  put("ANTHROPIC_API_KEY", anthropic);
+  console.log("  stored ANTHROPIC_API_KEY");
 } else {
   console.log("  skipped: add one later in the app, account button → Writing assistant");
 }

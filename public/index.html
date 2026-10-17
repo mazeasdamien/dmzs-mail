@@ -1377,14 +1377,14 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
     <div class="sh-s" style="margin:6px 0 0;font-size:12px">Goes under what you write and above the quote, in a new message and in a reply alike. Plain text, one line per line, kept in the database so it is the same signature on every device. Empty removes it.</div>
     <div class="sh-s" style="margin:14px 0 6px">Writing assistant</div>
     <div class="sh-s" id="aiKeyState" style="margin:0 0 8px;font-size:12px">&mdash;</div>
-    <div class="field"><input id="aiKeyInput" type="password" placeholder="Gemini API key" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+    <div class="field"><input id="aiKeyInput" type="password" placeholder="Anthropic API key" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
     <div class="formerr" id="aiKeyErr"></div>
     <button class="cta" id="aiKeySave" style="background:var(--elev2);color:var(--t1)">Save key</button>
     <button class="ghost" id="aiKeyClear" hidden style="width:100%;justify-content:center;min-height:34px">Remove the stored key</button>
     <div class="sh-s" style="margin:12px 0 6px">Model</div>
     <div class="field"><select id="aiModel" aria-label="Model"></select></div>
     <button class="ghost" id="aiKeyTest" style="width:100%;justify-content:center;min-height:34px">Test the key and list the models</button>
-    <div class="sh-s" style="margin:8px 0 0;font-size:12px">Draft, Fix and Improve in the composer send that message to Google's Gemini API, and this is the key and the model they use. Select some text first and only that is rewritten. The key is checked with Google before it is kept, sealed in the database like the iCloud password, and never shown again &mdash; only its last four characters. Test asks Google what this key can actually reach; the menu only offers what came back.</div>
+    <div class="sh-s" style="margin:8px 0 0;font-size:12px">Draft, Fix and Improve in the composer send that message to Anthropic's Claude API, and this is the key and the model they use. Select some text first and only that is rewritten. The key is checked with Anthropic before it is kept, sealed in the database like the iCloud password, and never shown again &mdash; only its last four characters. Test asks Anthropic what this key can actually reach; the menu only offers what came back.</div>
   </section>
 
   <section class="setsec" data-set="notify" role="tabpanel" aria-label="Notifications" hidden>
@@ -1746,7 +1746,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v46";
+const CLIENT = "v47";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -4575,11 +4575,11 @@ $("#sigSave").addEventListener("click", async (e) => {
 /* ── the writing assistant's key ── */
 
 /**
- * Fix and Improve run on a Gemini key, and this is where it is changed.
+ * Fix and Improve run on an Anthropic key, and this is where it is changed.
  *
  * It used to be a Worker secret and nothing else, which made the one
  * credential here most likely to need rotating the only one that could not be
- * touched without a terminal. Typed here it is proved against Google and
+ * touched without a terminal. Typed here it is proved against Anthropic and
  * sealed into the database; the secret stays behind it, so an install that
  * never opens this field behaves exactly as it did.
  *
@@ -4598,14 +4598,14 @@ async function refreshAiKey() {
   const d = res && res.ok ? await res.json().catch(() => null) : null;
   if (!d) { state.textContent = "Could not read the current setting."; return; }
   $("#aiKeyClear").hidden = !d.stored;
-  input.placeholder = d.stored || d.secret ? `Ends ${d.tail} — type a new key to replace it` : "Paste a Gemini API key";
+  input.placeholder = d.stored || d.secret ? `Ends ${d.tail} — type a new key to replace it` : "Paste an Anthropic API key";
   setModels([], d.model);
   state.textContent = d.stored
     ? `Set here, ending ${d.tail}.`
     : d.secret
       ? `Using the deployed key, ending ${d.tail}. Anything saved here replaces it.`
       : "No key set — Draft, Fix and Improve will say so when you press them.";
-  // Opening a menu to find one entry in it is not a menu. Only Google knows
+  // Opening a menu to find one entry in it is not a menu. Only Anthropic knows
   // what this key can reach, so it is asked as the sheet opens rather than
   // only behind Test — quietly, and without holding anything up.
   if (d.stored || d.secret) fillModels(d.model);
@@ -4615,7 +4615,7 @@ async function refreshAiKey() {
  * Fills the model menu with what the key can actually reach.
  *
  * Silent when it fails: a sheet that opens with a red line across it because
- * Google was slow is worse than a menu with one entry in it, and Test is
+ * Anthropic was slow is worse than a menu with one entry in it, and Test is
  * there to say what went wrong in as many words as it takes.
  */
 async function fillModels(current) {
@@ -4631,7 +4631,7 @@ async function fillModels(current) {
   }
 }
 
-/** The model menu: what Google offered, with the one in use chosen. */
+/** The model menu: what Anthropic offered, with the one in use chosen. */
 function setModels(list, current) {
   const models = [...new Set([current, ...(list || [])].filter(Boolean))];
   $("#aiModel").innerHTML = models
@@ -4640,7 +4640,7 @@ function setModels(list, current) {
 }
 
 /**
- * What this key can actually reach, asked of Google rather than assumed.
+ * What this key can actually reach, asked of Anthropic rather than assumed.
  *
  * A model id that has been retired shows up as a 404 at the moment you press
  * Fix, with a draft on screen, and reads like the feature is broken rather
@@ -4651,13 +4651,13 @@ async function testAi(btn) {
   const state = $("#aiKeyState");
   btn.disabled = true;
   const was = btn.textContent;
-  btn.textContent = "Asking Google…";
+  btn.textContent = "Asking Anthropic…";
   const res = await api("/api/ai-check").catch(() => null);
   btn.disabled = false;
   btn.textContent = was;
   const d = res ? await res.json().catch(() => ({})) : {};
   if (!res || !res.ok) {
-    state.textContent = d.error ? `Google says: ${d.error}` : "Could not reach Google";
+    state.textContent = d.error ? `Anthropic says: ${d.error}` : "Could not reach Anthropic";
     return;
   }
   setModels(d.models, d.configured);
@@ -4690,7 +4690,7 @@ async function saveAiKey(key) {
   err.classList.remove("show");
   btn.disabled = true;
   const was = btn.textContent;
-  btn.textContent = key ? "Checking with Google…" : "Removing…";
+  btn.textContent = key ? "Checking with Anthropic…" : "Removing…";
   const res = await api("/api/ai-key", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

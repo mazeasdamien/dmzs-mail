@@ -25,6 +25,7 @@ import { MailAuthError, isAuthFailure } from "./errors.js";
 import { BODY_VERSION, bodyFromParts, unsubFromHeaders } from "./body.js";
 import { ensureSchema } from "./schema.js";
 import { seal, open } from "./crypto.js";
+import { DEFAULT_MODEL as CLAUDE_DEFAULT, keyRefused, usableModels, rewrite } from "./claude.js";
 import {
   b64decode,
   qpBytes,
@@ -94,7 +95,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * edit, and the page, this file and the service worker all agree on it or the
  * deploy never starts.
  */
-const CLIENT_SHELL = "v46";
+const CLIENT_SHELL = "v47";
 
 /**
  * IMAP system flags, spelled once.
@@ -1247,62 +1248,29 @@ async function accountById(env, id) {
  * The key the writing assistant runs on: the one typed into the app first,
  * the deploy-time secret second.
  *
- * GEMINI_API_KEY as a Worker secret means rotating it — or moving to another
- * Google project, or revoking one that leaked — needs a terminal, a wrangler
- * login and a machine with the repo on it. That is a lot of ceremony for the
- * one credential here that is expected to change. Typed into Settings it is
- * sealed with ENC_KEY exactly like the iCloud password, and the secret stays
- * behind it so an install that already had one keeps working untouched.
+ * ANTHROPIC_API_KEY as a Worker secret means rotating it — or moving to
+ * another workspace, or revoking one that leaked — needs a terminal, a
+ * wrangler login and a machine with the repo on it. That is a lot of ceremony
+ * for the one credential here that is expected to change. Typed into Settings
+ * it is sealed with ENC_KEY exactly like the iCloud password, and the secret
+ * stays behind it so an install that already had one keeps working untouched.
  */
 async function aiKey(env) {
-  const row = await env.DB.prepare("SELECT value FROM settings WHERE key='ai_key'").first();
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key='claude_key'").first();
   const box = row?.value ? await open(env.ENC_KEY, row.value) : null;
-  return box?.key || env.GEMINI_API_KEY || "";
+  return box?.key || env.ANTHROPIC_API_KEY || "";
 }
 
 /**
  * The model the assistant runs on: the one chosen in the app first, the
- * deployed GEMINI_MODEL second.
+ * deployed CLAUDE_MODEL second.
  *
  * Not sealed, unlike the key — a model name is not a secret, and reading it
  * back is exactly what the picker in Settings needs to do.
  */
 async function aiModel(env) {
-  const row = await env.DB.prepare("SELECT value FROM settings WHERE key='ai_model'").first();
-  return row?.value || env.GEMINI_MODEL || "gemini-2.5-flash";
-}
-
-/**
- * Everything this key may call generateContent on, as Google lists it today.
- *
- * Asked in two places — the Test button, and saving a model — because the only
- * authority on what a key can reach is the key itself. A model that has been
- * retired otherwise surfaces as a 404 at the moment you press Fix, which
- * reads like the feature is broken rather than like a name that has moved.
- */
-async function usableModels(key) {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}&pageSize=200`
-  ).catch(() => null);
-  if (!res) return { error: "could not reach Google" };
-  const d = await res.json().catch(() => ({}));
-  if (!res.ok) return { error: d?.error?.message || `HTTP ${res.status}` };
-  return {
-    models: (d.models || [])
-      .filter((m) => (m.supportedGenerationMethods || []).includes("generateContent"))
-      .map((m) => String(m.name).replace(/^models\//, "")),
-  };
-}
-
-/** Google's own verdict on a key: null when it works, the reason when it does not. */
-async function aiKeyRefused(key) {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}&pageSize=1`
-  ).catch(() => null);
-  if (!res) return "could not reach Google";
-  if (res.ok) return null;
-  const d = await res.json().catch(() => ({}));
-  return d?.error?.message || `HTTP ${res.status}`;
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key='claude_model'").first();
+  return row?.value || env.CLAUDE_MODEL || CLAUDE_DEFAULT;
 }
 
 async function handleApi(request, env, path, ctx) {
@@ -2412,17 +2380,17 @@ async function handleApi(request, env, path, ctx) {
   // GET /api/ai-key — whether the assistant has a key and where it came from.
   // Never the key itself: it goes in and is not readable back out, like the
   // iCloud password. The last four characters are enough to tell one key from
-  // another when you are wondering which project you pasted.
+  // another when you are wondering which workspace you pasted.
   if (path === "/api/ai-key" && request.method === "GET") {
-    const row = await env.DB.prepare("SELECT value FROM settings WHERE key='ai_key'").first();
+    const row = await env.DB.prepare("SELECT value FROM settings WHERE key='claude_key'").first();
     const box = row?.value ? await open(env.ENC_KEY, row.value) : null;
     const stored = box?.key || "";
-    const chosen = await env.DB.prepare("SELECT value FROM settings WHERE key='ai_model'").first();
+    const chosen = await env.DB.prepare("SELECT value FROM settings WHERE key='claude_model'").first();
     return json({
       stored: !!stored,
-      secret: !!env.GEMINI_API_KEY,
-      tail: (stored || env.GEMINI_API_KEY || "").slice(-4),
-      model: chosen?.value || env.GEMINI_MODEL || "gemini-2.5-flash",
+      secret: !!env.ANTHROPIC_API_KEY,
+      tail: (stored || env.ANTHROPIC_API_KEY || "").slice(-4),
+      model: chosen?.value || env.CLAUDE_MODEL || CLAUDE_DEFAULT,
       modelStored: !!chosen?.value,
     });
   }
@@ -2434,33 +2402,37 @@ async function handleApi(request, env, path, ctx) {
     const b = await request.json().catch(() => ({}));
     const key = String(b.key || "").trim();
     if (!key) {
-      await env.DB.prepare("DELETE FROM settings WHERE key='ai_key'").run();
-      return json({ ok: true, stored: false, secret: !!env.GEMINI_API_KEY });
+      await env.DB.prepare("DELETE FROM settings WHERE key='claude_key'").run();
+      return json({ ok: true, stored: false, secret: !!env.ANTHROPIC_API_KEY });
     }
-    if (key.length > 200 || /\s/.test(key)) {
+    if (key.length > 300 || /\s/.test(key)) {
       return json({ error: "That does not look like an API key" }, 400);
     }
-    // Proved against Google before it is stored, for the same reason the
+    // Proved against Anthropic before it is stored, for the same reason the
     // iCloud password is proved against Apple: a bad one otherwise surfaces
     // an hour later, in the composer, with a draft on screen.
-    const refused = await aiKeyRefused(key);
-    if (refused) return json({ error: `Google refused this key: ${refused}`.slice(0, 240) }, 400);
-    await env.DB.prepare(
-      "INSERT INTO settings (key, value) VALUES ('ai_key', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
-    )
-      .bind(await seal(env.ENC_KEY, { key }))
-      .run();
+    const refused = await keyRefused(key);
+    if (refused) return json({ error: `Anthropic refused this key: ${refused}`.slice(0, 240) }, 400);
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO settings (key, value) VALUES ('claude_key', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+      ).bind(await seal(env.ENC_KEY, { key })),
+      // The Gemini key and model from before the move to Claude. Nothing has
+      // read them since, and a working credential sealed away where nothing
+      // shows it is one nobody remembers to revoke.
+      env.DB.prepare("DELETE FROM settings WHERE key IN ('ai_key', 'ai_model')"),
+    ]);
     return json({ ok: true, stored: true, tail: key.slice(-4) });
   }
 
   // POST /api/ai-model { model } — what the assistant writes with. An empty
-  // name puts the deployed GEMINI_MODEL back.
+  // name puts the deployed CLAUDE_MODEL back.
   if (path === "/api/ai-model" && request.method === "POST") {
     const b = await request.json().catch(() => ({}));
     const model = String(b.model || "").trim();
     if (!model) {
-      await env.DB.prepare("DELETE FROM settings WHERE key='ai_model'").run();
-      return json({ ok: true, model: env.GEMINI_MODEL || "gemini-2.5-flash" });
+      await env.DB.prepare("DELETE FROM settings WHERE key='claude_model'").run();
+      return json({ ok: true, model: env.CLAUDE_MODEL || CLAUDE_DEFAULT });
     }
     if (!/^[a-z0-9][a-z0-9.\-]{2,60}$/i.test(model)) {
       return json({ error: "That is not a model name" }, 400);
@@ -2470,20 +2442,20 @@ async function handleApi(request, env, path, ctx) {
     // Checked against the key that will have to call it, for the same reason
     // the key itself is checked: the alternative is finding out mid-sentence.
     const list = await usableModels(key);
-    if (list.error) return json({ error: `Google: ${list.error}`.slice(0, 240) }, 502);
+    if (list.error) return json({ error: `Anthropic: ${list.error}`.slice(0, 240) }, 502);
     if (!list.models.includes(model)) {
       return json({ error: `${model} is not available on this key` }, 400);
     }
     await env.DB.prepare(
-      "INSERT INTO settings (key, value) VALUES ('ai_model', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+      "INSERT INTO settings (key, value) VALUES ('claude_model', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
     )
       .bind(model)
       .run();
     return json({ ok: true, model });
   }
 
-  // GET /api/ai-check — asks Google what it actually offers, and whether the
-  // chosen model is among it. Behind the Test button in Settings, and the
+  // GET /api/ai-check — asks Anthropic what it actually offers, and whether
+  // the chosen model is among it. Behind the Test button in Settings, and the
   // source of the list the model picker offers.
   if (path === "/api/ai-check" && request.method === "GET") {
     const key = await aiKey(env);
@@ -2499,28 +2471,20 @@ async function handleApi(request, env, path, ctx) {
       configured: want,
       suggestion: usable.includes(want)
         ? null
-        : usable.filter((n) => n.includes("flash") && !n.includes("thinking"))[0] || usable[0] || null,
-      // Google lists these in no order worth relying on, and the reason to
-      // open this menu is almost always to find something newer than what is
-      // set. Sorted with a numeric collation, so gemini-3.9 lands above
-      // gemini-3.5 and above gemini-3.10 rather than wherever a plain string
-      // sort would put them. Capped, because a menu of 200 is not a menu.
-      models: usable
-        .sort(
-          (a, b) =>
-            // Gemini above everything else: Gemma and the rest are on the
-            // same key and are not what anyone opens this menu for.
-            (a.startsWith("gemini-") ? 0 : 1) - (b.startsWith("gemini-") ? 0 : 1) ||
-            b.localeCompare(a, undefined, { numeric: true })
-        )
-        .slice(0, 60),
+        : usable.includes(CLAUDE_DEFAULT)
+          ? CLAUDE_DEFAULT
+          : usable[0] || null,
+      // Anthropic lists the newest release first, which is the order this menu
+      // is opened for: finding something newer than what is set. Capped, so a
+      // long tail of retired models never turns it into a scroll.
+      models: usable.slice(0, 60),
       total: usable.length,
     });
   }
 
   // POST /api/assist { text, mode: "grammar" | "improve" }
   //
-  // Drafts are sent to Google's Gemini API, which is a deliberate cost: your
+  // Drafts are sent to Anthropic's Claude API, which is a deliberate cost: your
   // mail lives at Apple, and this is the one thing that shows a draft to
   // anyone else. Only ever on an explicit tap, never automatically, and the
   // result comes back for review rather than being applied here.
@@ -2575,32 +2539,16 @@ No invented facts, no commitment to anything the brief does not cover, and no br
 
     const instruction = task + fence;
 
-    const model = await aiModel(env);
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: instruction }] },
-          contents: [{ role: "user", parts: [{ text }] }],
-          // Correcting has one right answer and wants none of the model's
-          // imagination; writing a whole reply from one line of notes needs a
-          // little of it.
-          generationConfig: { temperature: { grammar: 0.1, improve: 0.4, reply: 0.5 }[mode] },
-        }),
-      }
-    );
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      return json({ error: `AI: ${data?.error?.message || `HTTP ${res.status}`}`.slice(0, 240) }, 502);
-    }
-    const out = (data.candidates?.[0]?.content?.parts || [])
-      .map((p) => p.text || "")
-      .join("")
-      .trim();
-    if (!out) return json({ error: "The model returned nothing usable" }, 502);
-    return json({ text: out });
+    const out = await rewrite(key, await aiModel(env), {
+      system: instruction,
+      text,
+      // Correcting has one right answer and needs no deliberation, and you are
+      // waiting on it mid-sentence; writing a whole reply from one line of
+      // notes is worth a little more of it.
+      effort: { grammar: "low", improve: "low", reply: "medium" }[mode],
+    });
+    if (out.error) return json({ error: `AI: ${out.error}`.slice(0, 240) }, 502);
+    return json({ text: out.text });
   }
 
   // POST /api/send { account_id, to, cc?, bcc?, subject, text, html?, reply_to? }

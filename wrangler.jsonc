@@ -50,23 +50,25 @@
     // Public address, used to build the activation link and absolute URLs.
     "APP_URL": "https://mail.agentxr.app",
 
-    // Model for the compose assistant. Flash tier on purpose: you are waiting
-    // mid-sentence, and grammar does not need a frontier model.
+    // Model for the compose assistant: Claude Opus 5.5. You are waiting on it
+    // mid-sentence, so Fix and Improve ask it for low effort and a written
+    // reply for medium (src/index.js, /api/assist) — that is what keeps it
+    // quick, rather than a smaller model.
     //
-    // Not the "-latest" alias, deliberately: an alias moves under you, so the
-    // assistant could change behaviour on a morning nothing here was touched.
-    // Pinned instead, and /api/ai-check lists what this key can actually use
-    // when it is time to move again.
-    "GEMINI_MODEL": "gemini-3.5-flash"
+    // A pinned id, not an alias: an alias moves under you, so the assistant
+    // could change behaviour on a morning nothing here was touched. The picker
+    // in Settings (backed by /api/ai-check) lists what the key can actually
+    // use when it is time to move again.
+    "CLAUDE_MODEL": "claude-opus-5-5"
   },
 
   "observability": { "enabled": true }
 
   // Secrets (npm run secrets, or wrangler secret put):
   //   AUTH_SECRET, BOOTSTRAP_KEY, ENC_KEY   — generated
-  //   GEMINI_API_KEY                                      — optional, for Fix/Improve
+  //   ANTHROPIC_API_KEY                                   — optional, for Fix/Improve
   //
-  // The Gemini key is only a starting point: one typed into the app (account
+  // The Anthropic key is only a starting point: one typed into the app (account
   // button → Writing assistant) is sealed into D1 and used ahead of this, so
   // rotating it never needs a terminal.
   //
