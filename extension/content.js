@@ -14,7 +14,11 @@ window.addEventListener("message", (e) => {
   if (e.origin !== location.origin) return;
   if (e.data?.type !== "dmzs-mail:changed") return;
   // Throws if the worker is mid-restart; it will poll on its own soon enough.
+  // `push` is whether the app has Web Push working in this browser, so the
+  // extension can stay quiet rather than ring a second time. Only a boolean
+  // crosses; anything else is dropped.
+  const push = typeof e.data.push === "boolean" ? e.data.push : undefined;
   try {
-    chrome.runtime.sendMessage({ type: "poll" });
+    chrome.runtime.sendMessage({ type: "poll", push });
   } catch {}
 });

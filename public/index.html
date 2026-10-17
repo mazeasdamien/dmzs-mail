@@ -524,6 +524,11 @@ textarea.field{width:100%;padding:11px 12px;font-size:14.5px;line-height:1.45;mi
   border:1px solid var(--line-strong);color:var(--t1);font-size:13.5px;font-weight:600;gap:7px}
 #folderBtn:active{background:var(--press2)}
 #folderBtn .caret{color:var(--t3);font-size:10px}
+/* Said while the connection is gone, because a list that stops changing looks
+   exactly like a quiet inbox. */
+#offline{height:24px;padding:0 10px;border-radius:12px;display:inline-flex;align-items:center;
+  border:1px dashed var(--line-strong);color:var(--t2);font-size:var(--t-s);font-weight:600}
+#offline[hidden]{display:none}
 /* Unread mail is worth noticing before you have gone looking for it, so the
    button that names where you are picks up the accent while any exists. */
 #folderBtn.hasnew{border-color:color-mix(in srgb,var(--acc) 50%,transparent);
@@ -748,9 +753,16 @@ html.busy #bar{opacity:1}
    The browser's own are unstyleable, ignore the theme, and on a destructive
    action give you an OS box that looks identical whether it is about deleting
    mail or leaving a page. */
+/* A <dialog> opened with showModal(): the top layer, an inert page behind it,
+   and focus kept inside by the browser rather than by a trap of ours — which
+   only knew one layer, and over an open sheet gave focus back to the wrong
+   thing. Sized to the viewport so the backdrop stays ours and clicking it
+   still cancels. */
 #modal{position:fixed;inset:0;z-index:120;display:flex;align-items:center;justify-content:center;
-  background:rgba(0,0,0,.45);padding:24px}
-#modal[hidden]{display:none}
+  background:rgba(0,0,0,.45);padding:24px;margin:0;border:0;color:inherit;
+  width:100%;height:100%;max-width:none;max-height:none;box-sizing:border-box}
+#modal:not([open]){display:none}
+#modal::backdrop{background:transparent}
 .mcard{background:var(--sheet);border:1px solid var(--line-strong);border-radius:14px;
   padding:20px 22px 16px;width:min(430px,100%);box-shadow:0 20px 60px var(--shadow)}
 .mtitle{font-size:16px;font-weight:600;letter-spacing:-.011em;color:var(--t1)}
@@ -784,13 +796,18 @@ html.busy #bar{opacity:1}
    looked like after the triage work: rows of blue "Archive", no sender, no
    subject. The gesture is touch-only in the script anyway (touchstart), so
    a mouse has no use for the layer at all. */
+/* Beside the row, not inside it: inside, it slid along with the finger and
+   covered the very message being filed. Start-aligned, because the row slides
+   right and the left edge is what it uncovers; aligned to the end, the label
+   sat under the row and under the finger. */
 .rowwrap .swipe-act{
-  position:absolute;inset:0;display:flex;align-items:center;justify-content:flex-end;
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:flex-start;
   gap:8px;padding:0 22px;background:color-mix(in srgb,var(--acc) 18%,var(--bg));
   color:var(--acc);font-size:var(--t-m);font-weight:650;pointer-events:none;
   z-index:0;opacity:0;visibility:hidden}
 .rowwrap.dragging .swipe-act{opacity:1;visibility:visible}
-.rowwrap.left .swipe-act{background:color-mix(in srgb,var(--red) 18%,var(--bg));color:var(--red)}
+/* Past the point where letting go files it. */
+.rowwrap.armed .swipe-act{background:color-mix(in srgb,var(--acc) 34%,var(--bg))}
 .rowwrap .swipe-act svg{flex:none}
 .rowwrap .row{background:var(--bg);will-change:transform;position:relative;z-index:1;
   transition:transform .22s cubic-bezier(.32,.72,0,1),background-color .16s ease}
@@ -1204,6 +1221,7 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
     <div class="pills" id="accPills"></div>
     <div class="folderbar">
       <button id="folderBtn" aria-haspopup="dialog" aria-expanded="false"><span id="folderName">Inbox</span><span id="folderCount"></span><span class="caret">▾</span></button>
+      <span id="offline" role="status" hidden>Offline</span>
     </div>
   </header>
   <main id="main">
@@ -1551,8 +1569,8 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
   </div>
 </div>
 
-<div id="modal" hidden>
-  <div class="mcard" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+<dialog id="modal" aria-labelledby="modalTitle">
+  <div class="mcard">
     <div class="mtitle" id="modalTitle"></div>
     <div class="mdetail" id="modalDetail"></div>
     <input class="field" id="modalInput" type="text" autocomplete="off" spellcheck="false" hidden>
@@ -1561,7 +1579,7 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
       <button class="rbtn acc" id="modalOk">OK</button>
     </div>
   </div>
-</div>
+</dialog>
 
 <div id="toast" role="status" aria-live="polite"></div>
 <!-- What a key command or a swipe just did, said out loud. The toast is visual
@@ -1587,6 +1605,7 @@ let accountFilter = "";       // account id, or "" for all
 let current = null;           // open message {message, account, body}
 let replyTo = null;           // message id when the compose sheet is a reply
 let pollTimer = null;
+const picked = new Set();     // ids ticked in selection mode
 
 /** Our own bucket names, title-cased for display. */
 const pretty = (s) => String(s).charAt(0).toUpperCase() + String(s).slice(1);
@@ -1663,12 +1682,18 @@ function markFavicon(on) {
    it, which is the part that matters on a destructive action. */
 let modalDone = null;
 
+let modalBack = null;
+
 function closeModal(value) {
   const done = modalDone;
   modalDone = null;
-  $("#modal").hidden = true;
+  const dlg = $("#modal");
+  if (dlg.open) dlg.close();
   $("#modalInput").hidden = true;
-  releaseFocus();
+  // Back to whatever asked — which may be inside a sheet that is still open.
+  const back = modalBack;
+  modalBack = null;
+  if (back && back.isConnected && back.focus) try { back.focus({ preventScroll: true }); } catch {}
   if (done) done(value);
 }
 
@@ -1684,8 +1709,12 @@ function openModal({ title, detail = "", input = false, value = "", placeholder 
   const okBtn = $("#modalOk");
   okBtn.textContent = ok;
   okBtn.classList.toggle("danger", danger);
-  $("#modal").hidden = false;
-  trapFocus($("#modal"), input ? field : okBtn);
+  const dlg = $("#modal");
+  if (!dlg.open) {
+    modalBack = document.activeElement;
+    dlg.showModal();
+  }
+  (input ? field : okBtn).focus();
   return new Promise((resolve) => (modalDone = resolve));
 }
 
@@ -1704,6 +1733,9 @@ $("#modalOk").addEventListener("click", () =>
   closeModal($("#modalInput").hidden ? true : $("#modalInput").value.trim())
 );
 $("#modalCancel").addEventListener("click", () => closeModal(null));
+// Escape is the browser's own cancel on a modal dialog; routed through
+// closeModal so the question still gets its answer.
+$("#modal").addEventListener("cancel", (e) => { e.preventDefault(); closeModal(null); });
 $("#modal").addEventListener("click", (e) => {
   if (e.target.id === "modal") closeModal(null); // clicking the backdrop cancels
 });
@@ -1755,7 +1787,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v49";
+const CLIENT = "v50";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2068,16 +2100,25 @@ $("#folderNew").addEventListener("click", async (e) => {
 });
 
 async function renameFolder(from) {
+  // Only the leaf is offered and only the leaf is sent: the server keeps the
+  // parent. Comparing against the full path called an untouched "INBOX/X" a
+  // rename, and sending the leaf as a path moved it to the top level.
   const to = await askText(`Rename "${folderLabel(from)}"`, folderLabel(from), { ok: "Rename" });
-  if (!to || !to.trim() || to.trim() === from) return;
-  if (await folderCall("/api/folders/rename", {
+  if (!to || !to.trim() || to.trim() === folderLabel(from)) return;
+  // Moved before the reload rather than after it: the reload repaints the
+  // list, and a folder that no longer exists by its old name lists nothing.
+  const wasHere = folder === from;
+  const d = await api("/api/folders/rename", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ from, to: to.trim() }),
-  })) {
-    if (folder === from) folder = to.trim();
-    toast("Renamed");
-  }
+  }).then((r) => r.json().then((j) => (r.ok ? j : (toast(j.error || "That didn't work"), null))))
+    .catch(() => (toast("That didn't work"), null));
+  if (!d) return;
+  if (wasHere && d.name) folder = d.name;
+  await Promise.all([loadFolders(), loadList(), loadAccounts()]);
+  renderFolders();
+  toast("Renamed");
 }
 
 async function deleteFolder(name) {
@@ -2129,23 +2170,55 @@ $("#qClear").addEventListener("click", () => {
   loadList();
 });
 
-/* ── list ── */
-async function loadList(more = false) {
+/* ── list ──
+   Three things ask for the list — a search keystroke, a folder change and the
+   poll — and they used to race: whichever answer came back last was painted,
+   so Archive's title could sit over Inbox's rows. Each call takes a ticket and
+   an answer is only painted if nothing has asked since. */
+let listSeq = 0;
+const PAGE = 50;
+
+/**
+ * `more` appends the next page. `keep` refreshes what is already on screen —
+ * the poll, a sync, a repaint after an action — asking for as many rows as are
+ * loaded rather than snapping "Load older" back to the first fifty.
+ */
+async function loadList(more = false, { keep = false } = {}) {
+  const seq = ++listSeq;
   const before = more && messages.length ? messages[messages.length - 1].date : 0;
+  const want = more ? PAGE : keep ? Math.max(PAGE, messages.length) : PAGE;
   // A search spans everything; without one you are looking at a folder.
   // Starred spans every folder, like search does: a flag is not a place.
-  const p = new URLSearchParams({ folder: query || starredOnly ? "all" : folder, limit: 50 });
+  const p = new URLSearchParams({ folder: query || starredOnly ? "all" : folder });
   if (starredOnly) p.set("starred", "1");
   if (query) p.set("q", query);
   if (accountFilter) p.set("account", accountFilter);
-  if (before) p.set("before", before);
+  // One row past what is shown: whether it comes back is whether there is
+  // more. A page that merely came back full said "Load older" over a list
+  // that had already ended exactly there.
+  const need = want + 1;
+  let got = [];
   try {
-    const res = await api(`/api/messages?${p}`);
-    if (!res.ok) return;
-    const batch = (await res.json()).messages || [];
-    messages = more ? messages.concat(batch) : batch;
-    messages._more = batch.length === 50;
-  } catch (e) { if (String(e.message) === "401") return; }
+    // The server hands out at most 100 a time, so a long list is re-read in
+    // pages, each one starting where the last stopped.
+    let cursor = before;
+    while (got.length < need) {
+      const limit = Math.min(100, need - got.length);
+      p.set("limit", limit);
+      if (cursor) p.set("before", cursor); else p.delete("before");
+      const res = await api(`/api/messages?${p}`);
+      if (seq !== listSeq || !res.ok) return;
+      const batch = (await res.json()).messages || [];
+      if (seq !== listSeq) return;
+      got = got.concat(batch);
+      if (batch.length < limit) break;
+      cursor = batch[batch.length - 1].date;
+    }
+  } catch (e) { return; }
+  const hasMore = got.length > want;
+  got = got.slice(0, want);
+  messages = more ? messages.concat(got) : got;
+  messages._more = hasMore;
   renderList();
 }
 
@@ -2179,9 +2252,12 @@ function rowHtml(m, sub = false) {
   ]
     .filter(Boolean)
     .join(", ");
-  return `<div class="rowwrap${open ? " open" : ""}"><div class="row${m.unread ? " unread" : ""}${open ? " sel" : ""}${sub ? " sub" : ""}" data-id="${m.id}"
+  // Ticked in the markup, not only by togglePick: a repaint used to draw every
+  // row unticked while the count in the bar still said three were chosen.
+  const on = picked.has(m.id);
+  return `<div class="rowwrap${open ? " open" : ""}${on ? " picked" : ""}"><div class="row${m.unread ? " unread" : ""}${open ? " sel" : ""}${sub ? " sub" : ""}" data-id="${m.id}"
     role="listitem" tabindex="0" aria-label="${esc(label)}"${open ? ' aria-current="true"' : ""}>
-    <button class="selbox" type="button" aria-label="Select this message" aria-pressed="false"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></button>
+    <button class="selbox" type="button" aria-label="Select this message" aria-pressed="${on}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></button>
     ${
       // Which account a message arrived on is only worth a swatch when
       // there is more than one of them, the same rule the account pills
@@ -2217,26 +2293,92 @@ function rowHtml(m, sub = false) {
       ${sub ? "" : `<div class="subj tr">${esc(m.subject || "(no subject)")}</div>`}
       <div class="snip tr">${esc(m.snippet || "")}</div>
     </div>
-    <div class="swipe-act" aria-hidden="true">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1.4"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9"/><path d="M10 13h4"/></svg>
-      <span>Archive</span>
-    </div>
+  </div>
+  <div class="swipe-act" aria-hidden="true">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1.4"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9"/><path d="M10 13h4"/></svg>
+    <span>Archive</span>
   </div></div>`;
 }
 
+/**
+ * Paints the list by changing only the rows that changed.
+ *
+ * It used to rebuild every row through innerHTML once a minute: whatever had
+ * the keyboard fell to <body>, a row mid-swipe snapped back, and anything new
+ * at the top pushed what you were reading down the screen. Rows are keyed by
+ * id and kept when their markup is identical; the rest are swapped in place.
+ */
 function renderList() {
   const rows = messages;
-  $("#list").innerHTML = rows.length
-    ? rows
-        .map(
-          (m) =>
-            rowHtml(m) +
-            (openThread && m.thread_key === openThread
-              ? `<div class="thread">${threadRows.map((t) => rowHtml(t, true)).join("")}</div>`
-              : "")
-        )
-        .join("") + (rows._more ? `<button class="morebtn" id="moreBtn">Load older</button>` : "")
-    : `<div class="empty">${
+  const items = [];
+  for (const m of rows) {
+    items.push(["r" + m.id, rowHtml(m)]);
+    if (openThread && m.thread_key === openThread) {
+      items.push(["t" + m.thread_key, `<div class="thread">${threadRows.map((t) => rowHtml(t, true)).join("")}</div>`]);
+    }
+  }
+  if (rows.length && rows._more) items.push(["more", `<button class="morebtn" id="moreBtn">Load older</button>`]);
+  if (!rows.length) items.push(["empty", emptyHtml()]);
+  patchList($("#list"), items);
+}
+
+function patchList(list, items) {
+  const main = $("#main");
+  // What had the keyboard, by row and by role within the row, so a row that is
+  // replaced can hand it straight to its successor.
+  const act = document.activeElement;
+  const actRow = act && list.contains(act) ? act.closest(".row") || act.closest(".rowwrap")?.querySelector(".row") : null;
+  const focusId = actRow ? actRow.dataset.id : "";
+  const focusCls = act && actRow && act !== actRow ? [...act.classList][0] || "" : "";
+  // And what was at the top of the screen, so it stays there.
+  let anchorKey = "", anchorTop = 0;
+  if (main.scrollTop > 0) {
+    const top = main.getBoundingClientRect().top;
+    for (const el of list.children) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom > top) { anchorKey = el._key || ""; anchorTop = r.top; break; }
+    }
+  }
+
+  // Kept: a child whose key and markup are both unchanged. Everything else
+  // goes before anything is placed, so the walk below only ever steps over
+  // nodes that stay — otherwise one replaced row moved every row after it.
+  const old = new Map();
+  for (const el of [...list.children]) {
+    if (el._key && !old.has(el._key)) old.set(el._key, el);
+    else el.remove(); // painted before keys existed, or a duplicate
+  }
+  const keep = new Set();
+  const nodes = items.map(([key, html]) => {
+    const el = old.get(key);
+    if (el && el._html === html && !keep.has(el)) { keep.add(el); return el; }
+    const t = document.createElement("template");
+    t.innerHTML = html.trim();
+    const fresh = t.content.firstElementChild;
+    fresh._key = key;
+    fresh._html = html;
+    return fresh;
+  });
+  for (const el of old.values()) if (!keep.has(el)) el.remove();
+  let at = list.firstElementChild;
+  for (const el of nodes) {
+    if (el === at) at = at.nextElementSibling;
+    else list.insertBefore(el, at);
+  }
+
+  if (anchorKey) {
+    const el = [...list.children].find((x) => x._key === anchorKey);
+    if (el) main.scrollTop += el.getBoundingClientRect().top - anchorTop;
+  }
+  if (focusId && !list.contains(document.activeElement)) {
+    const row = list.querySelector(`.row[data-id="${CSS.escape(focusId)}"]`);
+    const back = row && ((focusCls && row.querySelector("." + CSS.escape(focusCls))) || row);
+    if (back) try { back.focus({ preventScroll: true }); } catch {}
+  }
+}
+
+function emptyHtml() {
+  return `<div class="empty">${
         !accounts.length
           ? "<b>Welcome.</b>Tap the account button up top to connect iCloud."
           : query
@@ -2581,16 +2723,32 @@ $("#rScope").addEventListener("click", () => {
   say(currentThread.whole ? "Actions now cover the conversation" : "Actions now cover this message only");
 });
 
+/**
+ * Which open is the latest. Opening A then B quickly used to let A's answer
+ * land last: the reader showed A, the list highlighted B, and Archive filed A.
+ * Every await below checks it, and closing the reader bumps it too, so an
+ * answer for a message nobody is waiting on any more is dropped on arrival.
+ */
+let openSeq = 0;
+let openAbort = null;
+
 async function openMsg(id, threadRow = null) {
   // The composer occupies the reading pane, so opening a message replaces it.
   // What was being written is kept rather than queried — closeSheets does it —
   // because reading your mail is not a decision about the reply you started.
   closeSheets();
+  const seq = ++openSeq;
+  if (openAbort) openAbort.abort();
+  const abort = (openAbort = new AbortController());
+  let got;
   try {
-    const res = await api(`/api/messages/${id}`);
+    const res = await api(`/api/messages/${id}`, { signal: abort.signal });
+    if (seq !== openSeq) return;
     if (!res.ok) { toast("Could not open this message"); return; }
-    current = await res.json();
+    got = await res.json();
   } catch { return; }
+  if (seq !== openSeq) return;
+  current = got;
   // The summarising row carries the conversation's size; a row inside the
   // expansion is one message of it. Either way the chip is shown when there is
   // more than one, and either way you can change your mind.
@@ -2693,6 +2851,8 @@ async function openMsg(id, threadRow = null) {
  */
 function closeReader() {
   $("#reader").classList.remove("up");
+  openSeq++; // a message still on its way must not reopen the pane
+  if (openAbort) { openAbort.abort(); openAbort = null; }
   current = null;
   currentThread = null;
   renderScope();
@@ -2735,7 +2895,7 @@ addEventListener("keydown", (e) => {
     // Escape peels one layer at a time rather than dismissing everything.
     // The modal is the outermost, so it is the first to go — it used to be
     // skipped entirely, leaving a confirm box that only its Cancel would end.
-    if (!$("#modal").hidden) { closeModal(null); return; }
+    if ($("#modal").open) { closeModal(null); return; }
     if (document.body.classList.contains("overlay")) closeOverlays();
     else if (document.querySelector(".sheet.up")) closeSheets();
     else if ($("#reader").classList.contains("up")) closeReader();
@@ -2748,7 +2908,7 @@ addEventListener("keydown", (e) => {
   // A question on screen owns the keyboard. Arrows used to move to the next
   // message behind "Delete this message permanently?", and Enter then
   // deleted that one instead.
-  if (!$("#modal").hidden) return;
+  if ($("#modal").open) return;
 
   if (e.key === "/") {
     e.preventDefault();
@@ -3389,9 +3549,13 @@ function forwardedBody(m, html) {
  */
 async function startForward() {
   if (!current) return;
+  // Everything read from `current` is read now. The files arrive over several
+  // awaits, and in that time another message can be opened — whose
+  // attachments were then fetched by the first one's id, or skipped.
   const m = current.message;
   const stored = current.body.html || "";
   const shown = current.body.shown || stored;
+  const all = (current.body.attachments || []).slice();
 
   openCompose({
     title: "Forward",
@@ -3399,10 +3563,14 @@ async function startForward() {
     subject: /^\s*fwd?\s*:/i.test(m.subject || "") ? m.subject : `Fwd: ${m.subject || ""}`,
     html: forwardedBody(m, shown),
   });
+  // The composer this forward belongs to. Closed, discarded or replaced by
+  // another message, and the files still on their way have nowhere to go.
+  const session = draftSession;
+  const gone = () => draftSession !== session || !document.body.classList.contains("composing");
 
   // After the composer is open, not before: a 3 MB attachment should not hold
   // the window shut while it is read, and the files land as they arrive.
-  const atts = (current.body.attachments || []).filter(
+  const atts = all.filter(
     (a) => !(a.cid && stored.toLowerCase().includes(String(a.cid).toLowerCase()))
   );
   if (!atts.length) return;
@@ -3410,13 +3578,15 @@ async function startForward() {
   busy(1);
   let over = 0;
   try {
-    for (let i = 0; i < (current.body.attachments || []).length; i++) {
-      const a = (current.body.attachments || [])[i];
+    for (let i = 0; i < all.length; i++) {
+      const a = all[i];
       if (!atts.includes(a)) continue;
       const res = await api(`/api/messages/${m.id}/attachment/${i}`).catch(() => null);
+      if (gone()) return;
       if (!res || !res.ok) continue;
       const blob = await res.blob();
       const data = await fileToBase64(blob);
+      if (gone()) return;
       // Budget against the base64, which is what actually travels, and stop
       // rather than build a message the server will refuse whole.
       if (attached.reduce((n, x) => n + x.data.length, 0) + data.length > SEND_LIMIT) {
@@ -3432,10 +3602,12 @@ async function startForward() {
       renderAtts();
     }
   } catch {
+    if (gone()) return;
     toast("Some attachments could not be read");
   } finally {
     busy(-1);
   }
+  if (gone()) return;
   renderAtts();
   if (over) toast(`${over} attachment${over > 1 ? "s" : ""} left behind — over 20 MB`);
 }
@@ -3715,7 +3887,8 @@ function closeOverlays() {
     if (b.getAttribute("aria-expanded") === "true" && b.id !== "composeBtn") b.setAttribute("aria-expanded", "false");
   }
   $("#rMore").setAttribute("aria-expanded", "false");
-  releaseFocus();
+  // The composer stays up under an overlay, and so does its hold on Tab.
+  releaseFocus(document.body.classList.contains("composing") ? $("#composeSheet") : null);
   if (!document.body.classList.contains("composing")) $("#scrim").classList.remove("up");
 }
 
@@ -5311,7 +5484,7 @@ async function resumeDraft(id) {
 
 async function refreshAll(spin = false) {
   if (spin) $("#syncBtn").classList.add("busy");
-  await Promise.all([loadAccounts(), loadFolders(), loadList()]);
+  await Promise.all([loadAccounts(), loadFolders(), loadList(false, { keep: true })]);
   if (spin) $("#syncBtn").classList.remove("busy");
 
   // Tell the Chrome extension, if it is installed, that the count just moved.
@@ -5322,9 +5495,25 @@ async function refreshAll(spin = false) {
   // extension's id is not fixed for an unpacked install, so a content script
   // listens here and relays. A page that is not ours has no listener, and a
   // window with no extension simply has nobody listening.
+  //
+  // With it goes whether this browser has Web Push on, so the extension does
+  // not notify a second time for the mail a push has just rung about.
+  webPushOn().then((push) => {
+    try {
+      window.postMessage({ type: "dmzs-mail:changed", push }, location.origin);
+    } catch {}
+  });
+}
+
+/** True when this browser will be told about new mail by a push of ours. */
+async function webPushOn() {
   try {
-    window.postMessage({ type: "dmzs-mail:changed" }, location.origin);
-  } catch {}
+    if (!("serviceWorker" in navigator) || Notification.permission !== "granted") return false;
+    const reg = await navigator.serviceWorker.getRegistration();
+    return !!(reg && (await reg.pushManager.getSubscription()));
+  } catch {
+    return false;
+  }
 }
 /**
  * Ask the server to go and look at Apple, then repaint.
@@ -5426,13 +5615,24 @@ $("#syncBtn").addEventListener("click", syncNow);
 function schedulePoll() {
   clearTimeout(pollTimer);
   if (navigator.onLine && document.visibilityState === "visible") {
-    pollTimer = setTimeout(async () => { await refreshAll(); schedulePoll(); }, 60000);
+    // finally: one failed refresh must not be the last one there ever is.
+    pollTimer = setTimeout(async () => {
+      try { await refreshAll(); } catch {} finally { schedulePoll(); }
+    }, 60000);
   }
 }
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") { refreshAll(); schedulePoll(); }
 });
-addEventListener("online", () => refreshAll());
+// Going offline stops the poll (schedulePoll will not arm one), and coming
+// back only ever refreshed once — the next tick was never set, so the list
+// stayed frozen until the tab was hidden and shown again.
+function showOnline() {
+  $("#offline").hidden = navigator.onLine;
+}
+addEventListener("online", () => { showOnline(); refreshAll(); schedulePoll(); });
+addEventListener("offline", () => { showOnline(); clearTimeout(pollTimer); });
+showOnline();
 
 /* ── resizable list pane ── */
 (function resizer() {
@@ -5491,24 +5691,30 @@ function say(msg) {
  * Without this a keyboard user tabs out of a confirm box into the message
  * list behind it, and the box is still there when they come back.
  */
-let focusReturn = null;
-let focusTrapEl = null;
+/**
+ * A stack, because sheets stack: Accounts opened over a draft is two layers,
+ * and closing the top one has to hand Tab back to the composer and focus back
+ * to what opened Accounts — not to whatever was focused before the draft.
+ */
+const focusStack = []; // [{ root, back }]
+const topTrap = () => (focusStack.length ? focusStack[focusStack.length - 1].root : null);
 function trapFocus(root, first) {
-  if (!focusTrapEl) focusReturn = document.activeElement;
-  focusTrapEl = root;
+  if (!focusStack.some((f) => f.root === root)) focusStack.push({ root, back: document.activeElement });
   setTimeout(() => {
     const target = first || root.querySelector("button, input, select, textarea, [tabindex]");
     if (target) try { target.focus(); } catch {}
   }, 30);
 }
-function releaseFocus() {
-  const back = focusReturn;
-  focusReturn = null;
-  focusTrapEl = null;
-  if (back && back.focus) try { back.focus(); } catch {}
+/** Pops every layer above `keep` (all of them without one) and returns focus. */
+function releaseFocus(keep = null) {
+  let back = null;
+  while (focusStack.length && topTrap() !== keep) back = focusStack.pop().back;
+  if (back && back.isConnected && back.focus) try { back.focus(); } catch {}
 }
 addEventListener("keydown", (e) => {
-  if (e.key !== "Tab" || !focusTrapEl) return;
+  const focusTrapEl = topTrap();
+  // The dialog keeps its own focus; this would drag it out into the sheet.
+  if (e.key !== "Tab" || !focusTrapEl || $("#modal").open) return;
   const f = [...focusTrapEl.querySelectorAll(
     'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
   )].filter((el) => el.getClientRects().length);
@@ -5705,16 +5911,18 @@ $("#composeSheet").addEventListener("keydown", (e) => {
     // Scrolling, not swiping — hand the row back before it starts to slide.
     if (Math.abs(my) > 12 && Math.abs(my) > Math.abs(mx)) {
       clearHold();
-      wrap.classList.remove("dragging");
+      wrap.classList.remove("dragging", "armed");
       wrap.querySelector(".row").style.transform = "";
       wrap = null;
       return;
     }
     if (Math.abs(mx) > 8) { clearHold(); dragged = true; }
     if (!dragged) return;
-    dx = Math.max(-120, Math.min(120, mx));
-    wrap.classList.toggle("left", dx < 0);
-    wrap.querySelector(".row").style.transform = `translateX(${dx}px)`;
+    // Rightward only. A left drag used to slide the row and paint it red —
+    // the look of a delete — and then do nothing at all when let go.
+    dx = Math.max(0, Math.min(120, mx));
+    wrap.classList.toggle("armed", dx > 72);
+    wrap.querySelector(".row").style.transform = dx ? `translateX(${dx}px)` : "";
   }, { passive: true });
 
   const end = () => {
@@ -5722,7 +5930,7 @@ $("#composeSheet").addEventListener("keydown", (e) => {
     if (!wrap) return;
     const w = wrap;
     wrap = null;
-    w.classList.remove("dragging");
+    w.classList.remove("dragging", "armed");
     w.querySelector(".row").style.transform = "";
     const committed = dragged && dx > 72;
     dx = 0;
@@ -5754,7 +5962,6 @@ $("#composeSheet").addEventListener("keydown", (e) => {
 })();
 
 /* ── bulk select ── */
-const picked = new Set();
 function enterSelmode() {
   document.body.classList.add("selmode");
   $("#bulkbar").hidden = false;

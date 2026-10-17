@@ -16,6 +16,14 @@ const APP = "https://mail.agentxr.app";
 const ALARM = "poll";
 const EVERY_MINUTES = 1; // matches the Worker's own sync cron; no point going finer
 
+/**
+ * Who is asking, the way the app and its service worker say it. Without the
+ * header every poll — once a minute, forever — was logged by the Worker as a
+ * client too old to identify itself. Prefixed so the Worker can tell an
+ * extension, which is versioned on its own, from a stale tab.
+ */
+const CLIENT = `ext-${chrome.runtime.getManifest().version}`;
+
 const RED = "#e5342c";
 const GREY = "#8a8f98";
 
@@ -41,12 +49,13 @@ const show = async (text, colour, title) => {
  * token, which will never fix itself and so is worth showing.
  */
 async function poll() {
-  const { token, lastUnread = 0 } = await chrome.storage.local.get(["token", "lastUnread"]);
+  const { token, lastUnread = 0, webPush = false } =
+    await chrome.storage.local.get(["token", "lastUnread", "webPush"]);
   if (!token) return show("!", GREY, "not connected. Click to set up.");
 
   let state;
   try {
-    const res = await fetch(`${APP}/api/push/state`, { headers: { "X-Session": token } });
+    const res = await fetch(`${APP}/api/push/state`, { headers: { "X-Session": token, "X-Client": CLIENT } });
     if (res.status === 401) {
       // Never fixes itself, so unlike a network blip it is worth showing.
       await chrome.storage.local.remove("token");
@@ -60,18 +69,25 @@ async function poll() {
     return chrome.action.setTitle({ title: "dmzs-mail — offline, showing the last count" });
   }
 
+  // Two numbers, for two questions. The badge says `total`, every unread
+  // message anywhere, because that is what the app's header and the PWA badge
+  // say — counting the inbox alone here made the toolbar disagree with the
+  // app it opens. Whether there is *new* mail is the inbox's count rising.
   const unread = Number(state.unread) || 0;
+  const total = Number(state.total ?? state.unread) || 0;
   // No badge at all when there is nothing: an empty toolbar icon is the
   // clearest possible way to say "no new mail".
   await show(
-    unread ? String(Math.min(unread, 999)) : "",
+    total ? String(Math.min(total, 999)) : "",
     RED,
-    unread ? `${unread} unread` : "no new mail"
+    total ? `${total} unread` : "no new mail"
   );
 
   // Notify on a rise only. Reading mail elsewhere drops the count, and being
-  // told about that would be noise.
-  if (unread > lastUnread) {
+  // told about that would be noise. And not at all when this browser already
+  // gets Web Push from the app: that rings for the same message, and two
+  // notifications a second apart for one email reads as two emails.
+  if (unread > lastUnread && !webPush) {
     chrome.notifications.create("dmzs-mail", {
       type: "basic",
       iconUrl: "icon128.png",
@@ -140,7 +156,11 @@ chrome.notifications.onClicked.addListener(() => {
 // The options page saves a token and wants the badge to reflect it now, not
 // at the top of the next minute.
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg?.type === "poll") poll();
+  if (msg?.type !== "poll") return;
+  // The app says, each time it refreshes, whether this browser is subscribed
+  // to its Web Push. Stored first so the poll it triggers already knows.
+  const set = typeof msg.push === "boolean" ? chrome.storage.local.set({ webPush: msg.push }) : null;
+  Promise.resolve(set).then(poll);
 });
 
 // Disabling and re-enabling the extension fires neither onInstalled nor

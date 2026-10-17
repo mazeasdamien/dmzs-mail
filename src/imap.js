@@ -217,7 +217,7 @@ export async function imapListRaw(im) {
   }));
 }
 
-/** Every selectable mailbox: [{ flags, name }]. */
+/** Every selectable mailbox: [{ flags, name, delim }]. */
 export async function imapList(im) {
   const out = [];
   for (const { line, literals } of await im.command('LIST "" "*"')) {
@@ -227,7 +227,9 @@ export async function imapList(im) {
     if (name.startsWith('"')) name = name.slice(1, name.lastIndexOf('"'));
     else if (/^\{\d+\}/.test(name) && literals.length) name = literals[0];
     if (/\\Noselect/i.test(m[1])) continue;
-    out.push({ flags: m[1], name });
+    // The hierarchy delimiter, "" for a flat server: what a rename needs to
+    // keep a nested mailbox under its parent.
+    out.push({ flags: m[1], name, delim: m[2] || "" });
   }
   return out;
 }

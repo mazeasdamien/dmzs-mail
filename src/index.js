@@ -100,7 +100,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * edit, and the page, this file and the service worker all agree on it or the
  * deploy never starts.
  */
-const CLIENT_SHELL = "v49";
+const CLIENT_SHELL = "v50";
 
 /**
  * IMAP system flags, spelled once.
@@ -413,14 +413,14 @@ async function withImap(env, account, fn) {
  * old key orphaned and the mailbox looks brand new — re-downloading its entire
  * history under the new name.
  */
-async function renameCursor(env, account, from, to) {
+async function renameCursor(env, account, from, to, app = to) {
   const row = await env.DB.prepare("SELECT sync_state FROM accounts WHERE id=?")
     .bind(account.id)
     .first();
   const state = row?.sync_state ? JSON.parse(row.sync_state) : {};
   const folders = state.folders || {};
   if (!(from in folders)) return;
-  if (to) folders[to] = { ...folders[from], app: to };
+  if (to) folders[to] = { ...folders[from], app };
   delete folders[from];
   state.folders = folders;
   await env.DB.prepare("UPDATE accounts SET sync_state=? WHERE id=?")
@@ -1839,30 +1839,52 @@ async function handleApi(request, env, path, ctx) {
 
     const acct = await theAccount(env);
     if (!acct) return json({ error: "No connected account" }, 400);
+    let moved;
     try {
-      await withImap(env, acct, async (im) => {
+      moved = await withImap(env, acct, async (im) => {
         const boxes = await imapList(im);
         const box = resolveMailbox(boxes, from);
         if (!box) throw new Error(`No mailbox matching "${from}". Server has: ${mailboxList(boxes)}`);
-        if (PROTECTED.has(folderNameFor(box))) throw new Error("That is a system mailbox");
-        await imapRename(im, box.name, to);
+        const was = folderNameFor(box);
+        if (PROTECTED.has(was)) throw new Error("That is a system mailbox");
+        // `to` is the new leaf, the part the UI shows. Sent as the whole path
+        // it moved "INBOX/Receipts" to the root, even when nothing was changed,
+        // so the parent is kept here, where the delimiter is known.
+        if (box.delim && to.includes(box.delim)) {
+          throw new Error(`Name cannot contain "${box.delim}"`);
+        }
+        const cut = box.delim ? box.name.lastIndexOf(box.delim) : -1;
+        const path = cut === -1 ? to : box.name.slice(0, cut + 1) + to;
+        if (path === box.name) return { was, now: was };
+        await imapRename(im, box.name, path);
+        // As with CREATE: RENAME accepted is not RENAME listed, and the app
+        // name comes from what the server now calls it, not from what was typed.
+        const made = resolveMailbox(await imapList(im), path);
+        if (!made) throw new Error(`The server accepted "${to}" but does not list it`);
+        const now = folderNameFor(made);
         // The stored cursor is keyed by IMAP name; leaving the old key means
         // the renamed mailbox looks brand new and re-downloads from scratch.
-        await renameCursor(env, acct, box.name, to);
+        await renameCursor(env, acct, box.name, made.name, now);
         // Rows remember the mailbox path they were seen in. UIDs may not
         // survive a rename, so they are let go; reconciling finds them again
         // by Message-ID.
         await env.DB.prepare("UPDATE messages SET mailbox=?, uid=0 WHERE account_id=? AND mailbox=?")
-          .bind(to, acct.id, box.name)
+          .bind(made.name, acct.id, box.name)
           .run();
+        return { was, now };
       });
-      await env.DB.prepare("UPDATE messages SET folder=? WHERE account_id=? AND folder=?")
-        .bind(to, acct.id, from)
-        .run();
+      // Rows are filed under the app name, which for a nested mailbox is the
+      // whole path. Matching on the name the client happened to send missed
+      // them whenever the two differed.
+      if (moved.now !== moved.was) {
+        await env.DB.prepare("UPDATE messages SET folder=? WHERE account_id=? AND folder=?")
+          .bind(moved.now, acct.id, moved.was)
+          .run();
+      }
     } catch (e) {
       return json({ error: String(e.message || e) }, 502);
     }
-    return json({ ok: true });
+    return json({ ok: true, name: moved.now });
   }
 
   // POST /api/folders/empty { folder } — Trash or Spam only.
@@ -3204,7 +3226,9 @@ async function route(request, env, ctx) {
     // answer travels with every response instead of being guessed at.
     const said = request.headers.get("X-Client") || "";
     out.headers.set("X-Shell", CLIENT_SHELL);
-    if (said !== CLIENT_SHELL) {
+    // The Chrome extension is versioned on its own and says so with an ext-
+    // prefix; it is never stale against the shell, so it is not logged as one.
+    if (said !== CLIENT_SHELL && !said.startsWith("ext-")) {
       console.log(`stale client: ${said || "(pre-versioning)"} against ${CLIENT_SHELL} on ${path}`);
     }
     return out;
