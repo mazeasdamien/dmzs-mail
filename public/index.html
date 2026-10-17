@@ -817,7 +817,11 @@ html.busy #bar{opacity:1}
    Both are the same gesture language as the phone you are holding: the row
    slides aside to be filed, and a held press marks it without opening it. */
 #list{position:relative}
-.rowwrap{position:relative;overflow:hidden;background:var(--bg)}
+.rowwrap{position:relative;overflow:hidden;background:var(--bg);
+  /* Rows off screen are not laid out or painted until they scroll near. With
+     "Load older" a folder can hold hundreds; the size is remembered once a
+     row has been seen, so the scrollbar does not jump. */
+  content-visibility:auto;contain-intrinsic-size:auto 78px}
 /* The reveal lives behind the row. Archive is the filing action worth a
    gesture — delete is deliberate and stays a button you look for.
 
@@ -1899,7 +1903,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v59";
+const CLIENT = "v60";
 
 async function api(path, opts = {}) {
   busy(1);
