@@ -31,7 +31,7 @@ import {
 import { seal, open } from "./src/crypto.js";
 import { BODY_VERSION, bodyFromParts, unsubFromHeaders } from "./src/body.js";
 import { MailAuthError, isAuthFailure } from "./src/errors.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 let pass = 0;
 let fail = 0;
@@ -504,6 +504,16 @@ const clientScript = readFileSync(new URL("./public/index.html", import.meta.url
   .split("<script>")[1]
   .split("</script>")[0];
 
+/** Le Worker entier, tous modules confondus : les routes et les phrases
+ * qu'on y cherche ne vivent plus toutes dans index.js. */
+function workerSource() {
+  const dir = new URL("./src/", import.meta.url);
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(".js"))
+    .map((f) => readFileSync(new URL(f, dir), "utf8"))
+    .join("\n");
+}
+
 /** Une déclaration, découpée du script client par son nom. */
 function decl(name) {
   const at = clientScript.search(new RegExp(`^(?:async )?(?:function ${name}\\b|const ${name} = )`, "m"));
@@ -596,7 +606,7 @@ console.log("\n-- en-tête From : nom affiché --------------");
  * personne ne s'en apercevra avant d'essayer de le supprimer. */
 console.log("\n-- purge : ce qui est deja perdu ----------");
 {
-  const worker = readFileSync(new URL("./src/index.js", import.meta.url), "utf8");
+  const worker = workerSource();
   const thrown = (/throw new Error\("([^"]*not found[^"]*)"\)/.exec(worker) || [])[1] || "";
   const tolerated = (/if \(!\/([^/]+)\/i\.test\(String\(e\.message/.exec(worker) || [])[1] || "";
   ok(!!thrown, "icloudAct dit toujours qu'il n'a rien trouvé");
@@ -938,7 +948,7 @@ console.log("\n── contrat : appels du client ↔ routes ──────")
   // appeler sa route, et personne ne l'a vu : rien ne comparait ce que le
   // client appelle à ce que le Worker sert. C'est ce que fait ce bloc, dans
   // les deux sens.
-  const worker = readFileSync(new URL("./src/index.js", import.meta.url), "utf8");
+  const worker = workerSource();
   const exact = [...worker.matchAll(/path === "(\/api\/[^"]+)"/g)].map((m) => m[1]);
   const patterns = [...worker.matchAll(/path\.match\((\/\^\\\/api.*?\$\/)\)/g)].map((m) => new Function(`return ${m[1]}`)());
 
