@@ -31,7 +31,29 @@ class Smtp {
 
   async _fill() {
     if (this.dead) throw new Error("SMTP connection already closed");
-    const { value, done } = await this.reader.read();
+    // The deadline in readReply is only checked between lines, so a server
+    // that goes quiet mid-line held the read forever. Past REPLY_MS the
+    // connection is abandoned outright — closed, not left with a read
+    // outstanding to be cancelled later.
+    let timer;
+    const late = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("SMTP reply timed out")), REPLY_MS);
+    });
+    let got;
+    try {
+      got = await Promise.race([this.reader.read(), late]);
+    } catch (e) {
+      this.dead = true;
+      try {
+        this.socket.close();
+      } catch {
+        /* already closed */
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+    const { value, done } = got;
     if (done || !value) throw new Error("SMTP connection closed by server");
     const next = new Uint8Array(this.buf.length + value.length);
     next.set(this.buf, 0);

@@ -1787,7 +1787,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v50";
+const CLIENT = "v51";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -3938,6 +3938,9 @@ let draftSaving = null;
  * the local copy, over a draft it knows nothing about.
  */
 let draftSession = 0;
+// The send's idempotency key: new for every message opened in the composer,
+// the same for every press of Send on that message. See /api/send.
+let sendKey = "";
 /** The list row the open draft came from, so deleting it can disarm the save. */
 let draftRowId = "";
 
@@ -4324,8 +4327,12 @@ $("#acctList").addEventListener("click", async (e) => {
   if (sync) {
     toast("Syncing…");
     const res = await api(`/api/accounts/${sync.dataset.syncacc}/sync`, { method: "POST" }).catch(() => null);
-    const d = res && res.ok ? await res.json().catch(() => ({})) : {};
-    toast(d.note || (d.fetched ? `${d.fetched} new` : "Up to date"));
+    const d = res ? await res.json().catch(() => ({})) : {};
+    // A failed sync used to say "Up to date", which is the one thing it
+    // certainly was not.
+    if (!res || !res.ok) toast(d.error || "Could not reach iCloud");
+    else if (d.busy) toast("Already syncing — new mail will appear in a moment");
+    else toast(d.fetched ? `${d.fetched} new` : "Up to date");
     await Promise.all([loadAccounts(), loadList()]);
     return;
   }
@@ -4394,6 +4401,7 @@ function openCompose(opts = {}) {
   // save delete a draft this composer has nothing to do with.
   clearTimeout(draftTimer);
   draftSession++;
+  sendKey = crypto.randomUUID();
   draftPid = opts.pid || "";
   draftRowId = opts.rowId || "";
   draftClean = true;
@@ -5314,7 +5322,7 @@ $("#cSend").addEventListener("click", async () => {
   btn.textContent = "Sending…";
   const res = await api("/api/send", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "Idempotency-Key": sendKey },
     body: JSON.stringify(body),
   }).catch(() => null);
   btn.disabled = false;
@@ -5532,13 +5540,16 @@ async function syncNow() {
     const answers = await Promise.all(
       accounts.map((a) =>
         api(`/api/accounts/${a.id}/sync`, { method: "POST" })
-          .then((r) => (r.ok ? r.json() : null))
-          .catch(() => null)
+          .then(async (r) => ({ ok: r.ok, ...(await r.json().catch(() => ({}))) }))
+          .catch(() => ({ ok: false }))
       )
     );
     await refreshAll();
-    const got = answers.reduce((n, d) => n + (d?.fetched || 0), 0);
-    toast(got ? `${got} new message${got > 1 ? "s" : ""}` : "Up to date");
+    const got = answers.reduce((n, d) => n + (d.fetched || 0), 0);
+    const failed = answers.find((d) => !d.ok);
+    if (failed) toast(failed.error || "Could not reach iCloud");
+    else if (!got && answers.some((d) => d.busy)) toast("Already syncing — new mail will appear in a moment");
+    else toast(got ? `${got} new message${got > 1 ? "s" : ""}` : "Up to date");
   } finally {
     btn.classList.remove("busy");
   }

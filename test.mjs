@@ -885,5 +885,88 @@ console.log("\n-- réconciliation (fenêtres, deux essais) --");
   eq(flagState("\x5cSeenX"), { unread: 1, starred: 0 }, "un mot-clé voisin ne compte pas");
 }
 
+console.log("\n── en-têtes sortants : longueur et pliage ───");
+{
+  const long = "Réunion de lancement du projet européen — ordre du jour, documents et décisions à prendre";
+  const enc = encodeHeader(long);
+  ok(enc.split(" ").every((w) => w.length <= 75), "aucun mot encodé au-delà de 75 caractères");
+  eq(decodeWords(enc), long, "le sujet découpé se relit à l'identique");
+  const many = Array.from({ length: 12 }, (_, i) => `personne${i}@exemple.fr`).join(", ");
+  const raw = buildRfc822({ from: "d@x.fr", to: many, subject: long, text: "x" });
+  const head = raw.split("\r\n\r\n")[0];
+  ok(head.split("\r\n").every((l) => l.length <= 78), "chaque ligne d'en-tête tient en 78 colonnes");
+  const toLine = head.match(/^To: [\s\S]*?(?=\r\n\S)/m)[0];
+  eq(toLine.replace(/\r\n /g, " "), `To: ${many}`, "la ligne To: dépliée redonne les mêmes adresses");
+  const pj = buildRfc822({
+    from: "d@x.fr", to: "a@y.fr", text: "x",
+    attachments: [{ filename: 'rapport "final".pdf', type: "application/pdf", data: "AA==" }, { filename: "résumé.pdf", type: "application/pdf", data: "AA==" }],
+  });
+  ok(pj.includes('filename="rapport \\"final\\".pdf"'), "un guillemet dans le nom est échappé");
+  ok(pj.includes("filename*=utf-8''r%C3%A9sum%C3%A9.pdf"), "nom accentué en RFC 2231");
+}
+
+console.log("\n── archive zip des pièces jointes ───────────");
+{
+  const { zipStream, crc32 } = await import("./src/zip.js");
+  const zlib = await import("node:zlib");
+  const enc = new TextEncoder();
+  const files = { "a.txt": enc.encode("bonjour"), "b.txt": enc.encode("x".repeat(5000)) };
+  let loads = 0;
+  let closed = 0;
+  const stream = zipStream(
+    [{ name: "a.txt" }, { name: "b.txt" }, { name: "manquant" }],
+    async (e) => { loads++; if (e.name === "manquant") throw new Error("absent"); return files[e.name]; },
+    () => { closed++; }
+  );
+  const reader = stream.getReader();
+  const first = await reader.read();
+  eq(loads, 1, "un seul fichier lu avant que le lecteur en demande un autre");
+  const parts = [first.value];
+  for (;;) { const r = await reader.read(); if (r.done) break; parts.push(r.value); }
+  const zip = Buffer.concat(parts.map((p) => Buffer.from(p)));
+  eq(zip.readUInt32LE(zip.length - 22), 0x06054b50, "fin de répertoire central en place");
+  eq(zip.readUInt16LE(zip.length - 12), 2, "deux entrées, le fichier manquant sauté");
+  eq(crc32(files["b.txt"]), zlib.crc32(files["b.txt"]), "CRC-32 identique à zlib");
+  eq(closed, 1, "onFinish appelé une fois, à la fin");
+}
+
+console.log("\n── transport IMAP, faux socket ──────────────");
+{
+  // imap.js importe cloudflare:sockets, que Node ne connaît pas : on en charge
+  // une copie sans cet import, avec la classe exportée, et on lui donne un
+  // socket qui livre les octets par morceaux arbitraires.
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { writeFileSync, mkdtempSync } = await import("node:fs");
+  const src = readFileSync(new URL("./src/imap.js", import.meta.url), "utf8")
+    .replace(/^import \{ connect \} from "cloudflare:sockets";$/m, "const connect = null;")
+    .replace(/^import \{ MailAuthError \} from "\.\/errors\.js";$/m, "class MailAuthError extends Error {}")
+    .replace(/from "\.\/(rfc822|mime)\.js";/g, (_m, f) => `from ${JSON.stringify(new URL(`./src/${f}.js`, import.meta.url).href)};`);
+  const dir = mkdtempSync(join(tmpdir(), "imap-"));
+  writeFileSync(join(dir, "imap.mjs"), src + "\nexport { Imap };\n");
+  const { Imap } = await import("file://" + join(dir, "imap.mjs").replace(/\\/g, "/"));
+
+  const fake = (chunks) => {
+    const enc = new TextEncoder();
+    let i = 0;
+    return {
+      readable: { getReader: () => ({ read: async () => (i < chunks.length ? { value: enc.encode(chunks[i++]), done: false } : { done: true }) }) },
+      writable: { getWriter: () => ({ write: async () => {} }) },
+      close() {},
+    };
+  };
+  const big = "x".repeat(200_000) + "\r\nfin";
+  const flux = `* 1 FETCH (UID 7 BODY[] {${big.length}}\r\n${big})\r\nd0001 OK fait\r\n`;
+  // Coupé tous les 997 octets : les fins de ligne et le littéral tombent au milieu.
+  const morceaux = [];
+  for (let k = 0; k < flux.length; k += 997) morceaux.push(flux.slice(k, k + 997));
+  const im = new Imap(fake(morceaux));
+  const r = await im.readResponse();
+  eq(r.literals[0].length, big.length, "le littéral arrive entier malgré le découpage");
+  ok(r.literals[0].endsWith("\r\nfin"), "ses CRLF internes ne coupent rien");
+  ok(/UID 7/.test(r.line), "la ligne d'en-tête du FETCH est lue");
+  eq(await im.readLine(), "d0001 OK fait", "la réponse suivante reste alignée");
+}
+
 console.log(`\n${fail === 0 ? "✓" : "✗"} ${pass} assertions passées, ${fail} échec(s)\n`);
 process.exit(fail ? 1 : 0);

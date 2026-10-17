@@ -23,7 +23,9 @@ if (process.argv.includes("--check")) {
     console.error("schema.sql is missing — run: node scripts/gen-schema.mjs");
     process.exit(1);
   }
-  if (have !== want) {
+  // Line endings are git's business (core.autocrlf rewrites them on checkout),
+  // not drift.
+  if (have.replace(/\r\n/g, "\n") !== want) {
     console.error("schema.sql is stale — run: node scripts/gen-schema.mjs");
     process.exit(1);
   }

@@ -100,7 +100,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * edit, and the page, this file and the service worker all agree on it or the
  * deploy never starts.
  */
-const CLIENT_SHELL = "v50";
+const CLIENT_SHELL = "v51";
 
 /**
  * IMAP system flags, spelled once.
@@ -1135,7 +1135,7 @@ async function syncIcloud(env, account, tally = {}) {
  * still searched, because the message may have been moved from another client
  * since we last looked.
  */
-async function icloudAct(env, account, mid, hintFolder, fn) {
+async function icloudAct(env, account, mid, hintFolder, fn, { onlyHint = false } = {}) {
   const pass = await icloudPassword(env, account);
   if (!pass) return false;
   if (!mid) throw new Error("no Message-ID for this message");
@@ -1144,8 +1144,10 @@ async function icloudAct(env, account, mid, hintFolder, fn) {
   try {
     const boxes = await imapList(im);
     const first = boxes.filter((mb) => folderNameFor(mb) === hintFolder);
-    const rest = boxes.filter((mb) => folderNameFor(mb) !== hintFolder);
-    const needle = String(mid).replace(/"/g, "");
+    // onlyHint: for something that must never act outside its own folder —
+    // purging a draft that turned up, by Message-ID, somewhere else.
+    const rest = onlyHint ? [] : boxes.filter((mb) => folderNameFor(mb) !== hintFolder);
+    const needle = String(mid).replace(/["\\\r\n]/g, "");
 
     for (const mb of first.concat(rest)) {
       await imapSelect(im, mb.name);
@@ -1192,7 +1194,7 @@ async function threadAct(env, account, rows, fn) {
       if (!mb) continue;
       await imapSelect(im, mb.name);
       for (const r of list) {
-        const needle = String(r.mid || r.pid).replace(/"/g, "");
+        const needle = String(r.mid || r.pid).replace(/["\\\r\n]/g, "");
         if (!needle) continue;
         const uids = await imapSearch(im, `HEADER "Message-ID" "${needle}"`).catch(() => []);
         for (const uid of uids) {
@@ -1266,7 +1268,7 @@ async function purgeBlockedAtProvider(env, account, pattern, cap = 100) {
   const pass = await icloudPassword(env, account);
   if (!pass) return 0;
 
-  const needle = String(pattern).replace(/"/g, "");
+  const needle = String(pattern).replace(/["\\\r\n]/g, "");
   let killed = 0;
   const im = await imapOpen({ user: account.email, pass });
   try {
@@ -1317,13 +1319,39 @@ async function forgetBlockedLocally(env, pattern) {
    Sync, one account at a time, small on purpose.
    ──────────────────────────────────────────────────────────────── */
 
+/**
+ * One pass over one account, never two at once.
+ *
+ * The cron fires every minute and "check now" can fire any time, and two
+ * passes over the same account each read the cursors, fetched the same
+ * messages and wrote their own cursors back last-one-wins — undoing a folder
+ * rename the other had just recorded. A lease row in settings decides who
+ * runs; one left by a pass that died expires after SYNC_LEASE_MS.
+ *
+ * Returns { n, busy, error }: how many messages were stored, whether another
+ * pass already held the account, and what went wrong if anything did.
+ */
+const SYNC_LEASE_MS = 5 * 60_000;
 async function syncAccount(env, account, tally) {
+  const key = `sync_lock_${account.id}`;
+  const now = Date.now();
+  const got = await env.DB.prepare(
+    `INSERT INTO settings (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value
+       WHERE CAST(settings.value AS INTEGER) < ?`
+  )
+    .bind(key, String(now), now - SYNC_LEASE_MS)
+    .run();
+  if (!got.meta?.changes) return { n: 0, busy: true, error: "" };
   try {
-    if (account.provider === "icloud") return await syncIcloud(env, account, tally);
+    if (account.provider === "icloud") return { n: await syncIcloud(env, account, tally), busy: false, error: "" };
+    return { n: 0, busy: false, error: "" };
   } catch (e) {
     await flagAccount(env, account, e);
+    return { n: 0, busy: false, error: isAuthFailure(e) ? "This account needs reconnecting" : String(e.message || e).slice(0, 200) };
+  } finally {
+    await env.DB.prepare("DELETE FROM settings WHERE key=? AND value=?").bind(key, String(now)).run().catch(() => {});
   }
-  return 0;
 }
 
 /* ────────────────────────────────────────────────────────────────
@@ -1557,7 +1585,7 @@ async function fileDraftCopy(env, account, pass, raw, replaces) {
     // The old copy goes before the new one lands, so a failure halfway leaves
     // one draft rather than none.
     if (replaces && replaces !== row.pid) {
-      const uids = await imapSearch(im, `HEADER "Message-ID" "${String(replaces).replace(/"/g, "")}"`);
+      const uids = await imapSearch(im, `HEADER "Message-ID" "${String(replaces).replace(/["\\\r\n]/g, "")}"`);
       for (const uid of uids) await imapPurge(im, uid);
     }
     // \Draft is what tells Mail on a phone this is unfinished rather than
@@ -1696,8 +1724,9 @@ async function handleApi(request, env, path, ctx) {
     if (!acct.secret) {
       return json({ error: "This account has no stored credential" }, 400);
     }
-    const n = await syncAccount(env, acct);
-    return json({ ok: true, fetched: n });
+    const r = await syncAccount(env, acct);
+    if (r.error) return json({ error: r.error }, r.error === "This account needs reconnecting" ? 409 : 502);
+    return json({ ok: true, fetched: r.n, busy: r.busy });
   }
 
   // GET /api/push/key — the VAPID public key, minted on first request.
@@ -1710,6 +1739,18 @@ async function handleApi(request, env, path, ctx) {
   if (path === "/api/push/subscribe" && request.method === "POST") {
     const sub = await request.json().catch(() => null);
     if (!sub?.endpoint) return json({ error: "Not a push subscription" }, 400);
+    // The Worker POSTs to this URL on every new mail, so it has to be a push
+    // service and not an arbitrary address: https, and one of the services
+    // browsers actually hand out.
+    let host = "";
+    try {
+      const u = new URL(String(sub.endpoint));
+      if (u.protocol === "https:") host = u.hostname;
+    } catch {
+      /* not a URL */
+    }
+    const PUSH_HOSTS = /(^|\.)(googleapis\.com|push\.apple\.com|mozilla\.com|mozaws\.net|notify\.windows\.com)$/;
+    if (!PUSH_HOSTS.test(host)) return json({ error: "Not a known push service" }, 400);
     await env.DB.prepare(
       `INSERT INTO push_subs (endpoint, sub, created_at) VALUES (?,?,?)
        ON CONFLICT(endpoint) DO UPDATE SET sub=excluded.sub`
@@ -1821,7 +1862,7 @@ async function handleApi(request, env, path, ctx) {
         return made;
       });
     } catch (e) {
-      return json({ error: String(e.message || e) }, 502);
+      return imapError(e, acct, env);
     }
     await noteMailbox(env, acct, box);
     return json({ ok: true, name: folderNameFor(box) });
@@ -1882,7 +1923,7 @@ async function handleApi(request, env, path, ctx) {
           .run();
       }
     } catch (e) {
-      return json({ error: String(e.message || e) }, 502);
+      return imapError(e, acct, env);
     }
     return json({ ok: true, name: moved.now });
   }
@@ -1910,7 +1951,7 @@ async function handleApi(request, env, path, ctx) {
         return imapEmpty(im, box.name);
       });
     } catch (e) {
-      return json({ error: String(e.message || e) }, 502);
+      return imapError(e, acct, env);
     }
 
     const { results } = await env.DB.prepare(
@@ -1922,10 +1963,10 @@ async function handleApi(request, env, path, ctx) {
     await env.DB.prepare("DELETE FROM messages WHERE account_id=? AND folder=?")
       .bind(acct.id, which)
       .run();
-    // The cursor has to go too, or the next pass looks for mail past a UID
-    // that no longer exists and quietly finds nothing forever.
-    const box = which === "trash" ? "Deleted Messages" : "Junk";
-    await renameCursor(env, acct, box, null);
+    // The cursor stays. UIDs are never reused within a mailbox, so the next
+    // message to arrive is still above it. Dropping it (by a hard-coded name
+    // that was not always the mailbox's real one) only sent the next pass
+    // back to re-read the folder from scratch.
 
     return json({ ok: true, removed: removed || (results ?? []).length });
   }
@@ -1947,7 +1988,7 @@ async function handleApi(request, env, path, ctx) {
         await renameCursor(env, acct, box.name, null);
       });
     } catch (e) {
-      return json({ error: String(e.message || e) }, 502);
+      return imapError(e, acct, env);
     }
 
     // Apple has destroyed the mailbox; drop our copies so the folder does not
@@ -2000,7 +2041,7 @@ async function handleApi(request, env, path, ctx) {
       });
       return json({ parsed: boxes.map((m) => m.name), counts, rawCount: raw.length, raw });
     } catch (e) {
-      return json({ error: String(e.message || e) }, 502);
+      return imapError(e, acct, env);
     }
   }
 
@@ -2041,14 +2082,19 @@ async function handleApi(request, env, path, ctx) {
     if (!rows.length) return json({ candidates, checked: 0, moved: 0, remaining: 0 });
 
     let moved = 0;
-    const im = await imapOpen({ user: acct.email, pass });
+    let im;
+    try {
+      im = await imapOpen({ user: acct.email, pass });
+    } catch (e) {
+      return imapError(e, acct, env);
+    }
     try {
       const boxes = await imapList(im);
       const inbox = boxes.find((mb) => folderNameFor(mb) === "inbox");
       if (!inbox) return json({ error: `no Inbox — server has: ${mailboxList(boxes)}` }, 502);
       await imapSelect(im, inbox.name);
       for (const r of rows) {
-        const uids = await imapSearch(im, `HEADER "Message-ID" "${String(r.mid).replace(/"/g, "")}"`);
+        const uids = await imapSearch(im, `HEADER "Message-ID" "${String(r.mid).replace(/["\\\r\n]/g, "")}"`);
         if (!uids.length) continue;
         const [meta] = await imapFetchMeta(im, String(uids[uids.length - 1]));
         await env.DB.prepare("UPDATE messages SET folder='inbox', unread=? WHERE id=?")
@@ -2357,8 +2403,10 @@ async function handleApi(request, env, path, ctx) {
         sql += " AND id IN (SELECT id FROM search WHERE search MATCH ?)";
         vals.push(match);
       } else {
-        sql += " AND (subject LIKE ? OR from_email LIKE ? OR from_name LIKE ?)";
-        const like = `%${term}%`;
+        // Escaped, so a search for "100%" or "a_b" means those characters
+        // and not LIKE's wildcards.
+        sql += " AND (subject LIKE ? ESCAPE '\\' OR from_email LIKE ? ESCAPE '\\' OR from_name LIKE ? ESCAPE '\\')";
+        const like = `%${term.replace(/[\\%_]/g, "\\$&")}%`;
         vals.push(like, like, like);
       }
     }
@@ -2403,7 +2451,8 @@ async function handleApi(request, env, path, ctx) {
       body = await ensureBody(env, acct, msg);
     } catch (e) {
       if (isAuthFailure(e)) await flagAccount(env, acct, e);
-      body = bodyFromParts({ html: `<p>(could not fetch the body: ${String(e.message || e)})</p>` });
+      // Escaped: the server's error text can quote the message's own bytes.
+      body = bodyFromParts({ html: textToHtml(`(could not fetch the body: ${String(e.message || e)})`) });
     }
 
     if (msg.unread && !peek) {
@@ -2515,10 +2564,15 @@ async function handleApi(request, env, path, ctx) {
 
     // One connection for the whole archive rather than one per file: eleven
     // logins to Apple to build one zip would be both slow and rude.
-    const im = await imapOpen({ user: acct.email, pass });
+    let im;
+    try {
+      im = await imapOpen({ user: acct.email, pass });
+    } catch (e) {
+      return imapError(e, acct, env);
+    }
     let uid = null;
     try {
-      const needle = String(msg.mid || msg.pid).replace(/"/g, "");
+      const needle = String(msg.mid || msg.pid).replace(/["\\\r\n]/g, "");
       for (const mb of await imapList(im)) {
         await imapSelect(im, mb.name);
         const hits = await imapSearch(im, `HEADER "Message-ID" "${needle}"`);
@@ -2529,7 +2583,7 @@ async function handleApi(request, env, path, ctx) {
       }
     } catch (e) {
       await im.logout();
-      return json({ error: String(e.message || e) }, 502);
+      return imapError(e, acct, env);
     }
     if (uid === null) {
       await im.logout();
@@ -2992,7 +3046,7 @@ No invented facts, no commitment to anything the brief does not cover, and no br
     if (acct) {
       await forgetLocal(env, acct.id, pid);
       try {
-        await icloudAct(env, acct, pid, "drafts", (im, _b, _mb, uid) => imapPurge(im, uid));
+        await icloudAct(env, acct, pid, "drafts", (im, _b, _mb, uid) => imapPurge(im, uid), { onlyHint: true });
       } catch {
         // Already gone, or never got there. Either way the draft is not
         // coming back, and failing here would block sending.
@@ -3002,6 +3056,15 @@ No invented facts, no commitment to anything the brief does not cover, and no br
   }
 
   if (path === "/api/send" && request.method === "POST") {
+    // One key per message being written. If the answer to a send that did
+    // go out is lost on the way back, the composer says "Could not send" and
+    // you press Send again; the key makes that second press return the first
+    // result instead of mailing everyone twice.
+    const idem = String(request.headers.get("Idempotency-Key") || "").slice(0, 80);
+    if (idem) {
+      const seen = await env.DB.prepare("SELECT value FROM settings WHERE key=?").bind(`sent:${idem}`).first();
+      if (seen) return json({ ...JSON.parse(seen.value).res, repeat: true }, 202);
+    }
     const b = await request.json().catch(() => ({}));
     const acct = await accountById(env, String(b.account_id || ""));
     if (!acct) return json({ error: "Pick an account to send from" }, 400);
@@ -3095,7 +3158,9 @@ No invented facts, no commitment to anything the brief does not cover, and no br
           user: acct.email,
           pass,
           from: acct.email,
-          to: [...to, ...cc, ...bcc].map((a) => a.email),
+          // Once each: someone on both To and Cc is one recipient, not two
+          // RCPT TOs and possibly two copies.
+          to: [...new Set([...to, ...cc, ...bcc].map((a) => a.email))],
           raw,
         });
 
@@ -3117,7 +3182,14 @@ No invented facts, no commitment to anything the brief does not cover, and no br
     } catch (e) {
       return imapError(e, acct, env);
     }
-    return json({ ok: true, filed, filedError }, 202);
+    const res = { ok: true, filed, filedError };
+    if (idem) {
+      await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+        .bind(`sent:${idem}`, JSON.stringify({ at: Date.now(), res }))
+        .run()
+        .catch(() => {});
+    }
+    return json(res, 202);
   }
 
   return json({ error: "Unknown route" }, 404);
@@ -3209,7 +3281,9 @@ async function route(request, env, ctx) {
   }
 
   const session = await requestSession(request, env);
-  if (!session) return denied();
+  // JSON for the API, which is read by code; the page for anything a person
+  // navigated to.
+  if (!session) return path.startsWith("/api/") ? json({ error: "This device is not activated" }, 401) : denied();
 
   if (path.startsWith("/api/")) {
     if (!sameOriginWrite(request)) return json({ error: "Cross-site request refused" }, 403);
@@ -3333,6 +3407,13 @@ export default {
   async scheduled(event, env, ctx) {
     // Two schedules share this handler; the cron expression says which fired.
     if (event.cron && event.cron.startsWith("17 3")) {
+      ctx.waitUntil(
+        // Send receipts only matter for the minutes a retry could come in.
+        env.DB.prepare("DELETE FROM settings WHERE key LIKE 'sent:%' AND json_extract(value, '$.at') < ?")
+          .bind(Date.now() - 2 * 86_400_000)
+          .run()
+          .catch(() => {})
+      );
       // A failed snapshot used to vanish into .catch(() => {}). It is kept
       // where Settings can show it, and cleared by the next good one.
       ctx.waitUntil(
@@ -3356,9 +3437,11 @@ export default {
         // only place that can put that right.
         await ensureSchema(env).catch((e) => console.log(`schema: ${e.message || e}`));
 
-        const before = await env.DB.prepare(
-          "SELECT COUNT(*) AS n FROM messages WHERE folder='inbox' AND unread=1"
-        ).first();
+        // The newest unread message in the inbox, before and after. Counting
+        // them missed a pass where one arrived and another was read: the
+        // count stood still and nothing rang.
+        const NEWEST = "SELECT MAX(date) AS d FROM messages WHERE folder='inbox' AND unread=1";
+        const before = await env.DB.prepare(NEWEST).first();
 
         const { results } = await env.DB.prepare(
           // Only accounts with a stored credential; without one there is
@@ -3376,13 +3459,14 @@ export default {
         const tally = { unreadShift: 0 };
         for (const acct of results ?? []) await syncAccount(env, acct, tally);
 
-        // Only ring if unread inbox mail actually went up. A sync that merely
-        // backfilled history, or re-read a message you had already opened,
-        // is not something to wake a phone for.
-        const after = await env.DB.prepare(
-          "SELECT COUNT(*) AS n FROM messages WHERE folder='inbox' AND unread=1"
-        ).first();
-        if ((after?.n || 0) - tally.unreadShift > (before?.n || 0)) await pushAll(env);
+        // Only ring for unread mail newer than anything unread before, and
+        // recent. A sync that backfilled history, re-read a message already
+        // opened, or picked up a flag changed on the phone is not something
+        // to wake a phone for: none of those makes the newest unread message
+        // newer than it was.
+        const after = await env.DB.prepare(NEWEST).first();
+        const fresh = (after?.d || 0) > (before?.d || 0) && (after?.d || 0) > Date.now() - 2 * 86_400_000;
+        if (fresh) await pushAll(env);
       })()
     );
   },
@@ -3399,7 +3483,7 @@ function denied() {
       font:400 15px/1.6 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;text-align:center;padding:24px}
  strong{display:block;color:#f4f4f5;font-size:17px;font-weight:600;margin-bottom:6px}
 </style></head>
-<body><div><strong>Access denied</strong>This device is not activated.</div></body></html>`,
+<body><div><strong>Access denied</strong>This device is not activated.<br><a href="/auth" style="color:#f4f4f5">Activate it with your key</a></div></body></html>`,
     { status: 401, headers: { "Content-Type": "text/html; charset=utf-8" } }
   );
 }

@@ -267,11 +267,70 @@ export function replyReferences(parent) {
 
 const needsEncoding = (s) => /[^\x20-\x7e]/.test(s);
 
-/** RFC 2047 B-encoding for a header value, only when it has to. */
+/**
+ * RFC 2047 B-encoding for a header value, only when it has to.
+ *
+ * In words of at most 45 bytes, split on character boundaries, so no encoded
+ * word passes the 75 characters the RFC allows and none cuts a character in
+ * two. Space-separated: decoders join adjacent encoded words, and fold() can
+ * break the line there.
+ */
 export function encodeHeader(s) {
   const v = String(s ?? "");
   if (!needsEncoding(v)) return v;
-  return `=?utf-8?B?${b64encode(new TextEncoder().encode(v))}?=`;
+  const enc = new TextEncoder();
+  const words = [];
+  let cur = "";
+  for (const ch of v) {
+    if (enc.encode(cur + ch).length > 45) {
+      words.push(cur);
+      cur = "";
+    }
+    cur += ch;
+  }
+  if (cur) words.push(cur);
+  return words.map((w) => `=?utf-8?B?${b64encode(enc.encode(w))}?=`).join(" ");
+}
+
+/**
+ * Folds a header line at 78 columns, breaking only at a space (after the
+ * comma between two addresses, between encoded words, between References
+ * ids). A long To: or References: line went out whole, and some servers
+ * refuse lines past 998 characters outright.
+ */
+export function fold(line) {
+  // Already folded somewhere upstream: each physical line on its own, or a
+  // break would land on the space after an existing CRLF and leave an empty
+  // line — which ends the headers.
+  if (line.includes("\r\n")) return line.split("\r\n").map(fold).join("\r\n");
+  if (line.length <= 78) return line;
+  const out = [];
+  let rest = line;
+  while (rest.length > 78) {
+    let at = rest.lastIndexOf(" ", 78);
+    if (at <= 0) at = rest.indexOf(" ", 78);
+    if (at <= 0) break;
+    out.push(rest.slice(0, at));
+    rest = rest.slice(at); // the space stays, as the continuation's indent
+  }
+  out.push(rest);
+  return out.join("\r\n");
+}
+
+/**
+ * A filename as MIME parameters: RFC 2231 `name*=utf-8''…` for readers that
+ * know it, and a quoted fallback with its quotes and backslashes escaped —
+ * a `"` in a filename used to end the parameter early.
+ */
+function fileParam(key, filename) {
+  const name = String(filename);
+  const plain = needsEncoding(name) ? encodeHeader(name) : name;
+  const quoted = `${key}="${plain.replace(/(["\\])/g, "\\$1")}"`;
+  if (!needsEncoding(name) && !/["\\]/.test(name)) return quoted;
+  const pct = Array.from(new TextEncoder().encode(name), (b) =>
+    /[A-Za-z0-9!#$&+.^_`|~-]/.test(String.fromCharCode(b)) ? String.fromCharCode(b) : "%" + b.toString(16).toUpperCase().padStart(2, "0")
+  ).join("");
+  return `${quoted}; ${key}*=utf-8''${pct}`;
 }
 
 /** UTF-8 → base64, wrapped at 76 chars, which keeps old SMTP servers happy. */
@@ -415,7 +474,7 @@ export function buildRfc822({
   };
 
   const body = bodyEntity();
-  if (!files.length) return lines.concat(body.headers).join("\r\n") + "\r\n\r\n" + body.content;
+  if (!files.length) return lines.map(fold).concat(body.headers).join("\r\n") + "\r\n\r\n" + body.content;
 
   // With files, the message becomes multipart/mixed: the readable part first,
   // then one part per file. Mixed rather than alternative — these are not
@@ -424,11 +483,10 @@ export function buildRfc822({
   lines.push(`Content-Type: multipart/mixed; boundary="${mixed}"`);
 
   const filePart = (f) => {
-    const name = encodeHeader(f.filename);
     return (
       `--${mixed}\r\n` +
-      `Content-Type: ${f.type || "application/octet-stream"}; name="${name}"\r\n` +
-      `Content-Disposition: attachment; filename="${name}"\r\n` +
+      `Content-Type: ${f.type || "application/octet-stream"}; ${fileParam("name", f.filename)}\r\n` +
+      `Content-Disposition: attachment; ${fileParam("filename", f.filename)}\r\n` +
       "Content-Transfer-Encoding: base64\r\n\r\n" +
       // Already base64 from the browser; only re-wrap it to 76 columns.
       (String(f.data).replace(/\s+/g, "").match(/.{1,76}/g) || [""]).join("\r\n") +
@@ -437,7 +495,7 @@ export function buildRfc822({
   };
 
   return (
-    lines.join("\r\n") +
+    lines.map(fold).join("\r\n") +
     "\r\n\r\n" +
     `--${mixed}\r\n${body.headers.join("\r\n")}\r\n\r\n${body.content}` +
     files.map(filePart).join("") +

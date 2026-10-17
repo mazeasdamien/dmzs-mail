@@ -31,14 +31,6 @@ async function readSetting(env, key) {
   return row?.value ?? null;
 }
 
-async function writeSetting(env, key, value) {
-  await env.DB.prepare(
-    "INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
-  )
-    .bind(key, value)
-    .run();
-}
-
 /**
  * The VAPID keypair, generated once and reused.
  * Returns { publicKey (base64url raw), privateJwk }.
@@ -60,8 +52,16 @@ export async function vapidKeys(env) {
     publicKey: b64url(await crypto.subtle.exportKey("raw", pair.publicKey)),
     privateJwk: await crypto.subtle.exportKey("jwk", pair.privateKey),
   };
-  await writeSetting(env, "vapid", await seal(env.ENC_KEY, keys));
-  return keys;
+  // First writer wins. Two requests arriving before any key existed each
+  // made a pair, the second overwrote the first, and every subscription made
+  // against the first pair stopped receiving pushes. Insert only if absent,
+  // then use whatever is stored.
+  await env.DB.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('vapid', ?)")
+    .bind(await seal(env.ENC_KEY, keys))
+    .run();
+  const kept = await readSetting(env, "vapid");
+  const box = kept ? await open(env.ENC_KEY, kept) : null;
+  return box?.privateJwk && box?.publicKey ? box : keys;
 }
 
 /** A VAPID JWT for one push service origin, good for twelve hours. */

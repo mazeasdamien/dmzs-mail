@@ -22,10 +22,18 @@ import { bytesToLatin1 as latin1 } from "./rfc822.js";
 
 const CRLF = "\r\n";
 const GREETING_MS = 15_000;
+// Silence this long from a server mid-response means it is not coming. Without
+// a ceiling a stalled socket held the whole invocation, and the next minute's
+// cron then ran into this one.
+const READ_MS = 30_000;
 const MAX_LITERAL = 8 * 1024 * 1024; // a single body larger than this is refused
 
-/** IMAP quoted-string: backslash and quote are the only escapes. */
-const quote = (s) => '"' + String(s ?? "").replace(/([\\"])/g, "\\$1") + '"';
+/**
+ * IMAP quoted-string: backslash and quote are the only escapes. CR, LF and
+ * NUL cannot appear in one at all, and a CRLF inside would end the command
+ * and start another, so they are dropped rather than sent.
+ */
+const quote = (s) => '"' + String(s ?? "").replace(/[\r\n\0]/g, "").replace(/([\\"])/g, "\\$1") + '"';
 
 class Imap {
   constructor(socket) {
@@ -33,28 +41,72 @@ class Imap {
     this.reader = socket.readable.getReader();
     this.writer = socket.writable.getWriter();
     this.encoder = new TextEncoder();
-    this.buf = new Uint8Array(0);
+    // Unread bytes live in store[start, end). It grows by doubling and is
+    // compacted in place, so a 2 MB literal arriving in 16 KB chunks is not
+    // copied whole on every chunk, as appending to a fresh array did.
+    this.store = new Uint8Array(64 * 1024);
+    this.start = 0;
+    this.end = 0;
+    this.scanned = 0; // bytes after start already known to hold no LF
     this.seq = 0;
   }
 
+  async _read() {
+    let timer;
+    const late = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("IMAP server stopped answering")), READ_MS);
+    });
+    try {
+      return await Promise.race([this.reader.read(), late]);
+    } catch (e) {
+      try {
+        this.socket.close();
+      } catch {
+        /* already closed */
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async _fill() {
-    const { value, done } = await this.reader.read();
+    const { value, done } = await this._read();
     if (done || !value) throw new Error("IMAP connection closed by server");
-    const next = new Uint8Array(this.buf.length + value.length);
-    next.set(this.buf, 0);
-    next.set(value, this.buf.length);
-    this.buf = next;
+    const live = this.end - this.start;
+    if (this.end + value.length > this.store.length) {
+      const target = live + value.length > this.store.length / 2
+        ? new Uint8Array(Math.max(this.store.length * 2, live + value.length))
+        : this.store;
+      if (target === this.store) this.store.copyWithin(0, this.start, this.end);
+      else target.set(this.store.subarray(this.start, this.end), 0);
+      this.store = target;
+      this.start = 0;
+      this.end = live;
+    }
+    this.store.set(value, this.end);
+    this.end += value.length;
+  }
+
+  _take(n) {
+    const out = latin1(this.store.subarray(this.start, this.start + n));
+    this.start += n;
+    if (this.start === this.end) this.start = this.end = 0;
+    return out;
   }
 
   /** One CRLF-terminated line, without the terminator. */
   async readLine() {
     for (;;) {
-      const nl = this.buf.indexOf(10);
-      if (nl !== -1) {
-        const line = latin1(this.buf.subarray(0, nl)).replace(/\r$/, "");
-        this.buf = this.buf.subarray(nl + 1);
+      const at = this.store.subarray(this.start + this.scanned, this.end).indexOf(10);
+      if (at !== -1) {
+        const nl = this.scanned + at;
+        this.scanned = 0;
+        const line = this._take(nl).replace(/\r$/, "");
+        this._take(1);
         return line;
       }
+      this.scanned = this.end - this.start;
       await this._fill();
     }
   }
@@ -62,10 +114,9 @@ class Imap {
   /** Exactly n bytes, for a literal. */
   async readBytes(n) {
     if (n > MAX_LITERAL) throw new Error(`IMAP literal too large (${n} bytes)`);
-    while (this.buf.length < n) await this._fill();
-    const out = latin1(this.buf.subarray(0, n));
-    this.buf = this.buf.subarray(n);
-    return out;
+    while (this.end - this.start < n) await this._fill();
+    this.scanned = 0;
+    return this._take(n);
   }
 
   /**

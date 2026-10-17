@@ -79,97 +79,114 @@ export function zipStream(entries, load, onFinish) {
   const names = uniqueNames(entries.map((e) => e.name));
   const encoder = new TextEncoder();
 
+  const central = [];
+  let offset = 0;
+  let next = 0;
+  let finished = false;
+  // onFinish runs when the last byte is written, or the reader walks away —
+  // never before. Whatever `load` reads from (an IMAP connection here) has to
+  // outlive every pull, and closing it early yields a technically valid,
+  // entirely empty archive: each load throws, each entry is skipped, and the
+  // reader sees a zip containing nothing.
+  const finish = async () => {
+    if (finished) return;
+    finished = true;
+    try {
+      await onFinish?.();
+    } catch {
+      /* cleanup failing must not corrupt an archive already written */
+    }
+  };
+
+  // Pulled, one file per pull. Everything used to be produced in start(),
+  // whatever the reader's pace, so a slow download held the whole archive in
+  // the Worker's memory; now the next file is fetched only when the last one
+  // has been taken.
   return new ReadableStream({
-    async start(controller) {
-      // onFinish runs when the last byte is written — never before. Whatever
-      // `load` reads from (an IMAP connection here) has to outlive every pull,
-      // and closing it early yields a technically valid, entirely empty
-      // archive: each load throws, each entry is skipped, and the reader sees
-      // a zip containing nothing.
-      try {
-      const central = [];
-      let offset = 0;
+    async pull(controller) {
       const push = (bytes) => {
         controller.enqueue(bytes);
         offset += bytes.length;
       };
+      try {
+        while (next < entries.length) {
+          const i = next++;
+          let data;
+          try {
+            data = await load(entries[i], i);
+          } catch {
+            continue;
+          }
+          if (!data) continue;
 
-      for (let i = 0; i < entries.length; i++) {
-        let data;
-        try {
-          data = await load(entries[i], i);
-        } catch {
-          continue;
+          const nameBytes = encoder.encode(names[i]);
+          const localAt = offset;
+          const crc = crc32(data);
+          push(
+            join(
+              u32(0x04034b50),
+              u16(20), // version needed
+              u16(0x0800), // bit 11 only: names are UTF-8, sizes are known
+              u16(0), // stored
+              u16(0), // mod time — zeroed rather than faked
+              u16(0x21), // mod date: 1 Jan 1980, the epoch ZIP was born with
+              u32(crc),
+              u32(data.length),
+              u32(data.length),
+              u16(nameBytes.length),
+              u16(0),
+              nameBytes
+            )
+          );
+          push(data);
+          central.push(
+            join(
+              u32(0x02014b50),
+              u16(20),
+              u16(20),
+              u16(0x0800),
+              u16(0),
+              u16(0),
+              u16(0x21),
+              u32(crc),
+              u32(data.length),
+              u32(data.length),
+              u16(nameBytes.length),
+              u16(0),
+              u16(0),
+              u16(0),
+              u16(0),
+              u32(0),
+              u32(localAt),
+              nameBytes
+            )
+          );
+          return;
         }
-        if (!data) continue;
 
-        const nameBytes = encoder.encode(names[i]);
-        const localAt = offset;
-        const crc = crc32(data);
+        const dirAt = offset;
+        for (const c of central) push(c);
         push(
           join(
-            u32(0x04034b50),
-            u16(20), // version needed
-            u16(0x0800), // bit 11 only: names are UTF-8, sizes are known
-            u16(0), // stored
-            u16(0), // mod time — zeroed rather than faked
-            u16(0x21), // mod date: 1 Jan 1980, the epoch ZIP was born with
-            u32(crc),
-            u32(data.length),
-            u32(data.length),
-            u16(nameBytes.length),
+            u32(0x06054b50),
             u16(0),
-            nameBytes
+            u16(0),
+            u16(central.length),
+            u16(central.length),
+            u32(offset - dirAt),
+            u32(dirAt),
+            u16(0)
           )
         );
-        push(data);
-
-        central.push(
-          join(
-            u32(0x02014b50),
-            u16(20),
-            u16(20),
-            u16(0x0800),
-            u16(0),
-            u16(0),
-            u16(0x21),
-            u32(crc),
-            u32(data.length),
-            u32(data.length),
-            u16(nameBytes.length),
-            u16(0),
-            u16(0),
-            u16(0),
-            u16(0),
-            u32(0),
-            u32(localAt),
-            nameBytes
-          )
-        );
+        controller.close();
+        await finish();
+      } catch (e) {
+        controller.error(e);
+        await finish();
       }
-
-      const dirAt = offset;
-      for (const c of central) push(c);
-      push(
-        join(
-          u32(0x06054b50),
-          u16(0),
-          u16(0),
-          u16(central.length),
-          u16(central.length),
-          u32(offset - dirAt),
-          u32(dirAt),
-          u16(0)
-        )
-      );
-      controller.close();
-      } finally {
-        try {
-          await onFinish?.();
-        } catch {
-          /* cleanup failing must not corrupt an archive already written */
-        }
-      }
+    },
+    async cancel() {
+      await finish();
     },
   });
 }
