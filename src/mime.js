@@ -416,7 +416,7 @@ const newBoundary = (tag) =>
  */
 export function buildRfc822({
   from, to, cc, draftBcc, subject, text, html, attachments, inReplyTo, references,
-  messageId, date,
+  messageId, date, calendar,
 }) {
   const lines = [`From: ${from}`, `To: ${to}`];
   if (cc) lines.push(`Cc: ${cc}`);
@@ -466,6 +466,18 @@ export function buildRfc822({
    * message, so multipart/mixed can nest it whole when files are attached.
    */
   const bodyEntity = () => {
+    // An answer to an invitation: the words for people, and the same answer
+    // as text/calendar for their calendar, which is the part that counts.
+    if (calendar) {
+      const alt = newBoundary("alt");
+      return {
+        headers: [`Content-Type: multipart/alternative; boundary="${alt}"`],
+        content:
+          `--${alt}\r\nContent-Type: text/plain; charset="utf-8"\r\nContent-Transfer-Encoding: base64\r\n\r\n${b64Body(text)}\r\n` +
+          `--${alt}\r\nContent-Type: text/calendar; charset="utf-8"; method=${calendar.method || "REPLY"}\r\n` +
+          `Content-Transfer-Encoding: base64\r\n\r\n${b64Body(calendar.text)}\r\n--${alt}--\r\n`,
+      };
+    }
     if (!html) {
       return {
         headers: ['Content-Type: text/plain; charset="utf-8"', "Content-Transfer-Encoding: base64"],

@@ -932,6 +932,67 @@ console.log("\n── en-têtes sortants : longueur et pliage ───");
   ok(pj.includes("filename*=utf-8''r%C3%A9sum%C3%A9.pdf"), "nom accentué en RFC 2231");
 }
 
+console.log("\n── invitations (iCalendar) ──────────────────");
+{
+  const { parseIcs, icsReply } = await import("./src/ics.js");
+  const ics = [
+    "BEGIN:VCALENDAR",
+    "METHOD:REQUEST",
+    "BEGIN:VTIMEZONE",
+    "TZID:Romance Standard Time",
+    "BEGIN:STANDARD",
+    "TZOFFSETTO:+0100",
+    "END:STANDARD",
+    "BEGIN:DAYLIGHT",
+    "TZOFFSETTO:+0200",
+    "END:DAYLIGHT",
+    "END:VTIMEZONE",
+    "BEGIN:VEVENT",
+    "UID:abc-123@x.fr",
+    "SEQUENCE:2",
+    "SUMMARY:Point projet\\, revue",
+    "LOCATION:Salle 4",
+    "DTSTART;TZID=Romance Standard Time:20261020T100000",
+    "DTEND;TZID=Romance Standard Time:20261020T110000",
+    'ORGANIZER;CN="Jean Dupont":mailto:Jean@Y.fr',
+    "ATTENDEE;PARTSTAT=NEEDS-ACTION;CN=Moi:mailto:moi@x.fr",
+    "DESCRIPTION:Ordre du jour :\\n1. budget",
+    " suite pliée",
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
+  const inv = parseIcs(ics);
+  eq(inv.method, "REQUEST", "méthode lue");
+  eq(inv.summary, "Point projet, revue", "échappements du texte retirés");
+  eq(inv.start.ms, Date.UTC(2026, 9, 20, 8, 0), "fuseau Windows résolu par le VTIMEZONE (heure d'été)");
+  eq(inv.end.ms - inv.start.ms, 3600_000, "durée d'une heure");
+  eq(inv.organizer, { email: "jean@y.fr", name: "Jean Dupont" }, "organisateur, adresse en minuscules");
+  ok(inv.description.includes("budgetsuite pliée"), "lignes pliées recollées");
+  eq(parseIcs("DTSTART;TZID=Europe/Paris:20260115T090000\r\nBEGIN:VEVENT\r\nDTSTART;TZID=Europe/Paris:20260115T090000\r\nUID:u\r\nEND:VEVENT").start.ms,
+     Date.UTC(2026, 0, 15, 8, 0), "fuseau IANA par Intl (heure d'hiver)");
+  eq(parseIcs("BEGIN:VEVENT\r\nDTSTART;VALUE=DATE:20261224\r\nUID:u\r\nEND:VEVENT").start.allDay, true, "journée entière");
+  eq(parseIcs("rien du tout"), null, "pas d'événement, pas d'invitation");
+
+  const rep = icsReply(inv, { email: "moi@x.fr", name: "Moi", status: "accepted", now: new Date(Date.UTC(2026, 9, 17)) });
+  ok(/METHOD:REPLY/.test(rep) && /UID:abc-123@x\.fr/.test(rep) && /SEQUENCE:2/.test(rep), "réponse : même UID et séquence");
+  ok(/ATTENDEE;PARTSTAT=ACCEPTED;CN="Moi":mailto:moi@x\.fr/.test(rep), "réponse : moi, accepté");
+  ok(rep.includes('ORGANIZER;CN="Jean Dupont":mailto:Jean@Y.fr'), "organisateur recopié tel quel");
+  ok(rep.split("\r\n").every((l) => l.length <= 75), "lignes pliées à 75");
+  eq(icsReply(inv, { email: "moi@x.fr", status: "peut-être" }), null, "statut inconnu refusé");
+
+  const raw = buildRfc822({ from: "moi@x.fr", to: "jean@y.fr", subject: "Accepted: Point", text: "Accepted", calendar: { method: "REPLY", text: rep } });
+  ok(/Content-Type: text\/calendar; charset="utf-8"; method=REPLY/.test(raw), "le message porte la partie text/calendar");
+
+  // Et le chemin inverse : une invitation reçue garde sa partie calendrier.
+  const recu = parseMessage(
+    "Content-Type: multipart/alternative; boundary=B\r\n\r\n--B\r\nContent-Type: text/plain\r\n\r\nUne reunion\r\n" +
+      `--B\r\nContent-Type: text/calendar; method=REQUEST\r\n\r\n${ics}\r\n--B--\r\n`
+  );
+  ok(recu.calendar && recu.calendar.includes("UID:abc-123"), "la partie calendrier n'est plus perdue");
+  ok(recu.attachments.some((a) => a.type === "text/calendar"), "et reste téléchargeable comme fichier");
+  eq(recu.text.trim(), "Une reunion", "le texte lisible est toujours celui d'avant");
+}
+
 console.log("\n── archive zip des pièces jointes ───────────");
 {
   const { zipStream, crc32 } = await import("./src/zip.js");

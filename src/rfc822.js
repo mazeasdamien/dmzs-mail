@@ -348,6 +348,24 @@ function walk(headers, body, out, depth, path) {
     return;
   }
 
+  // A calendar invitation. It used to fall through to the text branch below
+  // and vanish behind the text/plain that comes first, so an invite arrived
+  // as prose with no way to answer it. Kept whole for the reader's card, and
+  // listed as a file so it can still be opened in a calendar app.
+  if (ct.value === "text/calendar") {
+    if (!out.calendar) out.calendar = decodePart(body, enc, ct.params.charset);
+    out.attachments.push({
+      filename: filename || "invite.ics",
+      type: "text/calendar",
+      encoding: String(enc).toLowerCase(),
+      cid: "",
+      part: partPath,
+      size: body.length,
+      body,
+    });
+    return;
+  }
+
   // An attachment is anything explicitly marked as one, plus any non-text part
   // carrying a filename — inline images arrive that way and still belong here.
   if (disp.value === "attachment" || (filename && !ct.value.startsWith("text/"))) {

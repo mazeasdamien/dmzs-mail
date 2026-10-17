@@ -20,8 +20,12 @@
  * open rather than staying wrong forever. Version 2 keeps <style> blocks:
  * everything stored before it has them stripped, which renders some messages
  * as blank pages that no amount of re-reading the cached copy can recover.
+ * Version 3 keeps calendar invitations (the reader's Accept / Decline card)
+ * and the 8-bit bytes that a windows-1252 decoder used to mangle; a body
+ * stored before either is read again from Apple, once, the next time it is
+ * opened.
  */
-export const BODY_VERSION = 2;
+export const BODY_VERSION = 3;
 
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -50,6 +54,7 @@ export function bodyFromParts({
   tooLarge = false,
   empty = false,
   missing = false,
+  calendar = "",
 } = {}) {
   const body = {
     v: BODY_VERSION,
@@ -73,6 +78,8 @@ export function bodyFromParts({
   }
   if (empty) body.empty = true;
   if (missing) body.missing = true;
+  // The invitation's own text, for the reader's Accept / Decline card.
+  if (calendar) body.calendar = String(calendar).slice(0, 60_000);
   return body;
 }
 

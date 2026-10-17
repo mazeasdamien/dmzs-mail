@@ -436,6 +436,15 @@ body.composing:not(.overlay) #scrim{opacity:0;pointer-events:none}
 .keys kbd{font:600 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;padding:3px 6px;border-radius:5px;
   border:1px solid var(--line-strong);background:var(--elev);color:var(--t1)}
 .rbar .menuonly{display:none}
+#rInvite{flex:none;padding:12px 16px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:6px;
+  background:color-mix(in srgb,var(--acc) 5%,var(--bg))}
+#rInvite[hidden]{display:none}
+#rInvite .it{font-weight:650;color:var(--t1);font-size:var(--t-l,15px)}
+#rInvite .iw{color:var(--t1);font-size:var(--t-m)}
+#rInvite .im{color:var(--t2);font-size:var(--t-s,12px);overflow-wrap:anywhere}
+#rInvite .ia{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+#rInvite .ia button[aria-pressed="true"]{background:var(--acc);color:#fff;border-color:var(--acc)}
+#rInvite.cancelled .it{text-decoration:line-through;color:var(--t2)}
 #rSummary{flex:none;display:flex;gap:8px;align-items:flex-start;padding:10px 16px;border-bottom:1px solid var(--line);
   background:color-mix(in srgb,var(--acc) 7%,var(--bg))}
 #rSummary[hidden]{display:none}
@@ -1286,6 +1295,7 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
   </div>
   <!-- Above the frame, never over it: anything painted on top of the message
        frame has cost it its first paint before. -->
+  <div id="rInvite" role="region" aria-label="Invitation" hidden></div>
   <div id="rSummary" role="region" aria-label="Summary" hidden>
     <div class="sumtxt" id="rSummaryText"></div>
     <button class="ghost" id="rSummaryClose" aria-label="Hide the summary">&times;</button>
@@ -1889,7 +1899,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v57";
+const CLIENT = "v58";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2945,6 +2955,7 @@ async function openMsg(id, threadRow = null) {
   const m = current.message;
   $("#rSubj").textContent = m.subject || "(no subject)";
   if (summaryFor !== m.id) $("#rSummary").hidden = true;
+  renderInvite(current);
   // The address, not just the display name. A display name is whatever the
   // sender typed — "Cap Singapour" costs nothing to write — so a header that
   // shows only the name tells you the one thing that cannot be trusted and
@@ -3040,6 +3051,7 @@ function closeReader() {
   renderScope();
   $("#rSubj").textContent = "—";
   $("#rSummary").hidden = true;
+  $("#rInvite").hidden = true;
   $("#rMeta").textContent = "—";
   showInFrame("");
   // All three belong to the message that was open, not to the pane.
@@ -6396,6 +6408,78 @@ $("#idSave").addEventListener("click", async (e) => {
 $("#openKeys").addEventListener("click", () => {
   closeSheets();
   setTimeout(() => openSheet("#keysSheet"), 60);
+});
+
+/* ── calendar invitations ──
+   The server reads the text/calendar part and sends it as `invite`. Shown as
+   a card above the message, with the answer a calendar expects. */
+function inviteWhen(inv) {
+  if (!inv.start) return "";
+  const s = new Date(inv.start.ms);
+  const e = inv.end ? new Date(inv.end.ms) : null;
+  if (inv.start.allDay) {
+    const day = (d) => d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+    // An all-day DTEND is exclusive: a one-day event ends the next midnight.
+    const last = e ? new Date(e.getTime() - 86400_000) : null;
+    return last && last.toDateString() !== s.toDateString() ? `${day(s)} – ${day(last)}` : `${day(s)}, all day`;
+  }
+  const date = s.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+  const t = (d) => d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  if (!e) return `${date}, ${t(s)}`;
+  return e.toDateString() === s.toDateString()
+    ? `${date}, ${t(s)} – ${t(e)}`
+    : `${date} ${t(s)} – ${e.toLocaleDateString(undefined, { day: "numeric", month: "short" })} ${t(e)}`;
+}
+function renderInvite(cur) {
+  const box = $("#rInvite");
+  const inv = cur && cur.invite;
+  if (!inv || !inv.start) { box.hidden = true; return; }
+  const m = cur.message;
+  const ics = (cur.body.attachments || []).findIndex((a) => a.type === "text/calendar");
+  const who = inv.organizer ? inv.organizer.name || inv.organizer.email : "";
+  let actions = "";
+  if (inv.method === "REQUEST") {
+    actions = ["accepted", "tentative", "declined"]
+      .map((s) => `<button class="ghost" data-rsvp="${s}" aria-pressed="${cur.rsvp === s}">${{ accepted: "Accept", tentative: "Maybe", declined: "Decline" }[s]}</button>`)
+      .join("");
+  }
+  if (ics >= 0) {
+    actions += `<a class="ghost" href="/api/messages/${encodeURIComponent(m.id)}/attachment/${ics}" download="invite.ics">Add to calendar</a>`;
+  }
+  // Answers to your own invitations arrive as METHOD:REPLY: say who said what.
+  const replied =
+    inv.method === "REPLY" && inv.attendees.length
+      ? `${inv.attendees[0].name || inv.attendees[0].email} ${({ ACCEPTED: "accepted", TENTATIVE: "might come", DECLINED: "declined" })[inv.attendees[0].partstat] || "answered"}`
+      : "";
+  box.classList.toggle("cancelled", inv.method === "CANCEL" || inv.status === "CANCELLED");
+  box.innerHTML =
+    `<div class="it">${inv.method === "CANCEL" ? "Cancelled: " : ""}${esc(inv.summary || m.subject || "Invitation")}</div>` +
+    `<div class="iw">${esc(inviteWhen(inv))}</div>` +
+    (inv.location ? `<div class="im">${esc(inv.location)}</div>` : "") +
+    (who ? `<div class="im">Organised by ${esc(who)}</div>` : "") +
+    (replied ? `<div class="im">${esc(replied)}</div>` : "") +
+    (actions ? `<div class="ia">${actions}</div>` : "");
+  box.hidden = false;
+}
+$("#rInvite").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-rsvp]");
+  if (!b || !current) return;
+  const id = current.message.id;
+  const status = b.dataset.rsvp;
+  for (const x of $("#rInvite").querySelectorAll("[data-rsvp]")) x.disabled = true;
+  const res = await api(`/api/messages/${id}/rsvp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status }),
+  }).catch(() => null);
+  const d = res ? await res.json().catch(() => ({})) : {};
+  for (const x of $("#rInvite").querySelectorAll("[data-rsvp]")) x.disabled = false;
+  if (!res || !res.ok) { toast(d.error || "Could not send the answer"); return; }
+  if (current && current.message.id === id) {
+    current.rsvp = status;
+    renderInvite(current);
+  }
+  toast({ accepted: "Accepted — the organiser has been told", tentative: "Answered maybe", declined: "Declined — the organiser has been told" }[status]);
 });
 
 /* ── summary, snooze, .eml ── */

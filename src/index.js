@@ -29,6 +29,7 @@ import {
 } from "./auth.js";
 import { isAuthFailure } from "./errors.js";
 import { BODY_VERSION, bodyFromParts, unsubFromHeaders } from "./body.js";
+import { parseIcs, icsReply } from "./ics.js";
 import { ensureSchema } from "./schema.js";
 import { seal, open } from "./crypto.js";
 import { DEFAULT_MODEL as CLAUDE_DEFAULT, keyRefused, usableModels, rewrite } from "./claude.js";
@@ -125,7 +126,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * edit, and the page, this file and the service worker all agree on it or the
  * deploy never starts.
  */
-const CLIENT_SHELL = "v57";
+const CLIENT_SHELL = "v58";
 
 /**
  * IMAP system flags, spelled once.
@@ -493,6 +494,7 @@ function rowFromRaw({ uid, flags, raw }, folder) {
     body: bodyFromParts({
       html: defused.html,
       blocked: defused.blocked,
+      calendar: m.calendar || "",
       ...unsubFromHeaders(h),
     }),
     // Metadata only — the payload stays on Apple's server and is fetched by
@@ -2606,7 +2608,13 @@ async function handleApi(request, env, path, ctx, session) {
     return json({
       message: { ...msg, unread: peek ? msg.unread : 0 },
       account: { id: acct.id, provider: acct.provider, email: acct.email },
-      body,
+      // The invitation, read once here rather than shipped raw for the client
+      // to parse, with the answer already given if there was one.
+      invite: body.calendar ? parseIcs(body.calendar) : null,
+      rsvp: body.calendar
+        ? (await env.DB.prepare("SELECT value FROM settings WHERE key=?").bind(`rsvp_${msg.id}`).first())?.value || ""
+        : "",
+      body: { ...body, calendar: undefined },
     });
   }
 
@@ -3221,6 +3229,56 @@ No invented facts, no commitment to anything the brief does not cover, and no br
         .catch(() => {});
     }
     return res;
+  }
+
+  // POST /api/messages/:id/rsvp { status: accepted | tentative | declined }
+  //
+  // Answers an invitation the way a calendar expects: a METHOD:REPLY sent to
+  // the organiser, from whichever of your addresses was invited. Nothing is
+  // added to any calendar here — iCloud Calendar picks the invitation up on
+  // its own; this is the answer the organiser is waiting for.
+  const rsvp = path.match(/^\/api\/messages\/([a-f0-9]{16})\/rsvp$/);
+  if (rsvp && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const status = String(b.status || "");
+    const msg = await env.DB.prepare("SELECT * FROM messages WHERE id=?").bind(rsvp[1]).first();
+    if (!msg) return json({ error: "Unknown message" }, 404);
+    const acct = await accountById(env, msg.account_id);
+    if (!acct) return json({ error: "Unknown account" }, 404);
+    const stored = await env.MAIL.get(bodyKey(msg.id));
+    const invite = stored ? parseIcs(JSON.parse(await stored.text()).calendar || "") : null;
+    if (!invite || invite.method !== "REQUEST" || !invite.organizer?.email) {
+      return json({ error: "This is not an invitation that can be answered" }, 400);
+    }
+    const own = [acct.email, ...(await aliasesOf(env, acct))].map((e) => e.toLowerCase());
+    const me = invite.attendees.find((a) => own.includes(a.email))?.email || acct.email;
+    const ics = icsReply(invite, { email: me, name: acct.label !== acct.email ? acct.label : "", status });
+    if (!ics) return json({ error: "Answer with accepted, tentative or declined" }, 400);
+    const word = { accepted: "Accepted", tentative: "Tentatively accepted", declined: "Declined" }[status];
+    const pass = await icloudPassword(env, acct);
+    if (!pass) return json({ error: "This account has no stored credential" }, 400);
+    const sender = await senderFor(env, acct, me, msg);
+    const raw = buildRfc822({
+      from: sender.header,
+      to: invite.organizer.email,
+      subject: `${word}: ${invite.summary || msg.subject}`.slice(0, 300),
+      text: `${word}: ${invite.summary || msg.subject}`,
+      inReplyTo: msg.mid || undefined,
+      references: replyReferences(msg),
+      messageId: newMessageId(acct.email),
+      calendar: { method: "REPLY", text: ics },
+    });
+    try {
+      await smtpSend({ user: acct.email, pass, from: sender.address, to: [invite.organizer.email], raw });
+    } catch (e) {
+      return imapError(e, acct, env);
+    }
+    await env.DB.prepare(
+      "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+    )
+      .bind(`rsvp_${msg.id}`, status)
+      .run();
+    return json({ ok: true, status });
   }
 
   // POST /api/messages/:id/summary — the conversation in a few lines.
