@@ -1903,7 +1903,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v60";
+const CLIENT = "v61";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2756,12 +2756,13 @@ img{max-width:100%;height:auto}a{color:#1a63c9}</style></head><body>${body}</bod
  *
  * So the frame is never navigated. Each document gets a fresh element, which
  * gets a fresh surface, and the old one is thrown away with whatever it was
- * showing. And because the first paint of a fresh surface is the one that
- * was being lost, the frame is also nudged after the child has had time to
- * paint: one pixel of padding on, then off, at three points in the first
- * second and a half. A resize is the one thing a child frame cannot ignore —
- * it has to produce a new picture at the new size and the parent has to show
- * it — and a pixel of padding on a white frame is nothing anyone can see.
+ * showing.
+ *
+ * Until v60 the frame was also nudged — a pixel of padding on and off three
+ * times in the first second and a half, and again when the tab came back —
+ * in case the first paint of the fresh surface was lost too. Several days of
+ * every message painting showed the fresh, empty-first frame below was the
+ * fix on its own, so the nudges went.
  */
 function showInFrame(doc) {
   const old = $("#rframe");
@@ -2786,26 +2787,12 @@ function showInFrame(doc) {
     if (loaded || f !== $("#rframe") || !f.isConnected) return;
     loaded = true;
     f.srcdoc = doc;
-    // After the child has had time to paint, a pixel of padding on and off:
-    // a resize is the one thing a child frame cannot ignore — it has to draw
-    // again at the new size and the parent has to show it.
-    for (const ms of [120, 450, 1500]) setTimeout(() => nudgeFrame(f), ms);
   };
   // The next animation frame, so the layout above has been committed — with
   // a timer behind it that wins when the page is hidden and no frame comes.
   requestAnimationFrame(load);
   setTimeout(load, 32);
 }
-function nudgeFrame(f) {
-  if (!f || f !== $("#rframe") || !f.isConnected || !f.srcdoc) return;
-  f.style.paddingBottom = "1px";
-  setTimeout(() => { f.style.paddingBottom = ""; }, 40);
-}
-// A tab that was hidden when the message loaded has had no frames at all;
-// coming back is the moment to ask for one.
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") setTimeout(() => nudgeFrame($("#rframe")), 60);
-});
 
 /**
  * Paints the open message, under whatever the image setting currently is.

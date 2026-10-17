@@ -7,7 +7,7 @@
 
 // Bump on every shell change. The activate handler deletes any cache whose
 // name is not this one, so an old index.html cannot outlive a deploy.
-const SHELL = "dmzs-mail-shell-v60";
+const SHELL = "dmzs-mail-shell-v61";
 
 const SHELL_FILES = [
   "/",
@@ -70,7 +70,7 @@ self.addEventListener("fetch", (event) => {
         try {
           const res = (await event.preloadResponse) || (await fetch(req));
           // Only the shell itself is the offline shell. Every navigation used
-          // to be stored under "/", so one visit to /v40.html made that the
+          // to be stored under "/", so one visit to any other page made that the
           // page shown with no connection.
           if (res.ok && (url.pathname === "/" || url.pathname === "/index.html")) {
             const copy = res.clone();
