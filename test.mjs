@@ -932,6 +932,51 @@ console.log("\n── en-têtes sortants : longueur et pliage ───");
   ok(pj.includes("filename*=utf-8''r%C3%A9sum%C3%A9.pdf"), "nom accentué en RFC 2231");
 }
 
+console.log("\n── contrat : appels du client ↔ routes ──────");
+{
+  // Le bouton Disconnect a passé des mois à dire « Removed » sans jamais
+  // appeler sa route, et personne ne l'a vu : rien ne comparait ce que le
+  // client appelle à ce que le Worker sert. C'est ce que fait ce bloc, dans
+  // les deux sens.
+  const worker = readFileSync(new URL("./src/index.js", import.meta.url), "utf8");
+  const exact = [...worker.matchAll(/path === "(\/api\/[^"]+)"/g)].map((m) => m[1]);
+  const patterns = [...worker.matchAll(/path\.match\((\/\^\\\/api.*?\$\/)\)/g)].map((m) => new Function(`return ${m[1]}`)());
+
+  const sources = ["public/index.html", "public/sw.js", ...["background.js", "content.js", "options.js"].map((f) => `extension/${f}`)]
+    .map((f) => readFileSync(new URL(`./${f}`, import.meta.url), "utf8"))
+    .join("\n");
+  const calls = [
+    ...new Set(
+      // Any string that starts a path with /api/: through api(), fetch(), an
+      // href, or a helper such as folderCall() and a ternary between two.
+      [...sources.matchAll(/[`"](?:\$\{APP\})?(\/api\/[^`"?\s]*)/g)].map((m) => m[1])
+    ),
+  ].filter((p) => p !== "/api/"); // the service worker's prefix test, not a call
+  // Every ${…} tried as each kind of value a route takes: a message id, an
+  // account id, an outbox id, an address, an action, a part number.
+  const SAMPLES = ["0123456789abcdef", "01234567", "c1b38c5a-854a-4272-8345-ee4861a219dc", "a%40b.fr", "send", "0"];
+  const expand = (tpl) => {
+    let out = [tpl];
+    while (out.some((t) => t.includes("${"))) {
+      out = out.flatMap((t) => (t.includes("${") ? SAMPLES.map((s) => t.replace(/\$\{[^}]*\}/, s)) : [t]));
+    }
+    return out;
+  };
+  const served = (p) => exact.includes(p) || patterns.some((re) => re.test(p));
+  const orphanCalls = calls.filter((tpl) => !expand(tpl).some(served));
+  eq(orphanCalls, [], "chaque appel du client tombe sur une route du Worker");
+
+  // Ce que personne n'appelle : diagnostic assumé, ou code mort.
+  const DIAGNOSTIC = ["/api/debug/mailboxes", "/api/extension/activate"];
+  const samples = calls.flatMap(expand);
+  const unusedExact = exact.filter((p) => !DIAGNOSTIC.includes(p) && !samples.includes(p));
+  const unusedPatterns = patterns
+    .filter((re) => !/smtp-check/.test(re.source) && !samples.some((s) => re.test(s)))
+    .map((re) => re.source);
+  eq([...unusedExact, ...unusedPatterns], [], "aucune route sans appelant hors diagnostic");
+  ok(calls.length > 40 && exact.length > 20, `le relevé a trouvé ${calls.length} appels et ${exact.length + patterns.length} routes`);
+}
+
 console.log("\n── invitations (iCalendar) ──────────────────");
 {
   const { parseIcs, icsReply } = await import("./src/ics.js");

@@ -61,10 +61,12 @@ if (anthropic) {
 }
 
 console.log(`
-Done. Next:
+Done. If the Worker is not deployed yet, run:
 
-  npm run db:schema
   npm run deploy
+
+(The first cron creates the tables; npm run db:schema is only for a database
+this token is allowed to write to directly.)
 
 Then open the activation link above, and connect iCloud from inside the app
 using an app-specific password from account.apple.com.

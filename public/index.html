@@ -1899,7 +1899,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v58";
+const CLIENT = "v59";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2315,8 +2315,19 @@ const PAGE = 50;
  * the poll, a sync, a repaint after an action — asking for as many rows as are
  * loaded rather than snapping "Load older" back to the first fifty.
  */
+/** Snoozed message id → when it comes back, for the Snoozed folder's rows. */
+const snoozedUntil = new Map();
+async function loadSnoozed() {
+  const res = await api("/api/snoozed").catch(() => null);
+  const d = res && res.ok ? await res.json().catch(() => ({})) : {};
+  snoozedUntil.clear();
+  for (const s of d.snoozed || []) snoozedUntil.set(s.id, s.until);
+}
+
 async function loadList(more = false, { keep = false } = {}) {
   const seq = ++listSeq;
+  // Only the Snoozed folder shows when each message comes back.
+  if (!more && String(folder).toLowerCase() === "snoozed") await loadSnoozed();
   const before = more && messages.length ? messages[messages.length - 1].date : 0;
   const want = more ? PAGE : keep ? Math.max(PAGE, messages.length) : PAGE;
   // A search spans everything; without one you are looking at a folder.
@@ -2424,7 +2435,11 @@ function rowHtml(m, sub = false) {
       ${
         // A search covers every folder, and a hit in Trash looked exactly like
         // one in the inbox.
-        query && m.folder ? `<span class="ftag">${esc(folderLabel(m.folder))}</span>` : ""
+        query && m.folder
+          ? `<span class="ftag">${esc(folderLabel(m.folder))}</span>`
+          : snoozedUntil.has(m.id)
+          ? `<span class="ftag" title="Comes back to the inbox then">${esc(whenText(snoozedUntil.get(m.id)))}</span>`
+          : ""
       }
       <span class="when num">${fmtWhen(m.date)}</span></div>
       ${sub ? "" : `<div class="subj tr">${esc(m.subject || "(no subject)")}</div>`}

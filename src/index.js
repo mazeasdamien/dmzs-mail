@@ -126,7 +126,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * edit, and the page, this file and the service worker all agree on it or the
  * deploy never starts.
  */
-const CLIENT_SHELL = "v58";
+const CLIENT_SHELL = "v59";
 
 /**
  * IMAP system flags, spelled once.
