@@ -98,6 +98,16 @@ CREATE TABLE IF NOT EXISTS outbox (
 
 CREATE INDEX IF NOT EXISTS idx_outbox_at ON outbox(at);
 
+CREATE TABLE IF NOT EXISTS snoozed (
+  id          TEXT PRIMARY KEY,             -- messages.id
+  account_id  TEXT NOT NULL,
+  until       INTEGER NOT NULL,             -- ms
+  folder      TEXT NOT NULL,                -- the app's name for the Snoozed mailbox
+  created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_snoozed_until ON snoozed(until);
+
 CREATE TABLE IF NOT EXISTS blocked_senders (
   pattern    TEXT PRIMARY KEY,             -- lowercase: a whole address, or a bare domain
   n          INTEGER NOT NULL DEFAULT 0,   -- messages destroyed by this rule

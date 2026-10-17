@@ -13,7 +13,7 @@
  */
 
 const TABLES = [
-  "accounts", "messages", "settings", "blocked_senders", "outbox",
+  "accounts", "messages", "settings", "blocked_senders", "outbox", "snoozed",
   "contacts_hidden", "contacts_added", "push_subs",
 ];
 

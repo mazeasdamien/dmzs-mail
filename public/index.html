@@ -435,6 +435,12 @@ body.composing:not(.overlay) #scrim{opacity:0;pointer-events:none}
 .keys dt{white-space:nowrap}.keys dd{color:var(--t2)}
 .keys kbd{font:600 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;padding:3px 6px;border-radius:5px;
   border:1px solid var(--line-strong);background:var(--elev);color:var(--t1)}
+.rbar .menuonly{display:none}
+#rSummary{flex:none;display:flex;gap:8px;align-items:flex-start;padding:10px 16px;border-bottom:1px solid var(--line);
+  background:color-mix(in srgb,var(--acc) 7%,var(--bg))}
+#rSummary[hidden]{display:none}
+#rSummary .sumtxt{flex:1;min-width:0;font-size:var(--t-m);line-height:1.45;color:var(--t1);white-space:pre-wrap;overflow-wrap:anywhere}
+#rSummary .ghost{flex:none;min-height:28px;padding:0 8px}
 .obox{display:flex;flex-direction:column;gap:6px;padding:10px 0;border-bottom:1px solid var(--line)}
 .obox .grow{display:flex;flex-direction:column;gap:2px;min-width:0}
 .obox .grow span{font-size:var(--t-s,12px);color:var(--t2);overflow-wrap:anywhere}
@@ -1278,6 +1284,12 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
       <span id="rScopeLbl">This message</span>
     </button>
   </div>
+  <!-- Above the frame, never over it: anything painted on top of the message
+       frame has cost it its first paint before. -->
+  <div id="rSummary" role="region" aria-label="Summary" hidden>
+    <div class="sumtxt" id="rSummaryText"></div>
+    <button class="ghost" id="rSummaryClose" aria-label="Hide the summary">&times;</button>
+  </div>
   <div id="rbody">
     <div id="rEmpty">
       <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m3.5 7.5 8.5 6 8.5-6"/></svg>
@@ -1313,6 +1325,10 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
       <button class="rbtn ico overflowable" id="rPdf" aria-label="Save as PDF" title="Save as PDF (p)">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="M12 11.5v5"/><path d="m9.8 14.5 2.2 2.2 2.2-2.2"/></svg>
         </button>
+      <!-- In the More sheet only: useful, but not every message's business. -->
+      <button class="rbtn ico menuonly" id="rSummarize" aria-label="Summarize the conversation"></button>
+      <button class="rbtn ico menuonly" id="rSnooze" aria-label="Snooze until later (b)"></button>
+      <button class="rbtn ico menuonly" id="rEml" aria-label="Download as .eml"></button>
       <button class="rbtn ico" id="rMore" aria-haspopup="dialog" aria-expanded="false" aria-label="More actions" title="More actions">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="5" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="19" cy="12" r="1.4" fill="currentColor"/></svg>
         </button>
@@ -1468,6 +1484,15 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
   <button class="cta" id="laterGo">Schedule</button>
 </div>
 
+<div class="sheet" id="snoozeSheet">
+  <div class="grab"></div>
+  <div class="sh-t">Snooze until</div>
+  <div class="sh-s">Out of the inbox on every device until then, and back on top, unread, when the time comes.</div>
+  <div id="snoozeList"></div>
+  <div class="field"><input id="snoozeAt" type="datetime-local" aria-label="Date and time to bring it back"></div>
+  <button class="cta" id="snoozeGo">Snooze</button>
+</div>
+
 <div class="sheet" id="outboxSheet">
   <div class="grab"></div>
   <div class="sh-t">Scheduled</div>
@@ -1485,6 +1510,7 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
     <dt><kbd>s</kbd></dt><dd>Star</dd>
     <dt><kbd>u</kbd></dt><dd>Mark unread</dd>
     <dt><kbd>v</kbd></dt><dd>Move to a folder</dd>
+    <dt><kbd>b</kbd></dt><dd>Snooze until later</dd>
     <dt><kbd>r</kbd> <kbd>a</kbd> <kbd>f</kbd></dt><dd>Reply, reply all, forward</dd>
     <dt><kbd>R</kbd> <kbd>A</kbd></dt><dd>Reply, reply all &mdash; written by Claude</dd>
     <dt><kbd>p</kbd></dt><dd>Save as PDF</dd>
@@ -1863,7 +1889,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v56";
+const CLIENT = "v57";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2918,6 +2944,7 @@ async function openMsg(id, threadRow = null) {
 
   const m = current.message;
   $("#rSubj").textContent = m.subject || "(no subject)";
+  if (summaryFor !== m.id) $("#rSummary").hidden = true;
   // The address, not just the display name. A display name is whatever the
   // sender typed — "Cap Singapour" costs nothing to write — so a header that
   // shows only the name tells you the one thing that cannot be trusted and
@@ -3012,6 +3039,7 @@ function closeReader() {
   currentThread = null;
   renderScope();
   $("#rSubj").textContent = "—";
+  $("#rSummary").hidden = true;
   $("#rMeta").textContent = "—";
   showInFrame("");
   // All three belong to the message that was open, not to the pane.
@@ -3138,6 +3166,10 @@ addEventListener("keydown", (e) => {
     case "f":
       e.preventDefault();
       startForward();
+      break;
+    case "b":
+      e.preventDefault();
+      $("#rSnooze").click();
       break;
     // Shift+A and Shift+R: the same two replies, already written.
     case "A":
@@ -6366,12 +6398,96 @@ $("#openKeys").addEventListener("click", () => {
   setTimeout(() => openSheet("#keysSheet"), 60);
 });
 
+/* ── summary, snooze, .eml ── */
+let summaryFor = "";
+$("#rSummarize").addEventListener("click", async () => {
+  if (!current) return;
+  const id = current.message.id;
+  summaryFor = id;
+  $("#rSummaryText").textContent = "Reading the conversation…";
+  $("#rSummary").hidden = false;
+  const res = await api(`/api/messages/${id}/summary`, { method: "POST" }).catch(() => null);
+  const d = res ? await res.json().catch(() => ({})) : {};
+  if (!current || current.message.id !== id) return; // moved on while it was thinking
+  if (!res || !res.ok) {
+    $("#rSummary").hidden = true;
+    toast(d.error || "Could not summarize");
+    return;
+  }
+  // Text, never markup: this came from a model reading a stranger's mail.
+  $("#rSummaryText").textContent = d.text;
+});
+$("#rSummaryClose").addEventListener("click", () => {
+  $("#rSummary").hidden = true;
+  summaryFor = "";
+});
+
+$("#rSnooze").addEventListener("click", () => {
+  if (!current) return;
+  $("#snoozeList").innerHTML = laterChoices()
+    .map(([label, d]) => `<button class="mi" data-until="${d.getTime()}"><span class="grow">${esc(label)}</span><span class="side">${esc(whenText(d))}</span></button>`)
+    .join("");
+  const t = new Date(Date.now() + 3 * 3600_000);
+  t.setMinutes(0, 0, 0);
+  $("#snoozeAt").value = new Date(t - t.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  openSheet("#snoozeSheet");
+});
+async function snoozeCurrent(until) {
+  if (!current) return;
+  if (!(until > Date.now() + 60_000)) { toast("Pick a time at least a minute from now"); return; }
+  closeSheets();
+  const id = current.message.id;
+  const at = messages.findIndex((m) => m.id === id);
+  messages = messages.filter((m) => m.id !== id);
+  const next = messages[at] || messages[at - 1] || null;
+  renderList();
+  if (next) openMsg(next.id, next);
+  else closeReader();
+  const res = await api(`/api/messages/${id}/snooze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ until }),
+  }).catch(() => null);
+  const d = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) {
+    toast(d.error || "Could not snooze");
+    loadList();
+    return;
+  }
+  // Undo is a move back to where it was, which also lifts the snooze: the
+  // wake-up only acts on a message still sitting where snoozing put it.
+  toast(`Snoozed until ${whenText(d.until)}`, async () => {
+    await fileMessage(id, d.from || "inbox");
+    await Promise.all([loadList(), refreshCounts()]);
+  });
+  refreshCounts();
+}
+$("#snoozeList").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-until]");
+  if (b) snoozeCurrent(Number(b.dataset.until));
+});
+$("#snoozeGo").addEventListener("click", () => snoozeCurrent(new Date($("#snoozeAt").value).getTime()));
+
+$("#rEml").addEventListener("click", () => {
+  if (!current) return;
+  // A plain link: the browser streams the download and names the file from
+  // the server's Content-Disposition, the same way attachments come down.
+  const a = document.createElement("a");
+  a.href = `/api/messages/${current.message.id}/eml`;
+  a.download = "";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  toast("Downloading the original message…");
+});
+
 /* ── reader overflow ──
    The sheet mirrors the bar's overflowable buttons rather than restating
    them, so a label and an icon are decided in one place. */
 const OVERFLOW_IDS = [
   "#rImages", "#rUnsub", "#rNotSpam",
   "#rUnread", "#rMove", "#rPdf", "#rForward", "#rReplyAI", "#rReplyAll",
+  "#rSummarize", "#rSnooze", "#rEml",
 ];
 function renderMoreSheet() {
   $("#moreList").innerHTML = OVERFLOW_IDS.map((id) => {
