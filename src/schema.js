@@ -39,7 +39,10 @@ export const SCHEMA = [
   account_id  TEXT NOT NULL,
   pid         TEXT NOT NULL,                -- stable id: the RFC Message-ID where there is one
   mid         TEXT NOT NULL DEFAULT '',     -- RFC Message-ID, for reply threading
-  thread_key  TEXT NOT NULL DEFAULT '',     -- first References id, or the normalized subject
+  -- First References id, else In-Reply-To, else the message's own id — so a
+  -- root and its replies share one key. The subject only for mail with no ids.
+  thread_key  TEXT NOT NULL DEFAULT '',
+  refs        TEXT NOT NULL DEFAULT '',     -- the References chain, for replying to this
   -- The one bucket a message is filed under, for the folder switcher:
   -- inbox | archive | sent | spam | trash | drafts, or an IMAP folder name.
   folder      TEXT NOT NULL DEFAULT 'inbox',
@@ -58,6 +61,11 @@ export const SCHEMA = [
   unread      INTEGER NOT NULL DEFAULT 1,
   starred     INTEGER NOT NULL DEFAULT 0,   -- IMAP \\Flagged
   has_body    INTEGER NOT NULL DEFAULT 0,   -- 1 once the defused body sits in R2
+  -- Where the provider has it: IMAP mailbox path and UID within it. What lets
+  -- a sync notice a flag changed or a message expunged on another device.
+  -- 0 and '' until a sync has seen the message there.
+  mailbox     TEXT NOT NULL DEFAULT '',
+  uid         INTEGER NOT NULL DEFAULT 0,
   created_at  INTEGER NOT NULL,
   UNIQUE (account_id, pid)
 )`,
@@ -147,6 +155,9 @@ export const HEAL_COLUMNS = {
     bcc_line: "TEXT NOT NULL DEFAULT ''",
     starred: "INTEGER NOT NULL DEFAULT 0",
     has_body: "INTEGER NOT NULL DEFAULT 0",
+    refs: "TEXT NOT NULL DEFAULT ''",
+    mailbox: "TEXT NOT NULL DEFAULT ''",
+    uid: "INTEGER NOT NULL DEFAULT 0",
   },
   accounts: {
     label: "TEXT NOT NULL DEFAULT ''",
@@ -155,6 +166,31 @@ export const HEAL_COLUMNS = {
     last_error: "TEXT",
   },
 };
+
+/**
+ * Indexes on columns an old database only has once healed.
+ *
+ * Kept out of SCHEMA because that runs first: on a database still missing
+ * the column, the CREATE INDEX would throw before the heal that adds it, and
+ * the sync would never get as far as fixing itself.
+ */
+export const AFTER_HEAL = [
+  // Reconciling looks rows up by where the provider has them, a UID range at
+  // a time. Without this every pass reads the whole mailbox's rows.
+  `CREATE INDEX IF NOT EXISTS idx_messages_uid     ON messages(account_id, mailbox, uid)`,
+];
+
+/**
+ * One-off data fixes, each run once and recorded in `settings` by name.
+ * Unlike the DDL they are not cheap to repeat: each walks the whole table.
+ */
+export const MIGRATIONS = [
+  // Roots used to be keyed on their subject while their replies were keyed on
+  // the root's Message-ID, so a conversation never grouped with its own first
+  // message. A key that is not an id was a subject; where the row has an id,
+  // that is what the key is now.
+  ["thread_key_mid", `UPDATE messages SET thread_key=mid WHERE mid LIKE '<%>' AND thread_key NOT LIKE '<%'`],
+];
 
 /** What schema.sql looks like on disk, comments and all. */
 export function schemaSql() {
@@ -165,7 +201,7 @@ export function schemaSql() {
 -- while the two disagree. One provider, iCloud, over IMAP and SMTP spoken by
 -- the Worker itself.
 
-${SCHEMA.join(";\n\n")};
+${[...SCHEMA, ...AFTER_HEAL].join(";\n\n")};
 `;
 }
 
@@ -214,7 +250,36 @@ export async function ensureSchema(env) {
       added.push(`${table}.${name}`);
     }
   }
+  for (const sql of AFTER_HEAL) {
+    await env.DB.prepare(sql).run();
+  }
   if (added.length) console.log(`schema: added ${added.join(", ")}`);
+
+  // A fresh install has nothing to migrate, but marking each done costs the
+  // same either way and keeps this one code path. Inside the full pass, so
+  // only a build whose fingerprint moved even asks.
+  const done = await env.DB.prepare("SELECT value FROM settings WHERE key='migrations'")
+    .first()
+    .catch(() => null);
+  let ran = [];
+  try {
+    ran = JSON.parse(done?.value || "[]");
+  } catch {
+    ran = [];
+  }
+  const todo = MIGRATIONS.filter(([name]) => !ran.includes(name));
+  for (const [name, sql] of todo) {
+    await env.DB.prepare(sql).run();
+    ran.push(name);
+    console.log(`schema: migrated ${name}`);
+  }
+  if (todo.length) {
+    await env.DB.prepare(
+      "INSERT INTO settings (key, value) VALUES ('migrations', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+    )
+      .bind(JSON.stringify(ran))
+      .run();
+  }
   await env.DB.prepare(
     "INSERT INTO settings (key, value) VALUES ('schema_fp', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
   )
@@ -225,7 +290,7 @@ export async function ensureSchema(env) {
 
 /** A short hash of everything ensureSchema would apply. */
 export function schemaFingerprint() {
-  const text = JSON.stringify([SCHEMA, HEAL_COLUMNS, "search_ids-v1"]);
+  const text = JSON.stringify([SCHEMA, HEAL_COLUMNS, AFTER_HEAL, MIGRATIONS, "search_ids-v1"]);
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193) >>> 0;
   return h.toString(16);

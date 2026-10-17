@@ -56,19 +56,41 @@ function decodeWord(charset, enc, data) {
   return decodeCharset(new Uint8Array(bytes), charset);
 }
 
+/**
+ * A run of header text that was not encoded → what it says.
+ *
+ * Headers reach here one char per byte, so a raw UTF-8 header (RFC 6532,
+ * `Subject: café` sent as is, which plenty of mailers now do) arrives as
+ * "cafÃ©". Bytes that form valid UTF-8 are read as UTF-8; anything else is
+ * left as latin1, which it already is. A run holding a char above 0xFF is not
+ * bytes at all but text something already decoded, and is left alone.
+ */
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+function rawHeaderText(s) {
+  if (!/[\x80-\xff]/.test(s) || /[^\x00-\xff]/.test(s)) return s;
+  try {
+    return STRICT_UTF8.decode(Uint8Array.from(s, (c) => c.charCodeAt(0)));
+  } catch {
+    return s;
+  }
+}
+
 export function decodeWords(input) {
-  const s = String(input ?? "");
   // Whitespace BETWEEN two encoded words is ignored per the RFC, which is
   // what keeps a long UTF-8 subject from growing spurious spaces.
-  return s
-    .replace(/(=\?[^?]+\?[BQ]\?[^?]*\?=)\s+(?==\?)/gi, "$1")
-    .replace(/=\?([^?]+)\?([BQ])\?([^?]*)\?=/gi, (m, cs, enc, data) => {
-      try {
-        return decodeWord(cs, enc, data);
-      } catch {
-        return m;
-      }
-    });
+  const s = String(input ?? "").replace(/(=\?[^?]+\?[BQ]\?[^?]*\?=)\s+(?==\?)/gi, "$1");
+  let out = "";
+  let at = 0;
+  for (const m of s.matchAll(/=\?([^?]+)\?([BQ])\?([^?]*)\?=/gi)) {
+    out += rawHeaderText(s.slice(at, m.index));
+    try {
+      out += decodeWord(m[1], m[2], m[3]);
+    } catch {
+      out += m[0];
+    }
+    at = m.index + m[0].length;
+  }
+  return out + rawHeaderText(s.slice(at));
 }
 
 /* ── quoted-printable bodies ── */
@@ -191,6 +213,56 @@ export function normalizeSubject(s) {
     .toLowerCase();
 }
 
+/** Every `<id>` in a Message-ID, In-Reply-To or References value, in order. */
+export const messageIds = (s) => String(s ?? "").match(/<[^<>\s]+>/g) || [];
+
+/**
+ * The conversation a message belongs to, from its headers.
+ *
+ * The root's own Message-ID is what every reply carries first in References,
+ * so a root keys on that and its replies land beside it. Keying a root on its
+ * subject instead — which is what this used to do — put the original in one
+ * group and every answer to it in another. In-Reply-To covers the mailers
+ * that send no References; the subject is left only for mail with no ids at
+ * all.
+ */
+export function threadKeyOf(headers) {
+  const h = headers || {};
+  return (
+    messageIds(h.references)[0] ||
+    messageIds(h["in-reply-to"])[0] ||
+    messageIds(h["message-id"])[0] ||
+    normalizeSubject(decodeWords(h.subject || ""))
+  );
+}
+
+/**
+ * A References chain kept short enough for a header: the root, then the most
+ * recent ids. RFC 5322 §3.6.4 allows trimming the middle; the root is the one
+ * id every client threads on, so it is never the one dropped.
+ */
+export function trimReferences(ids, max = 20) {
+  const seen = new Set();
+  const list = ids.filter((id) => !seen.has(id) && seen.add(id));
+  return list.length > max ? [list[0], ...list.slice(-(max - 1))] : list;
+}
+
+/**
+ * What a reply to `parent` carries in References: the parent's own chain with
+ * the parent's Message-ID at the end.
+ *
+ * `refs` is the chain stored with the row. Rows stored before it was are
+ * missing it, and for those the thread key — the root of the conversation —
+ * is the best ancestor known.
+ */
+export function replyReferences(parent) {
+  if (!parent) return [];
+  const mid = messageIds(parent.mid)[0];
+  let chain = messageIds(parent.refs);
+  if (!chain.length) chain = messageIds(parent.thread_key).slice(0, 1);
+  return trimReferences(mid ? [...chain, mid] : chain);
+}
+
 /* ── outgoing mail ── */
 
 const needsEncoding = (s) => /[^\x20-\x7e]/.test(s);
@@ -298,7 +370,18 @@ export function buildRfc822({
   );
   if (inReplyTo) {
     lines.push(`In-Reply-To: ${inReplyTo}`);
-    lines.push(`References: ${(references ? references + " " : "") + inReplyTo}`.trim());
+    // The parent's chain, then the parent. Callers used to pass the parent's
+    // id as `references` too, which sent `References: <p> <p>` and dropped
+    // every earlier ancestor — so a client that threads on References[0]
+    // filed each reply under its parent instead of under the conversation.
+    const chain = trimReferences([
+      ...(Array.isArray(references) ? references : messageIds(references)),
+      ...messageIds(inReplyTo),
+    ]);
+    // Folded one id per line once it gets long: a header line may not pass
+    // 998 octets, and a deep thread's chain does.
+    const joined = chain.join(" ");
+    lines.push(`References: ${joined.length > 900 ? chain.join("\r\n ") : joined}`);
   }
 
   const files = (attachments || []).filter((a) => a && a.filename && a.data);

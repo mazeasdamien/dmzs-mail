@@ -17,8 +17,24 @@ import { b64decode, qpBytes, decodeWords } from "./mime.js";
 
 const MAX_DEPTH = 12; // a message nested deeper than this is not a message
 
-export const bytesToLatin1 = (bytes) =>
-  typeof bytes === "string" ? bytes : new TextDecoder("latin1").decode(bytes);
+/**
+ * Bytes → one char per byte, every value kept.
+ *
+ * Not `new TextDecoder("latin1")`: under the WHATWG Encoding Standard that
+ * label means windows-1252, which maps 0x80–0x9F onto the euro sign, curly
+ * quotes and friends (0x80 → U+20AC). latin1ToBytes then masked U+20AC back to
+ * 0xAC, so every 8-bit UTF-8 body and every 8bit attachment came out with
+ * those bytes silently rewritten.
+ */
+export function bytesToLatin1(bytes) {
+  if (typeof bytes === "string") return bytes;
+  let out = "";
+  // Chunked: fromCharCode.apply over a whole message would blow the stack.
+  for (let i = 0; i < bytes.length; i += 8192) {
+    out += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+  }
+  return out;
+}
 
 export const latin1ToBytes = (s) => Uint8Array.from(String(s), (c) => c.charCodeAt(0) & 0xff);
 
@@ -91,7 +107,58 @@ export function parseParams(input) {
     }
     if (k) params[k] = v;
   }
-  return { value: chunks[0].trim().toLowerCase(), params };
+  return { value: chunks[0].trim().toLowerCase(), params: joinExtendedParams(params) };
+}
+
+/**
+ * RFC 2231 parameters, put back together.
+ *
+ *   filename*=utf-8''r%C3%A9sum%C3%A9.pdf            → filename: "résumé.pdf"
+ *   filename*0*=utf-8''r%C3%A9; filename*1*=sum.pdf  → filename: "résum.pdf"
+ *
+ * This is how most mailers name an attachment that is not plain ASCII, and
+ * also how any long name is split. Without it such an attachment showed as
+ * "(unnamed)", or under its truncated plain `name=` fallback. A star after
+ * the section number means that section is percent-encoded; the charset sits
+ * in the first section, before the language, as `charset'lang'`.
+ */
+export function joinExtendedParams(params) {
+  const out = { ...params };
+  const groups = new Map();
+  for (const [k, v] of Object.entries(params)) {
+    const m = /^([^*]+)\*(?:(\d+)(\*)?)?$/.exec(k);
+    if (!m) continue;
+    if (!groups.has(m[1])) groups.set(m[1], []);
+    groups.get(m[1]).push({ n: m[2] === undefined ? 0 : Number(m[2]), enc: m[2] === undefined || !!m[3], v });
+  }
+  for (const [name, segs] of groups) {
+    segs.sort((a, b) => a.n - b.n);
+    let charset = "";
+    const bytes = [];
+    segs.forEach((seg, i) => {
+      let v = String(seg.v);
+      if (seg.enc && i === 0) {
+        const m = /^([^']*)'[^']*'/.exec(v);
+        if (m) {
+          charset = m[1];
+          v = v.slice(m[0].length);
+        }
+      }
+      for (let j = 0; j < v.length; j++) {
+        if (seg.enc && v[j] === "%" && /^[0-9a-f]{2}$/i.test(v.slice(j + 1, j + 3))) {
+          bytes.push(parseInt(v.slice(j + 1, j + 3), 16));
+          j += 2;
+        } else bytes.push(v.charCodeAt(j) & 0xff);
+      }
+    });
+    // Sections that were never encoded are left one char per byte, like any
+    // other header text, for decodeWords to read; encoded ones are decoded in
+    // their declared charset.
+    out[name] = segs.some((s) => s.enc)
+      ? decodeCharset(new Uint8Array(bytes), charset || "utf-8")
+      : bytesToLatin1(new Uint8Array(bytes));
+  }
+  return out;
 }
 
 /* ── bodies ── */
@@ -186,9 +253,10 @@ const paramsOf = (list) => {
   const out = {};
   if (!Array.isArray(list)) return out;
   for (let i = 0; i + 1 < list.length; i += 2) {
-    if (typeof list[i] === "string") out[list[i].toLowerCase()] = list[i + 1];
+    if (typeof list[i] === "string") out[list[i].toLowerCase()] = list[i + 1] ?? "";
   }
-  return out;
+  // Servers pass RFC 2231 sections through BODYSTRUCTURE untouched.
+  return joinExtendedParams(out);
 };
 
 /**

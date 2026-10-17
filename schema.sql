@@ -24,7 +24,10 @@ CREATE TABLE IF NOT EXISTS messages (
   account_id  TEXT NOT NULL,
   pid         TEXT NOT NULL,                -- stable id: the RFC Message-ID where there is one
   mid         TEXT NOT NULL DEFAULT '',     -- RFC Message-ID, for reply threading
-  thread_key  TEXT NOT NULL DEFAULT '',     -- first References id, or the normalized subject
+  -- First References id, else In-Reply-To, else the message's own id — so a
+  -- root and its replies share one key. The subject only for mail with no ids.
+  thread_key  TEXT NOT NULL DEFAULT '',
+  refs        TEXT NOT NULL DEFAULT '',     -- the References chain, for replying to this
   -- The one bucket a message is filed under, for the folder switcher:
   -- inbox | archive | sent | spam | trash | drafts, or an IMAP folder name.
   folder      TEXT NOT NULL DEFAULT 'inbox',
@@ -43,6 +46,11 @@ CREATE TABLE IF NOT EXISTS messages (
   unread      INTEGER NOT NULL DEFAULT 1,
   starred     INTEGER NOT NULL DEFAULT 0,   -- IMAP \Flagged
   has_body    INTEGER NOT NULL DEFAULT 0,   -- 1 once the defused body sits in R2
+  -- Where the provider has it: IMAP mailbox path and UID within it. What lets
+  -- a sync notice a flag changed or a message expunged on another device.
+  -- 0 and '' until a sync has seen the message there.
+  mailbox     TEXT NOT NULL DEFAULT '',
+  uid         INTEGER NOT NULL DEFAULT 0,
   created_at  INTEGER NOT NULL,
   UNIQUE (account_id, pid)
 );
@@ -96,3 +104,5 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(
   body,
   tokenize = 'unicode61 remove_diacritics 2'
 );
+
+CREATE INDEX IF NOT EXISTS idx_messages_uid     ON messages(account_id, mailbox, uid);

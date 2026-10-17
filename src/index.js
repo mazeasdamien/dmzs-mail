@@ -33,14 +33,18 @@ import {
   htmlToText,
   parseAddress,
   parseAddressList,
-  normalizeSubject,
   decodeWords,
   sanitizeHtml,
   textToHtml,
   newMessageId,
+  threadKeyOf,
+  messageIds,
+  trimReferences,
+  replyReferences,
   blockMatches,
   isBlockPattern,
 } from "./mime.js";
+import { planWindow, flagState, strikes, uidSet } from "./reconcile.js";
 import {
   parseMessage,
   parseHeaders,
@@ -68,6 +72,8 @@ import {
   imapDelete,
   imapEmpty,
   imapPurge,
+  imapFetchIds,
+  imapFetchChanged,
 } from "./imap.js";
 import { smtpSend, smtpCheck } from "./smtp.js";
 import { vapidKeys, pushAll } from "./push.js";
@@ -157,9 +163,10 @@ async function storeRows(env, accountId, rows) {
     stmts.push(
       env.DB.prepare(
         `INSERT INTO messages
-           (id, account_id, pid, mid, thread_key, folder, from_name, from_email,
-            to_line, cc_line, bcc_line, subject, snippet, date, unread, starred, has_body, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
+           (id, account_id, pid, mid, thread_key, refs, folder, from_name, from_email,
+            to_line, cc_line, bcc_line, subject, snippet, date, unread, starred, has_body,
+            mailbox, uid, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)
          -- Put yourself on the Cc of something you send and the provider keeps
          -- two copies of one message: the one in Sent and the one delivered to
          -- the inbox, sharing a Message-ID and therefore sharing this row.
@@ -172,7 +179,11 @@ async function storeRows(env, accountId, rows) {
          ON CONFLICT(account_id, pid) DO UPDATE SET
            unread=excluded.unread,
            starred=excluded.starred,
-           folder=excluded.folder
+           folder=excluded.folder,
+           -- A copy filed locally (sent, draft) has no UID yet, and must not
+           -- erase the one a sync has already found for the same message.
+           mailbox=CASE WHEN excluded.uid > 0 THEN excluded.mailbox ELSE messages.mailbox END,
+           uid=CASE WHEN excluded.uid > 0 THEN excluded.uid ELSE messages.uid END
          WHERE NOT (excluded.folder = 'sent' AND messages.folder <> 'sent')`
       ).bind(
         await hashHex(`msg|${accountId}|${r.pid}`, 16),
@@ -180,6 +191,7 @@ async function storeRows(env, accountId, rows) {
         r.pid,
         (r.mid || "").slice(0, 300),
         (r.thread_key || "").slice(0, 300),
+        (r.refs || "").slice(0, 4000),
         // A re-read always carries the provider's current filing, so a message
         // archived, binned or moved elsewhere corrects itself on next sync
         // rather than sitting in the inbox forever.
@@ -194,6 +206,8 @@ async function storeRows(env, accountId, rows) {
         r.date || now,
         r.unread ? 1 : 0,
         r.starred ? 1 : 0,
+        r.mailbox || "",
+        Number(r.uid) || 0,
         now
       )
     );
@@ -435,7 +449,8 @@ function rowFromRaw({ uid, flags, raw }, folder) {
       // it is only the fallback for mail that arrives without one.
       pid: mid || `uid-${folder}-${uid}`,
       mid,
-      thread_key: String(h.references || "").split(/\s+/)[0] || normalizeSubject(h.subject),
+      thread_key: threadKeyOf(h),
+      refs: trimReferences(messageIds(h.references)).join(" "),
       folder,
       from_name: from.name,
       from_email: from.email,
@@ -671,6 +686,220 @@ async function readLargeBody(im, uid, totalBytes) {
   }
 }
 
+/** Deletes rows by id, with their bodies and index entries. */
+async function dropMessages(env, ids) {
+  if (!ids.length) return;
+  await forgetMessages(env, ids);
+  const stmts = [];
+  for (let i = 0; i < ids.length; i += 100) {
+    const chunk = ids.slice(i, i + 100);
+    stmts.push(
+      env.DB.prepare(`DELETE FROM messages WHERE id IN (${chunk.map(() => "?").join(",")})`).bind(...chunk)
+    );
+  }
+  await env.DB.batch(stmts);
+}
+
+const MAX_FORGET = 500; // rows a single visit may delete; the rest wait a pass
+
+/**
+ * Brings one mailbox's stored rows into line with what the server has now:
+ * flags changed elsewhere, and messages expunged elsewhere. See reconcile.js
+ * for the windowing; `cur` is the mailbox's cursor entry, updated in place
+ * and saved with the rest of the sync state.
+ *
+ * Costs per visit: SELECT, SEARCH ALL, one FETCH of flags and Message-IDs for
+ * a few hundred UIDs over the open connection (no subrequests), and two or
+ * three D1 batches.
+ *
+ * `soleForApp` is false when two mailboxes file under the same app name; the
+ * sweep for never-placed rows cannot tell their rows apart, so it is skipped.
+ *
+ * Returns how far it moved the inbox's unread count, so the push check can
+ * tell new mail from mail read or deleted on the phone.
+ */
+async function reconcileMailbox(env, account, im, mb, cur, soleForApp) {
+  const app = cur.app || folderNameFor(mb);
+  const counts = app === "inbox";
+  let shift = 0;
+  const last = Number(cur.last_uid || 0);
+  const first = Number(cur.first_uid || 0) || last;
+  if (!last) return 0;
+
+  const sel = await imapSelect(im, mb.name);
+  // Renumbered since the cursor was written. The sync's own visit resets
+  // the cursor and the stored UIDs; until it has, every one of them lies.
+  if (!sel.uidvalidity || sel.uidvalidity !== Number(cur.uidvalidity)) return 0;
+
+  const all = await imapSearch(im, "ALL");
+  // Fewer UIDs than EXISTS is a short answer, not mail deleted elsewhere.
+  const trusted = all.length >= sel.exists;
+  const live = new Set(all);
+  const startedRotation = !Number(cur.rc);
+  if (startedRotation) cur.rs = Date.now();
+  const plan = planWindow({ all, first, last, rc: Number(cur.rc || 0) });
+
+  const flagUpdate = (id, f) =>
+    env.DB.prepare("UPDATE messages SET unread=?, starred=? WHERE id=?").bind(f.unread, f.starred, id);
+  const updates = [];
+  const unreadFlips = []; // [index in updates, +1 or -1]
+  const seen = new Set(); // UIDs whose flags are already being written
+
+  // Mod-sequences, where offered: every flag that moved anywhere in the
+  // mailbox since the last visit, in one command, rather than only what falls
+  // in this visit's window. Only rows already placed can be matched by UID.
+  if (sel.highestmodseq && (await im.capable("CONDSTORE"))) {
+    const since = Number(cur.modseq || 0);
+    let ok = true;
+    if (since && since < sel.highestmodseq) {
+      try {
+        for (const c of await imapFetchChanged(im, `${first}:${last}`, since)) {
+          const f = flagState(c.flags);
+          seen.add(c.uid);
+          // Two statements, so the first's change count says whether the
+          // unread flag itself moved.
+          unreadFlips.push([updates.length, f.unread ? 1 : -1]);
+          updates.push(
+            env.DB.prepare(
+              "UPDATE messages SET unread=? WHERE account_id=? AND mailbox=? AND uid=? AND unread<>?"
+            ).bind(f.unread, account.id, mb.name, c.uid, f.unread),
+            env.DB.prepare(
+              "UPDATE messages SET starred=? WHERE account_id=? AND mailbox=? AND uid=? AND starred<>?"
+            ).bind(f.starred, account.id, mb.name, c.uid, f.starred)
+          );
+        }
+      } catch (e) {
+        ok = false; // advertised but refused: the window below still runs
+        console.log(`reconcile: ${mb.name}: CHANGEDSINCE refused (${e.message || e})`);
+      }
+    }
+    if (ok) cur.modseq = sel.highestmodseq;
+  }
+
+  // The window: flags and Message-IDs for this visit's UIDs, and the rows
+  // stored against its ranges.
+  const got = plan.uids.length ? await imapFetchIds(im, uidSet(plan.uids)) : [];
+  const rangeRows = [];
+  if (plan.ranges.length) {
+    const res = await env.DB.batch(
+      plan.ranges.map(([a, b]) =>
+        env.DB.prepare(
+          `SELECT id, pid, uid, folder, unread, starred FROM messages
+            WHERE account_id=? AND mailbox=? AND uid BETWEEN ? AND ?`
+        ).bind(account.id, mb.name, a, b)
+      )
+    );
+    for (const r of res) rangeRows.push(...(r.results ?? []));
+  }
+  const byUid = new Map(rangeRows.map((r) => [Number(r.uid), r]));
+
+  // A server message with no row placed at its UID: either a row stored
+  // before rows carried UIDs, matched here by the id the sync gave it, or
+  // something never stored at all (a blocked sender, history not yet reached).
+  const pidOf = (g) => String(parseHeaders(g.head)["message-id"] || "").trim() || `uid-${app}-${g.uid}`;
+  const unplaced = got.filter((g) => !byUid.has(g.uid));
+  const byPid = new Map();
+  if (unplaced.length) {
+    const pids = [...new Set(unplaced.map(pidOf))];
+    const stmts = [];
+    for (let i = 0; i < pids.length; i += 90) {
+      const chunk = pids.slice(i, i + 90);
+      stmts.push(
+        env.DB.prepare(
+          `SELECT id, pid, folder, unread, starred FROM messages
+            WHERE account_id=? AND pid IN (${chunk.map(() => "?").join(",")})`
+        ).bind(account.id, ...chunk)
+      );
+    }
+    for (const r of await env.DB.batch(stmts)) for (const row of r.results ?? []) byPid.set(row.pid, row);
+  }
+
+  const remapped = new Set();
+  for (const g of got) {
+    const f = flagState(g.flags);
+    const placed = byUid.get(g.uid);
+    if (placed) {
+      if (seen.has(g.uid)) continue;
+      if (Number(placed.unread) !== f.unread || Number(placed.starred) !== f.starred) {
+        updates.push(flagUpdate(placed.id, f));
+        shift += f.unread - Number(placed.unread);
+      }
+      continue;
+    }
+    const row = byPid.get(pidOf(g));
+    // Only a row filed here. The same Message-ID in another mailbox — you on
+    // the Cc of your own mail, a copy in Sent — belongs to that mailbox.
+    if (!row || row.folder !== app) continue;
+    remapped.add(row.id);
+    shift += f.unread - Number(row.unread);
+    updates.push(
+      env.DB.prepare("UPDATE messages SET unread=?, starred=?, mailbox=?, uid=? WHERE id=?").bind(
+        f.unread,
+        f.starred,
+        mb.name,
+        g.uid,
+        row.id
+      )
+    );
+  }
+  if (updates.length) {
+    const res = await env.DB.batch(updates);
+    for (const [i, sign] of unreadFlips) shift += sign * Number(res[i]?.meta?.changes || 0);
+  }
+
+  // Expunged elsewhere: rows placed in this window whose UID the server no
+  // longer has. Rows since refiled here (moved in the app) are not this
+  // mailbox's to judge.
+  if (trusted) {
+    const missing = rangeRows.filter((r) => r.folder === app && !live.has(Number(r.uid))).map((r) => Number(r.uid));
+    const { doomed, miss } = strikes(missing, cur.miss, plan.ranges);
+    const gone = new Set(doomed.slice(0, MAX_FORGET));
+    // A row just matched to a new UID here is not gone, whatever its old one says.
+    const drop = rangeRows.filter((r) => gone.has(Number(r.uid)) && !remapped.has(r.id));
+    await dropMessages(env, drop.map((r) => r.id));
+    shift -= drop.filter((r) => Number(r.unread)).length;
+    cur.miss = [...miss, ...doomed.slice(MAX_FORGET)];
+    if (gone.size) console.log(`reconcile: ${mb.name}: ${gone.size} expunged elsewhere`);
+  }
+
+  // A whole rotation done: every message the server has in first..last has
+  // been looked at, so a row filed here that was never placed is one the
+  // server no longer has — deleted elsewhere before rows carried UIDs. Two
+  // rotations running, like the strikes above, and never Sent or Drafts,
+  // whose unplaced rows include copies that exist only here because the
+  // append to Apple failed.
+  cur.rc = plan.nextRc;
+  if (!plan.complete || !trusted || !soleForApp || app === "sent" || app === "drafts") {
+    return counts ? shift : 0;
+  }
+  const { results } = await env.DB.prepare(
+    `SELECT id, unread FROM messages
+      WHERE account_id=? AND folder=? AND mailbox='' AND uid=0 AND created_at < ? LIMIT ?`
+  )
+    .bind(account.id, app, Number(cur.rs) || 0, MAX_FORGET)
+    .all();
+  const candidates = (results ?? []).map((r) => r.id);
+  const unreadIds = new Set((results ?? []).filter((r) => Number(r.unread)).map((r) => r.id));
+  const prev = new Set(cur.sweep || []);
+  const doomed = candidates.filter((id) => prev.has(id));
+  cur.sweep = candidates.filter((id) => !prev.has(id));
+  if (!doomed.length) return counts ? shift : 0;
+  // A brake on a mismatch nobody foresaw: if the server still has mail here
+  // yet almost nothing stored matched it, something is wrong with the
+  // matching, not with the mailbox.
+  const total = await env.DB.prepare("SELECT COUNT(*) AS n FROM messages WHERE account_id=? AND folder=?")
+    .bind(account.id, app)
+    .first();
+  if (all.length && doomed.length >= 0.9 * Number(total?.n || 0)) {
+    console.log(`reconcile: ${mb.name}: sweep of ${doomed.length} held back, looks like a mismatch`);
+    return counts ? shift : 0;
+  }
+  await dropMessages(env, doomed);
+  shift -= doomed.filter((id) => unreadIds.has(id)).length;
+  console.log(`reconcile: ${mb.name}: ${doomed.length} never-placed rows swept`);
+  return counts ? shift : 0;
+}
+
 /**
  * One IMAP pass over every mailbox.
  *
@@ -679,7 +908,7 @@ async function readLargeBody(im, uid, totalBytes) {
  * Worker, so IMAP_CAP is deliberately low — at a pass a minute it still keeps
  * up with a personal mailbox.
  */
-async function syncIcloud(env, account) {
+async function syncIcloud(env, account, tally = {}) {
   const pass = await icloudPassword(env, account);
   if (!pass) return 0; // no stored credential: nothing to sync with
 
@@ -725,9 +954,19 @@ async function syncIcloud(env, account) {
       const sel = await imapSelect(im, mb.name);
       let last = Number(prev.last_uid || 0);
       let first = Number(prev.first_uid || 0);
+      // Reconcile's own place in the mailbox rides along with the cursor.
+      let carry = prev;
       if (sel.uidvalidity && prev.uidvalidity && prev.uidvalidity !== sel.uidvalidity) {
         last = 0; // mailbox renumbered; both ends of the old cursor are meaningless
         first = 0;
+        carry = {};
+        // So are the UIDs stored on its rows. Left in place, reconciling would
+        // read every one of them as expunged and delete the lot. The mailbox
+        // name stays, which keeps them out of the sweep for rows never placed;
+        // the re-read that follows puts the new UIDs back.
+        await env.DB.prepare("UPDATE messages SET uid=0 WHERE account_id=? AND mailbox=?")
+          .bind(account.id, mb.name)
+          .run();
       }
       // A cursor written before first_uid existed knows its ceiling but has no
       // floor, and `first > 1` below is then false forever — so those folders
@@ -782,6 +1021,8 @@ async function syncIcloud(env, account) {
           if (!parsed) continue;
         }
         const { row, body, attachments } = parsed;
+        row.mailbox = mb.name;
+        row.uid = uid;
         let doc = bodyFromParts({ ...body, attachments });
 
         // A blocked sender never becomes a message here. Expunged where it
@@ -827,6 +1068,7 @@ async function syncIcloud(env, account) {
       }
 
       folders[mb.name] = {
+        ...carry,
         // The name the app files mail under, kept beside the cursor so the
         // folder list can name a mailbox that has no mail in it to name it.
         app,
@@ -838,6 +1080,27 @@ async function syncIcloud(env, account) {
     state.cursor = (start + Math.max(1, advanced)) % Math.max(1, boxes.length);
     await countDestroyed(env, destroyed);
 
+    // What changed elsewhere: flags set and mail expunged on the phone or in
+    // Apple Mail. The inbox every pass, since that is where reading happens,
+    // and one other mailbox in turn. Never allowed to fail the pass — new
+    // mail has already been stored and the cursors must still be saved.
+    const inbox = boxes.find((mb) => folderNameFor(mb) === "inbox");
+    const others = boxes.filter((mb) => mb !== inbox);
+    const turn = others.length ? others[Number(state.rcursor || 0) % others.length] : null;
+    state.rcursor = (Number(state.rcursor || 0) + 1) % Math.max(1, others.length);
+    const appCount = new Map();
+    for (const mb of boxes) appCount.set(folderNameFor(mb), (appCount.get(folderNameFor(mb)) || 0) + 1);
+    for (const mb of [inbox, turn]) {
+      if (!mb || !folders[mb.name]) continue;
+      try {
+        const shift = await reconcileMailbox(env, account, im, mb, folders[mb.name], appCount.get(folderNameFor(mb)) === 1);
+        tally.unreadShift = (tally.unreadShift || 0) + shift;
+      } catch (e) {
+        if (isAuthFailure(e)) throw e;
+        console.log(`reconcile: ${mb.name}: ${e.message || e}`);
+      }
+    }
+
     // Existing mail predates the index, so each pass also indexes a handful of
     // messages that are not in it yet. Spread over passes rather than done in
     // one go: reading 700 bodies out of R2 in a single invocation would blow
@@ -848,7 +1111,12 @@ async function syncIcloud(env, account) {
       "UPDATE accounts SET sync_state=?, last_sync=?, status='ok', last_error=NULL WHERE id=?"
     )
       .bind(
-        JSON.stringify({ folders, cursor: state.cursor || 0, gone: state.gone || {} }),
+        JSON.stringify({
+          folders,
+          cursor: state.cursor || 0,
+          rcursor: state.rcursor || 0,
+          gone: state.gone || {},
+        }),
         Date.now(),
         account.id
       )
@@ -1049,9 +1317,9 @@ async function forgetBlockedLocally(env, pattern) {
    Sync, one account at a time, small on purpose.
    ──────────────────────────────────────────────────────────────── */
 
-async function syncAccount(env, account) {
+async function syncAccount(env, account, tally) {
   try {
-    if (account.provider === "icloud") return await syncIcloud(env, account);
+    if (account.provider === "icloud") return await syncIcloud(env, account, tally);
   } catch (e) {
     await flagAccount(env, account, e);
   }
@@ -1581,6 +1849,12 @@ async function handleApi(request, env, path, ctx) {
         // The stored cursor is keyed by IMAP name; leaving the old key means
         // the renamed mailbox looks brand new and re-downloads from scratch.
         await renameCursor(env, acct, box.name, to);
+        // Rows remember the mailbox path they were seen in. UIDs may not
+        // survive a rename, so they are let go; reconciling finds them again
+        // by Message-ID.
+        await env.DB.prepare("UPDATE messages SET mailbox=?, uid=0 WHERE account_id=? AND mailbox=?")
+          .bind(to, acct.id, box.name)
+          .run();
       });
       await env.DB.prepare("UPDATE messages SET folder=? WHERE account_id=? AND folder=?")
         .bind(to, acct.id, from)
@@ -2669,7 +2943,7 @@ No invented facts, no commitment to anything the brief does not cover, and no br
       html: html || undefined,
       attachments,
       inReplyTo: orig?.mid || undefined,
-      references: orig?.mid || undefined,
+      references: replyReferences(orig),
       messageId,
     });
 
@@ -2788,7 +3062,7 @@ No invented facts, no commitment to anything the brief does not cover, and no br
           html: html || undefined,
           attachments,
           inReplyTo: orig?.mid || undefined,
-          references: orig?.mid || undefined,
+          references: replyReferences(orig),
           messageId: newMessageId(acct.email),
         });
         // Cc is a header; the envelope needs every address explicitly or the
@@ -3071,7 +3345,12 @@ export default {
         )
           .bind(SYNC_PER_RUN)
           .all();
-        for (const acct of results ?? []) await syncAccount(env, acct);
+        // Reconciling moves the unread count too — a message read on the phone
+        // takes one off, one marked unread there adds one — and neither is new
+        // mail. Counted apart, so a read elsewhere cannot hide a new arrival in
+        // the same pass, nor a re-flag ring the phone.
+        const tally = { unreadShift: 0 };
+        for (const acct of results ?? []) await syncAccount(env, acct, tally);
 
         // Only ring if unread inbox mail actually went up. A sync that merely
         // backfilled history, or re-read a message you had already opened,
@@ -3079,7 +3358,7 @@ export default {
         const after = await env.DB.prepare(
           "SELECT COUNT(*) AS n FROM messages WHERE folder='inbox' AND unread=1"
         ).first();
-        if ((after?.n || 0) > (before?.n || 0)) await pushAll(env);
+        if ((after?.n || 0) - tally.unreadShift > (before?.n || 0)) await pushAll(env);
       })()
     );
   },

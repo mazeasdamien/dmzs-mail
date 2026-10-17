@@ -15,11 +15,10 @@
 import { connect } from "cloudflare:sockets";
 import { b64encode } from "./mime.js";
 import { MailAuthError } from "./errors.js";
+import { bytesToLatin1 as latin1 } from "./rfc822.js";
 
 const CRLF = "\r\n";
 const REPLY_MS = 20_000;
-
-const latin1 = (bytes) => new TextDecoder("latin1").decode(bytes);
 
 class Smtp {
   constructor(socket) {

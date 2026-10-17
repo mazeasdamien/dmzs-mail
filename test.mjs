@@ -497,7 +497,10 @@ console.log("\n-- message imbrique (transfert, rapport) ---");
  * c'est bien le code déployé qui est mis à l'épreuve, pas une copie qui
  * dériverait de son côté.
  */
+// Fins de ligne ramenées à LF : un checkout Windows a des CRLF, et les
+// découpes ci-dessous cherchent "\n}\n".
 const clientScript = readFileSync(new URL("./public/index.html", import.meta.url), "utf8")
+  .replace(/\r\n/g, "\n")
   .split("<script>")[1]
   .split("</script>")[0];
 
@@ -706,6 +709,180 @@ console.log("\n── audit 2026-10-17 : failles fermées ──────");
   ok(sameOriginWrite(req("POST", { Origin: "https://mail.agentxr.app" })), "Origin identique acceptée");
   ok(sameOriginWrite(req("POST", { "X-Session": "t", "Sec-Fetch-Site": "cross-site" })), "l'extension (X-Session) passe");
   ok(sameOriginWrite(req("POST")), "sans en-tête de navigateur : pas une page piégée");
+}
+
+console.log("\n-- octets 8 bits (0x80-0x9F) ---------------");
+{
+  const { bytesToLatin1, latin1ToBytes } = await import("./src/rfc822.js");
+  const utf8 = (s) => new TextEncoder().encode(s);
+  const concat = (...parts) => {
+    const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let at = 0;
+    for (const p of parts) { out.set(p, at); at += p.length; }
+    return out;
+  };
+
+  const tous = Uint8Array.from({ length: 256 }, (_, i) => i);
+  eq([...latin1ToBytes(bytesToLatin1(tous))], [...tous], "les 256 octets survivent à l'aller-retour");
+  eq(bytesToLatin1(new Uint8Array([0x80])).charCodeAt(0), 0x80, "0x80 reste 0x80, pas U+20AC (windows-1252)");
+  const gros = new Uint8Array(100_000).fill(0x9c);
+  eq(bytesToLatin1(gros).length, 100_000, "un gros tampon passe sans faire sauter la pile");
+
+  // €, tiret cadratin et guillemets courbes : E2 82 AC, E2 80 94, E2 80 9C —
+  // exactement les octets que windows-1252 réécrivait.
+  const texte = "Prix : 20 € — “ok” …";
+  const simple = concat(
+    utf8("Subject: x\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n"),
+    utf8(texte)
+  );
+  eq(parseMessage(simple).text, texte, "corps UTF-8 en 8bit intact");
+
+  const binaire = new Uint8Array([0x00, 0x80, 0x81, 0x8d, 0x90, 0x9d, 0x9f, 0xff]);
+  const mixte = concat(
+    utf8('Content-Type: multipart/mixed; boundary="b"\r\n\r\n--b\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n'),
+    utf8(texte),
+    utf8('\r\n--b\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename="x.bin"\r\nContent-Transfer-Encoding: binary\r\n\r\n'),
+    binaire,
+    utf8("\r\n--b--\r\n")
+  );
+  const lu = parseMessage(mixte);
+  eq(lu.text, texte, "texte 8bit intact dans un multipart");
+  eq([...latin1ToBytes(lu.attachments[0].body)], [...binaire], "pièce jointe 8bit/binaire intacte, octet pour octet");
+}
+
+console.log("\n-- en-têtes UTF-8 bruts (RFC 6532) ---------");
+{
+  const { bytesToLatin1 } = await import("./src/rfc822.js");
+  const fil = (s) => bytesToLatin1(new TextEncoder().encode(s)); // comme reçu d'IMAP
+  eq(decodeWords(fil("café")), "café", "UTF-8 brut décodé");
+  eq(decodeWords("caf\xe9"), "café", "latin1 brut laissé tel quel");
+  eq(decodeWords(fil("Re: été ") + "=?utf-8?Q?=C3=A0_Brest?="), "Re: été à Brest", "brut et encodé mélangés");
+  eq(decodeWords("=?utf-8?Q?=C3=A0?= " + fil("ça")), "à ça", "l'espace avant un passage brut est gardé");
+  eq(decodeWords("日本語"), "日本語", "texte déjà décodé non retouché");
+  eq(decodeWords("plain ascii"), "plain ascii", "ASCII intact");
+  const h = parseMessage(fil("Subject: Réunion à 14 h\r\nFrom: Zoé Durand <zoe@x.fr>\r\n\r\nx")).headers;
+  eq(decodeWords(h.subject), "Réunion à 14 h", "sujet UTF-8 brut d'un vrai message");
+  eq(parseAddress(h.from).name, "Zoé Durand", "nom d'expéditeur UTF-8 brut");
+}
+
+console.log("\n-- noms de fichiers RFC 2231 ---------------");
+{
+  eq(parseParams("attachment; filename*=utf-8''r%C3%A9sum%C3%A9.pdf").params.filename, "résumé.pdf", "filename* encodé");
+  eq(
+    parseParams("attachment; filename*0*=utf-8''r%C3%A9; filename*1*=sum%C3%A9; filename*2=\".pdf\"").params.filename,
+    "résumé.pdf",
+    "suites filename*0* / *1* / *2"
+  );
+  eq(parseParams("application/pdf; name*=iso-8859-1'fr'r%E9sum%E9.pdf").params.name, "résumé.pdf", "name* en iso-8859-1, avec langue");
+  eq(
+    parseParams("attachment; filename=\"repli.pdf\"; filename*=utf-8''vrai.pdf").params.filename,
+    "vrai.pdf",
+    "la forme étendue l'emporte sur le repli"
+  );
+  eq(parseParams("attachment; filename*0=\"long\"; filename*1=\"nom.txt\"").params.filename, "longnom.txt", "suites non encodées");
+  eq(parseParams("attachment; filename=\"simple.pdf\"").params.filename, "simple.pdf", "nom ordinaire inchangé");
+
+  const msg = parseMessage(
+    'Content-Type: multipart/mixed; boundary="b"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nhi\r\n' +
+      "--b\r\nContent-Type: application/pdf; name*=utf-8''CV%20r%C3%A9sum%C3%A9.pdf\r\n" +
+      "Content-Disposition: attachment;\r\n filename*0*=utf-8''CV%20r%C3%A9;\r\n filename*1*=sum%C3%A9.pdf\r\n" +
+      "Content-Transfer-Encoding: base64\r\n\r\nAAAA\r\n--b--\r\n"
+  );
+  eq(msg.attachments[0]?.filename, "CV résumé.pdf", "pièce jointe nommée de bout en bout");
+
+  const parts = flattenStructure(
+    parseSexp(
+      '(("TEXT" "PLAIN" ("CHARSET" "utf-8") NIL NIL "7BIT" 2 1)' +
+        "(\"APPLICATION\" \"PDF\" (\"NAME*\" \"utf-8''r%C3%A9sum%C3%A9.pdf\") NIL NIL \"BASE64\" 100 NIL " +
+        "(\"ATTACHMENT\" (\"FILENAME*\" \"utf-8''r%C3%A9sum%C3%A9.pdf\")) NIL) \"MIXED\")"
+    )
+  );
+  eq(parts[1]?.filename, "résumé.pdf", "BODYSTRUCTURE : FILENAME* décodé");
+}
+
+console.log("\n-- fils et References -----------------------");
+{
+  const { threadKeyOf, replyReferences, trimReferences, messageIds } = await import("./src/mime.js");
+  const { splitMessage } = await import("./src/rfc822.js");
+  const racine = { "message-id": "<root@x>", subject: "Dîner" };
+  const reponse = { "message-id": "<b@x>", "in-reply-to": "<root@x>", references: "<root@x>", subject: "Re: Dîner" };
+  const suite = { "message-id": "<c@x>", "in-reply-to": "<b@x>", references: "<root@x>\r\n <b@x>", subject: "Re: Re: Dîner" };
+  eq(threadKeyOf(racine), "<root@x>", "une racine est rangée sous son propre Message-ID");
+  eq(threadKeyOf(reponse), threadKeyOf(racine), "la réponse rejoint la racine");
+  eq(threadKeyOf(suite), threadKeyOf(racine), "la réponse à la réponse aussi");
+  eq(threadKeyOf({ "message-id": "<d@x>", "in-reply-to": "<root@x>" }), "<root@x>", "In-Reply-To seul suffit");
+  eq(threadKeyOf({ subject: "Re: Sans id" }), "sans id", "sans aucun id : le sujet");
+  eq(threadKeyOf({ references: "(commentaire) <root@x> <b@x>" }), "<root@x>", "commentaire ignoré dans References");
+
+  eq(replyReferences({ mid: "<c@x>", refs: "<root@x> <b@x>" }), ["<root@x>", "<b@x>", "<c@x>"], "chaîne du parent + parent");
+  eq(replyReferences({ mid: "<b@x>", refs: "", thread_key: "<root@x>" }), ["<root@x>", "<b@x>"], "ligne ancienne : la racine via thread_key");
+  eq(replyReferences({ mid: "<root@x>", refs: "", thread_key: "<root@x>" }), ["<root@x>"], "répondre à la racine : pas de doublon");
+  eq(replyReferences({ mid: "<b@x>", refs: "", thread_key: "dîner" }), ["<b@x>"], "clé de sujet ignorée");
+  eq(replyReferences(null), [], "pas de parent, pas de chaîne");
+
+  const ids = Array.from({ length: 30 }, (_, i) => `<m${i}@x>`);
+  const court = trimReferences(ids);
+  eq(court.length, 20, "chaîne bornée à 20");
+  eq(court[0], "<m0@x>", "la racine est gardée");
+  eq(court[19], "<m29@x>", "le plus récent est gardé");
+
+  const parent = { mid: "<c@x>", refs: "<root@x> <b@x>" };
+  const sortant = buildRfc822({
+    from: "damien@x.fr", to: "ami@y.fr", subject: "Re: Dîner", text: "ok",
+    inReplyTo: parent.mid, references: replyReferences(parent),
+  });
+  ok(/^References: <root@x> <b@x> <c@x>\r?$/m.test(sortant), "References = chaîne du parent + parent");
+  const ancien = buildRfc822({
+    from: "damien@x.fr", to: "ami@y.fr", subject: "Re", text: "ok", inReplyTo: "<p@x>", references: "<p@x>",
+  });
+  ok(/^References: <p@x>\r?$/m.test(ancien), "plus jamais <p> <p>");
+  const longue = buildRfc822({
+    from: "damien@x.fr", to: "ami@y.fr", subject: "Re", text: "ok",
+    inReplyTo: "<fin@x>", references: ids.map((id) => id.replace("@x", "@" + "a".repeat(60) + ".example")),
+  });
+  ok(longue.split("\r\n").every((l) => l.length <= 998), "aucune ligne d'en-tête au-delà de 998 octets");
+  eq(messageIds(parseHeaders(splitMessage(longue).head).references).length, 20, "chaîne repliée relue entière");
+}
+
+console.log("\n-- réconciliation (fenêtres, deux essais) --");
+{
+  const { planWindow, strikes, flagState, uidSet, inRanges } = await import("./src/reconcile.js");
+  eq(uidSet([10, 9, 1, 2, 3, 7, 3]), "1:3,7,9:10", "jeu de UID compressé");
+  eq(uidSet([]), "", "jeu vide");
+
+  const all = Array.from({ length: 1000 }, (_, i) => i + 1);
+  const p1 = planWindow({ all, first: 1, last: 1000, rc: 0 });
+  eq(p1.ranges, [[901, 1000], [651, 900]], "premier passage : le haut, puis un bloc");
+  eq(p1.nextRc, 651, "la rotation reprend sous ce bloc");
+  eq(p1.uids.length, 350, "100 récents + 250 anciens");
+
+  // Une rotation complète couvre first..last sans trou, même avec des UID
+  // supprimés, et finit par revenir en haut.
+  const trous = all.filter((u) => u % 7 && !(u > 300 && u < 420));
+  const vus = new Set();
+  let rc = 0;
+  let tours = 0;
+  for (;;) {
+    const p = planWindow({ all: trous, first: 1, last: 1000, rc });
+    for (const [a, b] of p.ranges) for (let u = a; u <= b; u++) vus.add(u);
+    rc = p.nextRc;
+    if (++tours > 20 || p.complete) break;
+  }
+  eq(vus.size, 1000, "une rotation couvre tout first..last");
+  ok(tours < 10, `et se termine (${tours} passages)`);
+
+  const fin = planWindow({ all: [50, 51, 60], first: 1, last: 60, rc: 0 });
+  ok(inRanges(10, fin.ranges), "un UID sous le plus vieux survivant est quand même vérifié");
+  eq(planWindow({ all: [], first: 1, last: 60, rc: 0 }).ranges, [[1, 60]], "boîte vidée ailleurs : tout est vérifié");
+
+  const s = strikes([5, 7], [7, 900], [[1, 100]]);
+  eq(s.doomed, [7], "deuxième absence : supprimé");
+  eq(s.miss, [5, 900], "première absence notée, l'ancienne hors fenêtre attend");
+  eq(strikes([], [7], [[1, 100]]).miss, [], "revenu entre-temps : oublié");
+
+  eq(flagState("\x5cSeen \x5cFlagged"), { unread: 0, starred: 1 }, "lu et suivi");
+  eq(flagState(""), { unread: 1, starred: 0 }, "ni lu ni suivi");
+  eq(flagState("\x5cSeenX"), { unread: 1, starred: 0 }, "un mot-clé voisin ne compte pas");
 }
 
 console.log(`\n${fail === 0 ? "✓" : "✗"} ${pass} assertions passées, ${fail} échec(s)\n`);

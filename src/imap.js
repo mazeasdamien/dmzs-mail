@@ -18,12 +18,11 @@
 
 import { connect } from "cloudflare:sockets";
 import { MailAuthError } from "./errors.js";
+import { bytesToLatin1 as latin1 } from "./rfc822.js";
 
 const CRLF = "\r\n";
 const GREETING_MS = 15_000;
 const MAX_LITERAL = 8 * 1024 * 1024; // a single body larger than this is refused
-
-const latin1 = (bytes) => new TextDecoder("latin1").decode(bytes);
 
 /** IMAP quoted-string: backslash and quote are the only escapes. */
 const quote = (s) => '"' + String(s ?? "").replace(/([\\"])/g, "\\$1") + '"';
@@ -156,6 +155,23 @@ class Imap {
     }
   }
 
+  /**
+   * Whether the server advertises an extension, asked once per connection.
+   *
+   * Asked rather than read off the greeting: the greeting's list is the
+   * pre-login one, and servers are allowed to offer more after LOGIN.
+   */
+  async capable(name) {
+    if (!this.caps) {
+      this.caps = new Set();
+      for (const { line } of await this.command("CAPABILITY")) {
+        const m = /^\* CAPABILITY (.*)$/i.exec(line);
+        if (m) for (const c of m[1].trim().split(/\s+/)) this.caps.add(c.toUpperCase());
+      }
+    }
+    return this.caps.has(String(name).toUpperCase());
+  }
+
   async logout() {
     try {
       await this.command("LOGOUT");
@@ -218,7 +234,7 @@ export async function imapList(im) {
 
 /** SELECT, returning the numbers that decide whether a cursor is still valid. */
 export async function imapSelect(im, mailbox) {
-  const state = { uidvalidity: 0, uidnext: 0, exists: 0 };
+  const state = { uidvalidity: 0, uidnext: 0, exists: 0, highestmodseq: 0 };
   for (const { line } of await im.command(`SELECT ${quote(mailbox)}`)) {
     let m;
     // Anchored to the bracketed response code, and first match wins. Unanchored
@@ -228,6 +244,10 @@ export async function imapSelect(im, mailbox) {
     if (!state.uidvalidity && (m = /\[UIDVALIDITY (\d+)\]/i.exec(line)))
       state.uidvalidity = Number(m[1]);
     if (!state.uidnext && (m = /\[UIDNEXT (\d+)\]/i.exec(line))) state.uidnext = Number(m[1]);
+    // Only sent by a CONDSTORE server, and only for a mailbox that keeps
+    // mod-sequences. Zero means "not offered", and the caller falls back.
+    if (!state.highestmodseq && (m = /\[HIGHESTMODSEQ (\d+)\]/i.exec(line)))
+      state.highestmodseq = Number(m[1]);
     if ((m = /^\* (\d+) EXISTS/i.exec(line))) state.exists = Number(m[1]);
   }
   return state;
@@ -294,6 +314,37 @@ export async function imapFetchMeta(im, uidSet) {
         size: Number((/RFC822\.SIZE (\d+)/i.exec(line) || [, 0])[1]),
       });
     }
+  }
+  return out;
+}
+
+/**
+ * Flags and Message-ID for a set of UIDs — what reconciling compares against
+ * the stored rows. The Message-ID is how a row stored before rows carried
+ * their UID gets matched to one.
+ */
+export async function imapFetchIds(im, set) {
+  const out = [];
+  for (const { line, literals } of await im.command(
+    `UID FETCH ${set} (FLAGS BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])`
+  )) {
+    if (!/FETCH/i.test(line)) continue;
+    const uid = UID_OF(line);
+    if (uid) out.push({ uid, flags: FLAGS_OF(line), head: literals[0] || "" });
+  }
+  return out;
+}
+
+/**
+ * Flags changed since a mod-sequence (CONDSTORE, RFC 7162): only what moved,
+ * across the whole set, in one command. Callers check the server offers it.
+ */
+export async function imapFetchChanged(im, set, modseq) {
+  const out = [];
+  for (const { line } of await im.command(`UID FETCH ${set} (FLAGS) (CHANGEDSINCE ${modseq})`)) {
+    if (!/FETCH/i.test(line)) continue;
+    const uid = UID_OF(line);
+    if (uid) out.push({ uid, flags: FLAGS_OF(line) });
   }
   return out;
 }
@@ -387,7 +438,7 @@ export async function imapMove(im, uid, dest) {
   } catch {
     await im.command(`UID COPY ${uid} ${quote(dest)}`);
     await im.command(`UID STORE ${uid} +FLAGS (\\Deleted)`);
-    await im.command("EXPUNGE");
+    await expungeUid(im, uid);
   }
 }
 
@@ -404,28 +455,33 @@ export const imapRename = (im, from, to) => im.command(`RENAME ${quote(from)} ${
 export const imapDelete = (im, name) => im.command(`DELETE ${quote(name)}`);
 
 /**
+ * Expunges one UID, and only that one where the server allows it.
+ *
+ * Plain EXPUNGE removes *every* message flagged \Deleted in the mailbox, so a
+ * stray flag left by another client takes unrelated mail with it. It is used
+ * only on a server without UIDPLUS, which has no other way. On one with it, a
+ * failing UID EXPUNGE is an error to report — falling back to the plain form
+ * on any failure, as this used to, destroyed exactly the mail it exists to
+ * protect, on exactly the servers that could have protected it.
+ */
+async function expungeUid(im, uid) {
+  if (await im.capable("UIDPLUS")) await im.command(`UID EXPUNGE ${uid}`);
+  else await im.command("EXPUNGE");
+}
+
+/** Removes one message for good. */
+export async function imapPurge(im, uid) {
+  await im.command(`UID STORE ${uid} +FLAGS (\\Deleted)`);
+  await expungeUid(im, uid);
+}
+
+/**
  * Empties a mailbox: flags everything deleted, then expunges.
  *
  * Permanent. EXPUNGE is the point at which mail stops existing anywhere, and
  * IMAP offers no undo — the caller is expected to have made that clear.
  * Returns how many messages were removed.
  */
-/**
- * Removes one message for good.
- *
- * UID EXPUNGE first: plain EXPUNGE removes *every* message flagged \Deleted in
- * the mailbox, so a stray flag left by another client would take unrelated mail
- * with it. The fallback only runs on servers without UIDPLUS.
- */
-export async function imapPurge(im, uid) {
-  await im.command(`UID STORE ${uid} +FLAGS (\\Deleted)`);
-  try {
-    await im.command(`UID EXPUNGE ${uid}`);
-  } catch {
-    await im.command("EXPUNGE");
-  }
-}
-
 export async function imapEmpty(im, name) {
   const { exists } = await imapSelect(im, name);
   if (!exists) return 0;
