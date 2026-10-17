@@ -66,6 +66,9 @@ export const SCHEMA = [
   // The list groups by thread_key on every load, and opening a conversation
   // filters on it. Both walk the whole table without this.
   `CREATE INDEX IF NOT EXISTS idx_messages_thread  ON messages(thread_key)`,
+  // Unread only: the badge, the push and the inbox count ask about these few
+  // every minute, and without it each question read the whole folder.
+  `CREATE INDEX IF NOT EXISTS idx_messages_unread  ON messages(folder, date DESC) WHERE unread=1`,
   // Key/value, for the things that are per-install rather than per-account:
   // the VAPID pair the push subscriptions are signed with, and the last unread
   // count a notification was sent for.
@@ -105,6 +108,13 @@ export const SCHEMA = [
 )`,
   // Full-text search. `id` is carried along to join back to messages, not
   // searched; diacritics are folded so "releve" finds "relevé".
+  // Which index row holds which message. FTS5 can only look a row up by
+  // rowid, so this is what lets one message leave the index without reading
+  // all of it.
+  `CREATE TABLE IF NOT EXISTS search_ids (
+  id  TEXT PRIMARY KEY,                    -- messages.id
+  rid INTEGER NOT NULL                     -- its rowid in search
+)`,
   `CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(
   id UNINDEXED,
   subject,
@@ -162,15 +172,28 @@ ${SCHEMA.join(";\n\n")};
 /**
  * Brings a live database up to what this build expects.
  *
- * Everything here is idempotent, and costs two reads when there is nothing to
+ * Everything here is idempotent, and costs one read when there is nothing to
  * do. Only ever says something when something changed: a line a minute saying
  * all is well is a line nobody reads.
  */
 export async function ensureSchema(env) {
+  // Thirteen statements a minute to find, nearly every time, that nothing has
+  // changed. The fingerprint of what this build expects is kept once the
+  // database matches it, and only a build that expects something else — a
+  // new table, a new column — pays for the full pass.
+  const fp = schemaFingerprint();
+  const seen = await env.DB.prepare("SELECT value FROM settings WHERE key='schema_fp'")
+    .first()
+    .catch(() => null);
+  if (seen?.value === fp) return [];
+
   const added = [];
   for (const sql of SCHEMA) {
     await env.DB.prepare(sql).run();
   }
+  // Index rows written before search_ids existed. One read of the index,
+  // once; after this every row is mapped as it is written.
+  await env.DB.prepare("INSERT OR IGNORE INTO search_ids (id, rid) SELECT id, rowid FROM search").run();
   for (const [table, columns] of Object.entries(HEAL_COLUMNS)) {
     // pragma_table_info as a table-valued function rather than a bare PRAGMA:
     // it comes back as ordinary rows, which is what D1's query interface
@@ -192,5 +215,18 @@ export async function ensureSchema(env) {
     }
   }
   if (added.length) console.log(`schema: added ${added.join(", ")}`);
+  await env.DB.prepare(
+    "INSERT INTO settings (key, value) VALUES ('schema_fp', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+  )
+    .bind(fp)
+    .run();
   return added;
+}
+
+/** A short hash of everything ensureSchema would apply. */
+export function schemaFingerprint() {
+  const text = JSON.stringify([SCHEMA, HEAL_COLUMNS, "search_ids-v1"]);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193) >>> 0;
+  return h.toString(16);
 }

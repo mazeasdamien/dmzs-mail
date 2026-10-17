@@ -210,15 +210,46 @@ async function storeRows(env, accountId, rows) {
  * silently drift out of step with the messages table.
  */
 async function indexMessage(env, id, row, bodyText) {
+  const rid = searchRowid(id);
   await env.DB.batch([
-    env.DB.prepare("DELETE FROM search WHERE id=?").bind(id),
-    env.DB.prepare("INSERT INTO search (id, subject, sender, body) VALUES (?,?,?,?)").bind(
+    ...(await unindex(env, [id])),
+    env.DB.prepare("INSERT INTO search (rowid, id, subject, sender, body) VALUES (?,?,?,?,?)").bind(
+      rid,
       id,
       row.subject || "",
       `${row.from_name || ""} ${row.from_email || ""}`,
       String(bodyText || "").slice(0, 60_000)
     ),
+    env.DB.prepare("INSERT OR REPLACE INTO search_ids (id, rid) VALUES (?,?)").bind(id, rid),
   ]);
+}
+
+/**
+ * The index row a message is stored under: 52 bits of its id, so it fits a
+ * JavaScript number exactly and never meets the small sequential rowids that
+ * rows indexed before this scheme were given.
+ */
+const searchRowid = (id) => parseInt(String(id).slice(0, 13), 16);
+
+/**
+ * Statements that take these messages out of the search index.
+ *
+ * By rowid, found through search_ids. `id` in the FTS table is UNINDEXED, so
+ * `DELETE FROM search WHERE id=?` read the entire index for every message it
+ * removed — once per new mail, once per delete — and D1 bills every row read.
+ */
+async function unindex(env, ids) {
+  const out = [];
+  for (let i = 0; i < ids.length; i += 90) {
+    const chunk = ids.slice(i, i + 90);
+    const marks = chunk.map(() => "?").join(",");
+    const { results } = await env.DB.prepare(`SELECT rid FROM search_ids WHERE id IN (${marks})`)
+      .bind(...chunk)
+      .all();
+    for (const r of results ?? []) out.push(env.DB.prepare("DELETE FROM search WHERE rowid=?").bind(r.rid));
+    out.push(env.DB.prepare(`DELETE FROM search_ids WHERE id IN (${marks})`).bind(...chunk));
+  }
+  return out;
 }
 
 /**
@@ -256,12 +287,8 @@ async function forgetMessages(env, ids) {
   }
   // Chunked: D1 caps the number of bound parameters per statement, and a
   // mailbox being emptied can carry thousands of ids.
-  for (let i = 0; i < ids.length; i += 100) {
-    const chunk = ids.slice(i, i + 100);
-    await env.DB.prepare(`DELETE FROM search WHERE id IN (${chunk.map(() => "?").join(",")})`)
-      .bind(...chunk)
-      .run();
-  }
+  const stmts = await unindex(env, ids);
+  for (let i = 0; i < stmts.length; i += 100) await env.DB.batch(stmts.slice(i, i + 100));
 }
 
 /* ────────────────────────────────────────────────────────────────
@@ -563,7 +590,7 @@ async function backfillSearch(env, account, limit) {
     `SELECT m.id, m.subject, m.from_name, m.from_email
        FROM messages m
       WHERE m.account_id = ?
-        AND m.id NOT IN (SELECT id FROM search)
+        AND m.id NOT IN (SELECT id FROM search_ids)
       LIMIT ?`
   )
     .bind(account.id, limit)
@@ -1008,11 +1035,13 @@ async function forgetBlockedLocally(env, pattern) {
   const ids = (results ?? []).filter((r) => blockMatches(r.from_email, pattern)).map((r) => r.id);
   if (!ids.length) return 0;
 
-  for (const id of ids) await env.MAIL.delete(bodyKey(id)).catch(() => {});
-  await env.DB.batch([
-    ...ids.map((id) => env.DB.prepare("DELETE FROM messages WHERE id=?").bind(id)),
-    ...ids.map((id) => env.DB.prepare("DELETE FROM search WHERE id=?").bind(id)),
-  ]);
+  await forgetMessages(env, ids);
+  for (let i = 0; i < ids.length; i += 90) {
+    const chunk = ids.slice(i, i + 90);
+    await env.DB.prepare(`DELETE FROM messages WHERE id IN (${chunk.map(() => "?").join(",")})`)
+      .bind(...chunk)
+      .run();
+  }
   return ids.length;
 }
 
@@ -1220,7 +1249,7 @@ async function forgetLocal(env, accountId, pid) {
   await env.MAIL.delete(bodyKey(id)).catch(() => {});
   await env.DB.batch([
     env.DB.prepare("DELETE FROM messages WHERE id=?").bind(id),
-    env.DB.prepare("DELETE FROM search WHERE id=?").bind(id),
+    ...(await unindex(env, [id])),
   ]);
 }
 
@@ -1904,11 +1933,8 @@ async function handleApi(request, env, path, ctx) {
     const ids = rows.map((r) => r.id);
     const marks = ids.map(() => "?").join(",");
     if (b.purge) {
-      for (const id of ids) await env.MAIL.delete(bodyKey(id)).catch(() => {});
-      await env.DB.batch([
-        env.DB.prepare(`DELETE FROM messages WHERE id IN (${marks})`).bind(...ids),
-        env.DB.prepare(`DELETE FROM search WHERE id IN (${marks})`).bind(...ids),
-      ]);
+      await forgetMessages(env, ids);
+      await env.DB.prepare(`DELETE FROM messages WHERE id IN (${marks})`).bind(...ids).run();
     } else {
       await env.DB.prepare(`UPDATE messages SET folder=?, unread=0 WHERE id IN (${marks})`)
         .bind(target, ...ids)
@@ -2318,7 +2344,7 @@ async function handleApi(request, env, path, ctx) {
     await env.MAIL.delete(bodyKey(msg.id));
     await env.DB.batch([
       env.DB.prepare("DELETE FROM messages WHERE id=?").bind(msg.id),
-      env.DB.prepare("DELETE FROM search WHERE id=?").bind(msg.id),
+      ...(await unindex(env, [msg.id])),
     ]);
     return json({ ok: true, alreadyGone: gone });
   }

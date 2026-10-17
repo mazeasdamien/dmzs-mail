@@ -53,6 +53,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_account ON messages(account_id, folder, 
 
 CREATE INDEX IF NOT EXISTS idx_messages_thread  ON messages(thread_key);
 
+CREATE INDEX IF NOT EXISTS idx_messages_unread  ON messages(folder, date DESC) WHERE unread=1;
+
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -80,6 +82,11 @@ CREATE TABLE IF NOT EXISTS blocked_senders (
   n          INTEGER NOT NULL DEFAULT 0,   -- messages destroyed by this rule
   last_at    INTEGER,                      -- ms, when it last matched
   created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS search_ids (
+  id  TEXT PRIMARY KEY,                    -- messages.id
+  rid INTEGER NOT NULL                     -- its rowid in search
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(
