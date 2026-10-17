@@ -114,6 +114,24 @@ export const SCHEMA = [
   last_at    INTEGER,                      -- ms, when it last matched
   created_at INTEGER NOT NULL
 )`,
+  // Senders whose remote images load as their mail opens.
+  //
+  // Images are held back by default, because a remote image is how a sender
+  // learns you opened their mail. This is the list of the ones you have
+  // decided may know: whole addresses, never domains.
+  `CREATE TABLE IF NOT EXISTS image_senders (
+  email      TEXT PRIMARY KEY,             -- lowercase, a whole address
+  created_at INTEGER NOT NULL
+)`,
+  // Sessions ended before their time: signing out of a device puts its id
+  // here, so a copy of the cookie stops working too. Kept only until the
+  // token would have expired anyway — after that the signature check refuses
+  // it on its own, and the next revocation sweeps the row.
+  `CREATE TABLE IF NOT EXISTS revoked_sessions (
+  sid        TEXT PRIMARY KEY,
+  exp        INTEGER NOT NULL,             -- s, the token's own expiry
+  created_at INTEGER NOT NULL
+)`,
   // Full-text search. `id` is carried along to join back to messages, not
   // searched; diacritics are folded so "releve" finds "relevé".
   // Which index row holds which message. FTS5 can only look a row up by
@@ -190,6 +208,11 @@ export const MIGRATIONS = [
   // message. A key that is not an id was a subject; where the row has an id,
   // that is what the key is now.
   ["thread_key_mid", `UPDATE messages SET thread_key=mid WHERE mid LIKE '<%>' AND thread_key NOT LIKE '<%'`],
+  // The sealed Gemini key and model from before the move to Claude. They were
+  // only cleared when a Claude key was saved in the app, so a deployment that
+  // took its key from a secret kept a working Google credential sealed away
+  // where nothing shows it and nobody remembers to revoke it.
+  ["drop_gemini_key", `DELETE FROM settings WHERE key IN ('ai_key', 'ai_model')`],
 ];
 
 /** What schema.sql looks like on disk, comments and all. */

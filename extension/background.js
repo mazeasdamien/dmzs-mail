@@ -62,6 +62,10 @@ async function poll() {
       return show("!", GREY, "sign-in expired. Click to set up again.");
     }
     if (!res.ok) return;
+    // The server swaps the token for a fresh one as it ages, and swaps an old
+    // full-session token for one that can read this count and nothing else.
+    const swap = res.headers.get("X-Session-Replace");
+    if (swap) await chrome.storage.local.set({ token: swap });
     state = await res.json();
   } catch {
     // Offline, asleep, DNS hiccup. Keep the last known count rather than

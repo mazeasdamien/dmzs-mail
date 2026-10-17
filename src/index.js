@@ -20,6 +20,12 @@ import {
   clearCookie,
   safeEqual,
   sameOriginWrite,
+  readSession,
+  getCookie,
+  revokeSession,
+  revokeOthers,
+  renewedHeaderToken,
+  PUSH_SCOPE,
 } from "./auth.js";
 import { isAuthFailure } from "./errors.js";
 import { BODY_VERSION, bodyFromParts, unsubFromHeaders } from "./body.js";
@@ -80,6 +86,24 @@ import { vapidKeys, pushAll } from "./push.js";
 import { zipStream } from "./zip.js";
 import { runBackup, latestBackup, restoreBackup } from "./backup.js";
 
+/**
+ * This app's own hostname, for the sanitizer.
+ *
+ * A message is rendered against this app's address, so a URL in it naming
+ * this host is a request to the app itself — with the session cookie, from
+ * the print frame. Read from APP_URL at each entry point rather than threaded
+ * through every caller of rowFromRaw: one deployment, one host.
+ */
+let ownHost = "";
+const learnHost = (env) => {
+  try {
+    ownHost = env.APP_URL ? new URL(env.APP_URL).hostname : ownHost;
+  } catch {
+    /* a malformed APP_URL leaves relative URLs still caught */
+  }
+};
+const defuse = (html) => sanitizeHtml(html, { host: ownHost });
+
 const JSON_HEADERS = { "Content-Type": "application/json; charset=utf-8" };
 const json = (data, status = 200, extra = {}) =>
   new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...extra } });
@@ -100,7 +124,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * edit, and the page, this file and the service worker all agree on it or the
  * deploy never starts.
  */
-const CLIENT_SHELL = "v51";
+const CLIENT_SHELL = "v52";
 
 /**
  * IMAP system flags, spelled once.
@@ -434,7 +458,7 @@ function rowFromRaw({ uid, flags, raw }, folder) {
   const h = m.headers;
   const from = parseAddress(h.from || "");
   const mid = String(h["message-id"] || "").trim();
-  const defused = m.html ? sanitizeHtml(m.html) : sanitizeHtml(textToHtml(m.text || ""));
+  const defused = m.html ? defuse(m.html) : defuse(textToHtml(m.text || ""));
   // htmlToText rather than a bare tag-strip: the latter leaves the contents of
   // <style> behind, which is why list previews read "#outlook a { padding:0; }
   // body { margin:0 …" instead of the first line of the message.
@@ -674,7 +698,7 @@ async function readLargeBody(im, uid, totalBytes) {
   try {
     const encoded = await imapFetchPart(im, uid, pick.part);
     const text = decodePart(encoded || "", pick.encoding, pick.charset);
-    const defused = pick.type === "text/html" ? sanitizeHtml(text) : sanitizeHtml(textToHtml(text));
+    const defused = pick.type === "text/html" ? defuse(text) : defuse(textToHtml(text));
     return bodyFromParts({
       html: defused.html,
       blocked: defused.blocked,
@@ -1634,7 +1658,7 @@ async function aiModel(env) {
   return row?.value || env.CLAUDE_MODEL || CLAUDE_DEFAULT;
 }
 
-async function handleApi(request, env, path, ctx) {
+async function handleApi(request, env, path, ctx, session) {
   // GET /api/accounts — who is connected, how fresh, how much unread.
   if (path === "/api/accounts" && request.method === "GET") {
     const [a, u] = await env.DB.batch([
@@ -2341,6 +2365,45 @@ async function handleApi(request, env, path, ctx) {
     return json({ ok: true });
   }
 
+  // GET /api/image-senders — whose remote images load without asking.
+  if (path === "/api/image-senders" && request.method === "GET") {
+    const { results } = await env.DB.prepare(
+      "SELECT email, created_at FROM image_senders ORDER BY created_at DESC"
+    ).all();
+    return json({ senders: results ?? [] });
+  }
+
+  // POST /api/image-senders { email } — their images load from now on.
+  //
+  // A whole address, never a domain: a domain would take in every list a
+  // company runs, and the point is the one sender you have decided to trust.
+  if (path === "/api/image-senders" && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    const email = String(b.email || "").trim().toLowerCase().slice(0, 200);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return json({ error: "Not an address" }, 400);
+    await env.DB.prepare("INSERT OR IGNORE INTO image_senders (email, created_at) VALUES (?,?)")
+      .bind(email, Date.now())
+      .run();
+    return json({ ok: true, email });
+  }
+
+  // DELETE /api/image-senders/:email — back to asking.
+  const imgDel = path.match(/^\/api\/image-senders\/(.+)$/);
+  if (imgDel && request.method === "DELETE") {
+    const email = decodeURIComponent(imgDel[1]).toLowerCase().slice(0, 200);
+    await env.DB.prepare("DELETE FROM image_senders WHERE email=?").bind(email).run();
+    return json({ ok: true });
+  }
+
+  // POST /api/sessions/sign-out-others — every device but this one has to be
+  // activated again, the extension included. This one gets a fresh cookie,
+  // issued after the cut-off, in the same response.
+  if (path === "/api/sessions/sign-out-others" && request.method === "POST") {
+    if (!session || session.scope) return json({ error: "Not from this session" }, 403);
+    const token = await revokeOthers(session, env);
+    return json({ ok: true }, 200, { "Set-Cookie": sessionCookie(token) });
+  }
+
   // GET /api/messages?folder=&account=&q=&starred=&before=&limit=
   // folder=all searches across everything, which is what the search box uses.
   if (path === "/api/messages" && request.method === "GET") {
@@ -2538,6 +2601,7 @@ async function handleApi(request, env, path, ctx) {
         // Private: this is somebody's mail, and it passed through an edge cache
         // once already on the way here.
         "Cache-Control": "private, no-store",
+        ...ATTACHMENT_HEADERS(att.type),
       },
     });
   }
@@ -2615,6 +2679,7 @@ async function handleApi(request, env, path, ctx) {
       headers: {
         "Content-Type": "application/zip",
         "Content-Disposition": `attachment; filename="${label || "attachments"}.zip"`,
+        ...ATTACHMENT_HEADERS("application/zip"),
         "Cache-Control": "private, no-store",
       },
     });
@@ -3242,7 +3307,11 @@ async function route(request, env, ctx) {
     }
     return new Response(ACTIVATION_PAGE, {
       status: 200,
-      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": SHELL_CSP,
+      },
     });
   }
 
@@ -3257,9 +3326,12 @@ async function route(request, env, ctx) {
       return json({ error: "Wrong key" }, 401);
     }
     return json({
+      // Push-only: the badge is all the extension shows, so the unread count
+      // is all its token can read.
       token: await issueSession(env.AUTH_SECRET, {
         name: String(body.name || "").slice(0, 40) || undefined,
         userAgent: request.headers.get("User-Agent") || "",
+        scope: PUSH_SCOPE,
       }),
     });
   }
@@ -3274,6 +3346,10 @@ async function route(request, env, ctx) {
     if ((dest && dest !== "document") || (site && site !== "same-origin" && site !== "none")) {
       return new Response(null, { status: 204 });
     }
+    // The cookie is cleared, and its id goes on the denylist: a copy of it
+    // taken off this device stops working at the same moment.
+    const leaving = await readSession(getCookie(request), env.AUTH_SECRET || "").catch(() => null);
+    if (leaving) await revokeSession(leaving, env).catch(() => {});
     return new Response(null, {
       status: 302,
       headers: { Location: "/", "Set-Cookie": clearCookie() },
@@ -3287,10 +3363,24 @@ async function route(request, env, ctx) {
 
   if (path.startsWith("/api/")) {
     if (!sameOriginWrite(request)) return json({ error: "Cross-site request refused" }, 403);
-    const res = await handleApi(request, env, path, ctx);
+    // The app reaches its API with fetch() and with links it downloads from;
+    // nothing of its own loads an /api/ URL as an image, a stylesheet or a
+    // font. Something that does is a message body — the print frame shares
+    // this origin and sends the cookie — and a GET here is not always a read:
+    // opening a message marks it read. Bodies stored before the sanitizer
+    // dropped URLs pointing back at the app still carry them.
+    const dest = request.headers.get("Sec-Fetch-Dest");
+    if (dest && dest !== "empty" && dest !== "document") {
+      return json({ error: "Not loadable from a page" }, 403);
+    }
+    const res = await handleApi(request, env, path, ctx, session);
     const fresh = await renewedCookie(session, env);
     const out = new Response(res.body, res);
     if (fresh) out.headers.append("Set-Cookie", fresh);
+    if (path === "/api/push/state") {
+      const swap = await renewedHeaderToken(session, env);
+      if (swap) out.headers.set("X-Session-Replace", swap);
+    }
 
     // Which client is on the other end, and which one it ought to be.
     //
@@ -3320,13 +3410,42 @@ async function route(request, env, ctx) {
   // Set here rather than in a _headers file because run_worker_first means
   // every asset is served through this call, where it can be seen to happen.
   const asset = await env.ASSETS.fetch(request);
-  if (/^\/(|index\.html|sw\.js|manifest\.webmanifest)$/.test(path)) {
+  const shell = /^\/(|index\.html|sw\.js|manifest\.webmanifest)$/.test(path);
+  const page = /^text\/html/i.test(asset.headers.get("Content-Type") || "");
+  if (shell || page) {
     const out = new Response(asset.body, asset);
-    out.headers.set("Cache-Control", "no-cache");
+    if (shell) out.headers.set("Cache-Control", "no-cache");
+    if (page) out.headers.set("Content-Security-Policy", SHELL_CSP);
     return out;
   }
   return asset;
 }
+
+/**
+ * The page-level policy for the shell.
+ *
+ * Not a script policy: the app is one inline script, and a hash of it would
+ * have to be rewritten on every build. What it does close is everything
+ * that needs no script at all — a plugin, a <base> that re-points every
+ * relative URL, a form posting off-site, and this app framed by someone else.
+ * The message frames are srcdoc documents and inherit this policy; nothing
+ * here limits what they draw, and each carries its own tighter one.
+ */
+const SHELL_CSP = "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+
+/**
+ * Attachments are served with the type the sender declared, which is the
+ * sender's word and nothing more: an "image" that is really HTML, opened on
+ * this origin, would run with the session. nosniff stops the browser guessing
+ * past the declared type, and the sandbox policy means that even a page
+ * served as a page gets no script and no origin. PDF is the exception —
+ * Chrome will not draw a PDF inside a sandboxed document at all — and a PDF
+ * cannot script this origin anyway.
+ */
+const ATTACHMENT_HEADERS = (type) => ({
+  "X-Content-Type-Options": "nosniff",
+  ...(/^application\/pdf\b/i.test(String(type || "")) ? {} : { "Content-Security-Policy": "sandbox" }),
+});
 
 /**
  * The unauthenticated page at /auth. Minimal on purpose: it holds a key for
@@ -3393,6 +3512,7 @@ const ACTIVATION_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf
 
 export default {
   async fetch(request, env, ctx) {
+    learnHost(env);
     // Everything below is allowed to throw; nothing is allowed to answer a
     // thrown error with a Worker stack trace. One outer net, one shape.
     try {
@@ -3405,6 +3525,7 @@ export default {
   // Sync heartbeat: the least-recently-synced account, IMAP_CAP messages per
   // pass. The subrequest allowance per invocation shapes everything here.
   async scheduled(event, env, ctx) {
+    learnHost(env);
     // Two schedules share this handler; the cron expression says which fired.
     if (event.cron && event.cron.startsWith("17 3")) {
       ctx.waitUntil(

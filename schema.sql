@@ -92,6 +92,17 @@ CREATE TABLE IF NOT EXISTS blocked_senders (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS image_senders (
+  email      TEXT PRIMARY KEY,             -- lowercase, a whole address
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS revoked_sessions (
+  sid        TEXT PRIMARY KEY,
+  exp        INTEGER NOT NULL,             -- s, the token's own expiry
+  created_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS search_ids (
   id  TEXT PRIMARY KEY,                    -- messages.id
   rid INTEGER NOT NULL                     -- its rowid in search

@@ -1393,8 +1393,13 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
       <button class="pill" data-images="auto" aria-pressed="false">Load them</button>
       <button class="pill" data-images="ask" aria-pressed="false">Ask first</button>
     </div>
-    <div class="sh-s" style="margin:2px 0 0;font-size:12px">A remote image is fetched from the sender's server as the message opens, which tells them you read it and when. Asking first holds them back behind the Images button. Either way, nothing is re-downloaded when you switch &mdash; the blocked form is what has always been stored.</div>
+    <div class="sh-s" style="margin:2px 0 0;font-size:12px">A remote image is fetched from the sender's server as the message opens, which tells them you read it and when. Asking first, the default, holds them back behind the Images button. Either way, nothing is re-downloaded when you switch &mdash; the blocked form is what has always been stored.</div>
+    <div class="sh-s" style="margin:12px 0 6px">Senders whose images always load</div>
+    <div id="imgSenders"></div>
     <button class="cta" id="openBlocked2" style="background:var(--elev2);color:var(--t1)">Blocked senders</button>
+    <div class="sh-s" style="margin:14px 0 6px">Devices</div>
+    <button class="cta danger" id="signOutOthers">Sign out other devices</button>
+    <div class="sh-s" style="margin:6px 0 0;font-size:12px">For a lost phone, or a browser you should not have stayed signed in on. Every device except this one, the Chrome extension included, needs the activation link again.</div>
   </section>
 
   <section class="setsec" data-set="writing" role="tabpanel" aria-label="Writing" hidden>
@@ -1476,6 +1481,8 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
   <div class="sh-s" id="sdAddr" style="user-select:text;-webkit-user-select:text;word-break:break-all"></div>
   <button class="cta" id="sdAdd">Add to contacts</button>
   <div class="sh-s" style="margin:10px 0 0">Kept here only, in your own database. It changes nothing at iCloud, and it does not stop mail from anyone else landing in Spam.</div>
+  <button class="cta" id="sdImages" style="background:var(--elev2);color:var(--t1)">Always load their images</button>
+  <div class="sh-s" style="margin:10px 0 0">A remote image tells its sender when you opened their mail. Trust only the senders you do not mind knowing.</div>
   <button class="cta danger" id="sdBlock">Block and delete&hellip;</button>
   <div class="sh-s" style="margin:10px 0 0">Blocking destroys their mail at iCloud as it arrives: nothing is stored here, nothing is counted, and no notification fires. Everything they have already sent goes with it. There is no undo.</div>
 </div>
@@ -1787,7 +1794,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v51";
+const CLIENT = "v52";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2400,10 +2407,22 @@ function emptyHtml() {
 
 /* ── reader ── */
 
-// Your choice: images load without asking. The cost is that tracking pixels
-// work again — a sender learns when and how often you open their mail. One
-// line to reverse, and the stored bodies never lost the blocked form.
-let autoImages = localStorage.getItem("dmzs-images") !== "ask";
+// Remote images wait to be asked for. A remote image is how a sender learns
+// when and how often you open their mail, so loading them is something you
+// choose — for everyone in Settings, or one sender at a time. The setting
+// moved to a new key when the default changed: every device had "auto"
+// written under the old one by the default itself, which says nothing about
+// what anyone chose.
+let autoImages = localStorage.getItem("dmzs-images-v2") === "auto";
+/**
+ * Senders whose images load without asking, as lowercase addresses. Kept in
+ * the database rather than here, so trusting a sender on the phone trusts
+ * them on the laptop too.
+ */
+let imageSenders = new Set();
+const senderOf = (m) => String((m && m.from_email) || "").toLowerCase();
+/** Whether a message's remote images load as it opens. */
+const imagesFor = (m) => autoImages || imageSenders.has(senderOf(m));
 /** "Images" tapped for the message currently on screen. Per message, never stored. */
 let showImagesOnce = false;
 /**
@@ -2520,11 +2539,31 @@ function fileIcon(type, name) {
 const unblockImages = (h) =>
   String(h || "").replace(/data-blocked-(src|srcset|background|poster)=/gi, "$1=");
 
-function frameDoc(body) {
+/**
+ * What a message document may load, written into the document itself.
+ *
+ * The sanitizer rewrites remote images out of the way, but it reads text the
+ * way a pattern does, and the browser reads it the way a parser does:
+ * `src="&#104;ttps://…"` and `u\72l(…)` looked harmless to one and fetched
+ * from the other. This is the browser's own rule on the browser's own
+ * reading, so nothing leaves the frame that this does not name: inline
+ * pictures (data:, which is what cid: parts are turned into), and the web
+ * only once you have said images may load.
+ *
+ * A meta policy, not a header: srcdoc documents have no response to carry
+ * one. They also inherit the shell's policy, and a page's policies only ever
+ * add up, so nothing in a message can loosen this.
+ */
+const frameCsp = (images) =>
+  `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; ` +
+  `font-src data:; media-src data:; img-src data: blob:${images ? " https: http:" : ""}">`;
+
+function frameDoc(body, images) {
   // The iframe is the security boundary: no scripts, no same-origin. What
   // arrives here was already defused server-side; this wrapper just makes
   // it readable and opens links in a new tab.
   return `<!doctype html><html><head><meta charset="utf-8">
+${frameCsp(images)}
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <base target="_blank">
 <style>body{margin:14px;font:15px/1.5 -apple-system,Segoe UI,system-ui,sans-serif;color:#111;background:#fff;word-break:break-word}
@@ -2608,7 +2647,7 @@ document.addEventListener("visibilitychange", () => {
 async function renderBody() {
   if (!current) return;
   const m = current.message;
-  const load = autoImages || showImagesOnce;
+  const load = imagesFor(m) || showImagesOnce;
   const note = (t) => `<p style="color:#6b6b73;font-style:italic">${t}</p>`;
   // Two different failures, said in our own voice rather than spliced into the
   // body where they would read as something the sender wrote.
@@ -2637,13 +2676,13 @@ async function renderBody() {
   const pictures = resolveInlineImages(html, m.id, current.body.attachments || []);
   const first = await Promise.race([pictures, new Promise((r) => setTimeout(() => r(null), 350))]);
   if (!current || current.message.id !== m.id) return;
-  showInFrame(frameDoc(first === null ? html : first));
+  showInFrame(frameDoc(first === null ? html : first, load));
   if (first !== null) {
     if (first !== html) current.body.shown = first;
   } else {
     pictures.then((withImages) => {
       if (withImages !== html && current && current.message.id === m.id) {
-        showInFrame(frameDoc(withImages));
+        showInFrame(frameDoc(withImages, load));
         current.body.shown = withImages;
       }
     });
@@ -2979,6 +3018,10 @@ addEventListener("keydown", (e) => {
 $("#rImages").addEventListener("click", () => {
   showImagesOnce = true;
   renderBody();
+  // One message is the decision asked for; every message from them is the
+  // one offered, and only offered.
+  const email = current ? senderOf(current.message) : "";
+  if (email) toast("Images shown for this message", () => trustImages(email, true), "Always");
 });
 /** One filing call. Returns the server's reply, or null once it has complained. */
 async function fileMessage(id, target) {
@@ -3194,6 +3237,8 @@ function openSender() {
   $("#sdAddr").textContent = email || "This message carries no sender address.";
   btn.disabled = !email;
   btn.textContent = email ? "Add to contacts" : "No address to add";
+  $("#sdImages").disabled = !email;
+  $("#sdImages").textContent = imageSenders.has(email) ? "Stop loading their images" : "Always load their images";
   openSheet("#senderSheet");
   if (!email) return;
   // Settles a moment later rather than holding the sheet shut on a request:
@@ -3207,6 +3252,13 @@ function openSender() {
 }
 $("#rMeta").addEventListener("click", (e) => {
   if (e.target.closest("[data-sender]")) openSender();
+});
+
+$("#sdImages").addEventListener("click", () => {
+  if (!current) return;
+  const email = senderOf(current.message);
+  closeSheets();
+  trustImages(email, !imageSenders.has(email));
 });
 
 $("#sdAdd").addEventListener("click", async () => {
@@ -3703,6 +3755,9 @@ function printedHeader(m) {
 }
 
 function printableDoc(parts, title) {
+  // This frame shares the app's origin — print() needs it — so its policy
+  // matters more than the reader's, not less.
+  const images = parts.some((p) => p.images);
   const msgs = parts
     .map(
       (p, i) =>
@@ -3712,7 +3767,7 @@ function printableDoc(parts, title) {
     )
     .join("");
   return (
-    `<!doctype html><html><head><meta charset="utf-8">` +
+    `<!doctype html><html><head><meta charset="utf-8">${frameCsp(images)}` +
     `<title>${esc(title)}</title><style>${PRINT_CSS}</style></head>` +
     `<body>${msgs}</body></html>`
   );
@@ -3731,17 +3786,23 @@ async function printableParts(ids) {
   const parts = [];
   for (const id of ids) {
     if (current && current.message.id === id) {
-      parts.push({ message: current.message, html: current.body.shown || current.body.html || "" });
+      parts.push({
+        message: current.message,
+        html: current.body.shown || current.body.html || "",
+        images: imagesFor(current.message) || showImagesOnce,
+      });
       continue;
     }
     const res = await api(`/api/messages/${id}?peek=1`).catch(() => null);
     if (!res || !res.ok) continue;
     const d = await res.json().catch(() => null);
     if (!d || !d.body) continue;
-    const html = autoImages ? unblockImages(d.body.html || "") : d.body.html || "";
+    const images = imagesFor(d.message);
+    const html = images ? unblockImages(d.body.html || "") : d.body.html || "";
     parts.push({
       message: d.message,
       html: await resolveInlineImages(html, d.message.id, d.body.attachments || []),
+      images,
     });
   }
   return parts.sort((a, b) => a.message.date - b.message.date);
@@ -4765,7 +4826,7 @@ function applyImages(choice) {
   document.querySelectorAll("#imgPick [data-images]").forEach((b) =>
     b.setAttribute("aria-pressed", String(b.dataset.images === choice))
   );
-  localStorage.setItem("dmzs-images", autoImages ? "auto" : "ask");
+  localStorage.setItem("dmzs-images-v2", autoImages ? "auto" : "ask");
   // Tapping Images was a decision about one message; changing the rule
   // outright supersedes it.
   showImagesOnce = false;
@@ -4777,6 +4838,65 @@ function applyImages(choice) {
 $("#imgPick").addEventListener("click", (e) => {
   const b = e.target.closest("[data-images]");
   if (b) applyImages(b.dataset.images);
+});
+
+async function loadImageSenders() {
+  const res = await api("/api/image-senders").catch(() => null);
+  const d = res && res.ok ? await res.json().catch(() => null) : null;
+  if (!d) return;
+  imageSenders = new Set((d.senders || []).map((r) => String(r.email || "").toLowerCase()));
+  renderImageSenders();
+}
+
+function renderImageSenders() {
+  const list = [...imageSenders].sort();
+  $("#imgSenders").innerHTML = list.length
+    ? list
+        .map(
+          (email) => `<div class="mi">
+            <span class="grow"><div class="tr">${esc(email)}</div></span>
+            <button class="side" data-untrust="${esc(email)}" style="color:var(--acc)">Remove</button>
+          </div>`
+        )
+        .join("")
+    : `<div class="sh-s" style="font-size:12px">None yet. Tap Images on a message, then Always, to add its sender.</div>`;
+}
+
+/** Lets one sender's images load from now on, or stops it. */
+async function trustImages(email, on) {
+  if (!email) return;
+  const res = await api(
+    on ? "/api/image-senders" : `/api/image-senders/${encodeURIComponent(email)}`,
+    on
+      ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }) }
+      : { method: "DELETE" }
+  ).catch(() => null);
+  if (!res || !res.ok) return toast(on ? "Could not trust this sender" : "Could not remove this sender");
+  if (on) imageSenders.add(email);
+  else imageSenders.delete(email);
+  renderImageSenders();
+  toast(on ? `Images from ${email} will load` : `Images from ${email} will wait to be asked for`);
+  if (current && senderOf(current.message) === email) {
+    if (!on) showImagesOnce = false;
+    renderBody();
+  }
+}
+$("#imgSenders").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-untrust]");
+  if (b) trustImages(b.dataset.untrust, false);
+});
+
+/* ── other devices ── */
+
+$("#signOutOthers").addEventListener("click", async () => {
+  const sure = await ask(
+    "Sign out every other device?",
+    "Every other phone and browser, and the Chrome extension, will need the activation link again. This one stays signed in.",
+    { ok: "Sign out the others", danger: true }
+  );
+  if (!sure) return;
+  const res = await api("/api/sessions/sign-out-others", { method: "POST" }).catch(() => null);
+  toast(res && res.ok ? "Every other device is signed out" : "Could not sign the other devices out");
 });
 
 /* ── the signature ── */
@@ -6061,13 +6181,13 @@ $("#list").addEventListener("keydown", (e) => {
 /* ── init ── */
 (async function init() {
   applyTheme(localStorage.getItem("dmzs-theme") || "light");
-  applyImages(localStorage.getItem("dmzs-images") || "auto");
+  applyImages(localStorage.getItem("dmzs-images-v2") || "ask");
   try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch {}
 
   // The signature is wanted the moment a reply opens, which can be before
   // any settings sheet has ever been looked at, so it is read at startup
   // alongside the mail rather than after it.
-  await Promise.all([refreshAll(), loadSignature()]);
+  await Promise.all([refreshAll(), loadSignature(), loadImageSenders()]);
   schedulePoll();
   resumeKeptDraft();
 

@@ -3,8 +3,8 @@
  *
  * The key is never written to storage: it is the thing that activates any new
  * device, so an extension that kept a copy would be a second place to steal it
- * from. Only the token it returns is saved, and that token is revocable by
- * rotating AUTH_SECRET.
+ * from. Only the token it returns is saved. That token can read the unread
+ * count and nothing else, and "Sign out other devices" in the app ends it.
  */
 
 const APP = "https://mail.agentxr.app";

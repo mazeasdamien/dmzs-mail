@@ -13,8 +13,25 @@ const enc = new TextEncoder();
 const YEAR = 365 * 24 * 60 * 60;
 const COOKIE = "dmzs_session";
 
-/** How long a device activation stays valid. */
-export const SESSION_TTL = 5 * YEAR;
+/**
+ * How long a device activation stays valid without being used.
+ *
+ * It was five years, with nothing that could end one early, so a cookie
+ * copied off a device was a key to the mailbox for five years. Now it is
+ * Chrome's own ceiling, renewed as the app is used (below), and any session
+ * can be ended from the app. Tokens minted under the old lifetime keep their
+ * own `exp` and stay valid; they are swapped for one of these on first use.
+ */
+export const SESSION_TTL = 400 * 24 * 60 * 60;
+
+/**
+ * What the Chrome extension's token may do: read the unread count and
+ * nothing else. It sits in extension storage, which is a weaker place than an
+ * HttpOnly cookie, so losing it should cost a badge number, not the mailbox.
+ */
+export const PUSH_SCOPE = "push";
+const pushOnly = (request) =>
+  request.method === "GET" && new URL(request.url).pathname === "/api/push/state";
 
 /**
  * Past this age, the cookie is re-issued on the fly.
@@ -92,11 +109,12 @@ function deviceLabel(name, userAgent) {
  *
  * The payload carries who this is and which key signed it — `sub` for a
  * device list, `kid` as `hashHex(secret, 8)` so two deployments can be told
- * apart without the secret ever appearing. Verification still only requires
- * `exp`, so a cookie minted before these fields existed keeps working.
+ * apart without the secret ever appearing — and `sid`, a random id that is
+ * what a revocation names. Verification still only requires `exp`, so a
+ * cookie minted before these fields existed keeps working.
  *
  * `opts` may be a bare ttl in seconds (the older call) or
- * `{ ttl, name, userAgent }`.
+ * `{ ttl, name, userAgent, scope }`.
  */
 export async function issueSession(secret, opts = {}) {
   const o = typeof opts === "number" ? { ttl: opts } : opts || {};
@@ -107,7 +125,9 @@ export async function issueSession(secret, opts = {}) {
     iat: now,
     sub: deviceLabel(o.name, o.userAgent),
     kid: await hashHex(secret, 8),
+    sid: [...crypto.getRandomValues(new Uint8Array(12))].map((b) => b.toString(16).padStart(2, "0")).join(""),
   };
+  if (o.scope) payload.scope = o.scope;
   const body = b64urlEncode(enc.encode(JSON.stringify(payload)));
   const sig = await crypto.subtle.sign("HMAC", await hmacKey(secret), enc.encode(body));
   return `${body}.${b64urlEncode(sig)}`;
@@ -188,8 +208,76 @@ export function clearCookie() {
  */
 export async function requestSession(request, env) {
   if (!env.AUTH_SECRET) return null;
-  const token = getCookie(request) || request.headers.get("X-Session");
-  return readSession(token, env.AUTH_SECRET);
+  const cookie = getCookie(request);
+  const token = cookie || request.headers.get("X-Session");
+  const payload = await readSession(token, env.AUTH_SECRET);
+  if (!payload) return null;
+  // Signed by this secret, so a kid can only disagree if it was forged along
+  // with the signature — but it costs nothing to hold the token to its word.
+  if (payload.kid && payload.kid !== (await hashHex(env.AUTH_SECRET, 8))) return null;
+  if (payload.scope === PUSH_SCOPE && !pushOnly(request)) return null;
+  if (payload.scope && payload.scope !== PUSH_SCOPE) return null;
+  if (await revoked(payload, env)) return null;
+  // Where it came from decides how it is renewed: a cookie by Set-Cookie, the
+  // extension's header by a replacement token it stores itself.
+  Object.defineProperty(payload, "via", { value: cookie ? "cookie" : "header" });
+  return payload;
+}
+
+/**
+ * Whether a valid token has been ended early.
+ *
+ * Two ways: its own `sid` on the denylist — signing out of one device — or
+ * an issue time before `sessions_after`, which is what "sign out other
+ * devices" sets. The second is also the only thing that reaches a token from
+ * before session ids existed, since there is no id to list.
+ *
+ * One read per request. A database that cannot answer — the table not yet
+ * created in the minute after a deploy, before the cron heals the schema —
+ * is taken as "not revoked": the alternative is every device locked out of
+ * its own mail by a missing table.
+ */
+async function revoked(payload, env) {
+  if (!env.DB) return false;
+  const row = await env.DB.prepare(
+    `SELECT (SELECT value FROM settings WHERE key='sessions_after') AS after,
+            (SELECT 1 FROM revoked_sessions WHERE sid=?) AS gone`
+  )
+    .bind(String(payload.sid || ""))
+    .first()
+    .catch(() => null);
+  if (!row) return false;
+  if (row.gone) return true;
+  return !!row.after && Number(payload.iat || 0) < Number(row.after);
+}
+
+/**
+ * Ends one session for good: its id goes on the denylist until it would have
+ * expired anyway. Rows past that point are swept on the way, since a token
+ * past its exp is refused by its signature check alone.
+ */
+export async function revokeSession(payload, env) {
+  if (!payload?.sid || !env.DB) return;
+  await env.DB.prepare("INSERT OR IGNORE INTO revoked_sessions (sid, exp, created_at) VALUES (?,?,?)")
+    .bind(String(payload.sid), Number(payload.exp) || 0, Date.now())
+    .run();
+  await env.DB.prepare("DELETE FROM revoked_sessions WHERE exp < ?")
+    .bind(Math.floor(Date.now() / 1000))
+    .run();
+}
+
+/**
+ * Ends every session issued before now, and returns a token for the device
+ * asking, which is the one not meant to go.
+ */
+export async function revokeOthers(payload, env) {
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    "INSERT INTO settings (key, value) VALUES ('sessions_after', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+  )
+    .bind(String(now))
+    .run();
+  return issueSession(env.AUTH_SECRET, { name: payload.sub });
 }
 
 /**
@@ -218,9 +306,27 @@ export function sameOriginWrite(request) {
  * once a year, Chrome included, which would otherwise cut off at 400 days.
  */
 export async function renewedCookie(payload, env) {
+  if (payload.via === "header" || payload.scope) return null;
   const age = SESSION_TTL - (payload.exp - Math.floor(Date.now() / 1000));
-  if (age < RENEW_AFTER) return null;
+  // A token from before session ids is swapped straight away, so it can be
+  // revoked on its own from then on.
+  if (age < RENEW_AFTER && payload.sid) return null;
   // The device label travels with the re-issue; without it every renewal
   // would quietly rename the device back to "device".
   return sessionCookie(await issueSession(env.AUTH_SECRET, { name: payload.sub }));
+}
+
+/**
+ * A replacement for the extension's token, or null.
+ *
+ * The extension cannot take a cookie, so its token is renewed the same way by
+ * a response header it stores. A token from before the push scope existed is
+ * a full session sitting in extension storage; it is swapped for a push-only
+ * one at once.
+ */
+export async function renewedHeaderToken(payload, env) {
+  if (payload.via !== "header") return null;
+  const age = SESSION_TTL - (payload.exp - Math.floor(Date.now() / 1000));
+  if (payload.scope === PUSH_SCOPE && payload.sid && age < RENEW_AFTER) return null;
+  return issueSession(env.AUTH_SECRET, { name: payload.sub, scope: PUSH_SCOPE });
 }

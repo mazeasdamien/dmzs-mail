@@ -675,9 +675,9 @@ console.log("\n── audit 2026-10-17 : failles fermées ──────");
 {
   // Un attribut collé au guillemet fermant du précédent est un second
   // attribut pour un navigateur. Le filtre exigeait un espace avant « on… ».
-  const colle = sanitizeHtml(`<img src="x"onerror="alert(1)"><p title='a'onclick='b()'>t</p>`).html;
+  const colle = sanitizeHtml(`<img src="cid:x"onerror="alert(1)"><p title='a'onclick='b()'>t</p>`).html;
   ok(!/onerror|onclick/i.test(colle), `gestionnaire collé au guillemet supprimé — ${colle}`);
-  ok(/src="x"/.test(colle), "l'attribut précédent garde son guillemet fermant");
+  ok(/src="cid:x"/.test(colle), "l'attribut précédent garde son guillemet fermant");
   const pixel = sanitizeHtml(`<img alt="a"src="https://t.example/p.gif">`);
   ok(pixel.blocked === 1 && !/(?<!data-blocked-)src="https/.test(pixel.html), `pixel collé bloqué — ${pixel.html}`);
   ok(!/javascript/i.test(sanitizeHtml(`<a href=" javascript:alert(1)">x</a>`).html), "javascript: précédé d'un espace neutralisé");
@@ -966,6 +966,161 @@ console.log("\n── transport IMAP, faux socket ──────────
   ok(r.literals[0].endsWith("\r\nfin"), "ses CRLF internes ne coupent rien");
   ok(/UID 7/.test(r.line), "la ligne d'en-tête du FETCH est lue");
   eq(await im.readLine(), "d0001 OK fait", "la réponse suivante reste alignée");
+}
+
+console.log("\n── audit 2026-10-17 : images encodées, URL de l'app ──");
+{
+  // Le filtre lisait le texte brut ; le navigateur résout d'abord les
+  // références et les échappements CSS. Chacune de ces formes chargeait le
+  // pixel sans que `blocked` ne bouge.
+  const fuite = /(?<!data-blocked-)(src|srcset|background|poster)\s*=\s*["']?[^"'\s>]*t\.example/i;
+  for (const [html, label] of [
+    [`<img src="&#104;ttps://t.example/p.gif">`, "référence décimale"],
+    [`<img src="&#x68;ttps://t.example/p.gif">`, "référence hexadécimale"],
+    [`<img src="https&colon;//t.example/p.gif">`, "référence nommée"],
+    [`<img src="ht\ttps://t.example/p.gif">`, "tabulation dans le schéma"],
+    [`<img src="\\\\t.example\\p.gif">`, "barres inverses pour //"],
+  ]) {
+    const out = sanitizeHtml(html);
+    ok(out.blocked === 1 && !fuite.test(out.html), `${label} — obtenu ${JSON.stringify(out)}`);
+  }
+  const restaure = sanitizeHtml(`<img src="&#104;ttps://t.example/p.gif?a=1&amp;b=2">`).html;
+  ok(restaure.includes('data-blocked-src="https://t.example/p.gif?a=1&amp;b=2"'), `valeur décodée puis réécrite proprement — ${restaure}`);
+
+  for (const [html, label] of [
+    [`<div style="background:url&#40;https://t.example/p.gif&#41;">x</div>`, "url&#40; dans style"],
+    [`<div style="background:u\\72l(https://t.example/p.gif)">x</div>`, "échappement CSS dans style"],
+  ]) {
+    ok(!/t\.example/.test(sanitizeHtml(html).html), label);
+  }
+  for (const [css, label] of [
+    [`@\\69mport "https://t.example/x.css";`, "@import échappé"],
+    [`body{background:u\\72l(https://t.example/p.gif)}`, "url( échappé"],
+    [`body{background:u\\000072l(https://t.example/p.gif)}`, "échappement à six chiffres"],
+    [`body{background:image-set("https://t.example/p.gif" 1x)}`, "image-set à chaînes nues"],
+    [`body{background:url(/api/messages/0123456789abcdef)}`, "url() relative"],
+  ]) {
+    const out = sanitizeHtml(`<style>${css}</style><p>t</p>`).html;
+    ok(!/t\.example|\/api\//.test(out) && out.includes("<p>t</p>"), `${label} — ${out}`);
+  }
+  // Ce qui n'a rien d'échappé reste tel quel, sélecteurs échappés compris.
+  const sel = sanitizeHtml(`<style>.a\\:b{color:red}</style>`).html;
+  ok(sel.includes(".a\\:b{color:red}"), "un sélecteur échappé sans chargement n'est pas réécrit");
+
+  // Le cadre d'impression partage l'origine de l'app : une URL qui y retombe
+  // part avec le cookie. <img src="/api/messages/…"> marquait le message lu.
+  const host = "mail.agentxr.app";
+  for (const [html, label] of [
+    [`<img src="/api/messages/0123456789abcdef">`, "racine relative"],
+    [`<img src="api/messages/0123456789abcdef">`, "relative"],
+    [`<img src="https:/api/messages/0123456789abcdef">`, "https: sans hôte"],
+    [`<img src="https://mail.agentxr.app/api/messages/0123456789abcdef">`, "hôte de l'app"],
+    [`<img src="//MAIL.agentxr.app/logout">`, "hôte de l'app, protocole relatif"],
+    [`<img src="&#47;logout">`, "racine relative encodée"],
+    [`<video poster="/x.png"></video>`, "poster relatif"],
+  ]) {
+    const out = sanitizeHtml(html, { host });
+    ok(out.blocked === 0 && !/api\/messages|logout|x\.png/i.test(out.html), `${label} — ${JSON.stringify(out)}`);
+  }
+  const mix = sanitizeHtml(`<img srcset="/a.png 1x, https://t.example/b.png 2x">`, { host });
+  ok(mix.blocked === 1 && !/a\.png/.test(mix.html) && mix.html.includes('data-blocked-srcset="https://t.example/b.png 2x"'),
+     `srcset : le candidat de l'app retiré, le distant bloqué — ${mix.html}`);
+  const dataSet = `<img srcset="data:image/png;base64,AAAA 1x, data:image/png;base64,BBBB 2x">`;
+  eq(sanitizeHtml(dataSet, { host }).html, dataSet, "srcset data: intact malgré ses virgules");
+  ok(sanitizeHtml(`<img src="https://other.example/p.gif">`, { host }).blocked === 1, "un autre hôte reste distant");
+  ok(/src="cid:x"/.test(sanitizeHtml(`<img src="cid:x">`, { host }).html), "cid: intact");
+  ok(!/javascript/i.test(sanitizeHtml(`<a href="java&#115;cript:alert(1)">x</a>`).html), "javascript: encodé neutralisé");
+}
+
+console.log("\n── sessions : révocation, portée de l'extension ──");
+{
+  const auth = await import("./src/auth.js");
+  const secret = "s".repeat(32);
+  const now = Math.floor(Date.now() / 1000);
+
+  // Une base D1 réduite à la seule requête que requestSession pose.
+  const fakeDb = ({ after = null, gone = [], broken = false } = {}) => ({
+    prepare: () => ({
+      bind(sid) { this.sid = sid; return this; },
+      async first() {
+        if (broken) throw new Error("no such table: revoked_sessions");
+        return { after, gone: gone.includes(this.sid) ? 1 : null };
+      },
+      async run() {},
+    }),
+  });
+  const reqWith = (token, { path = "/api/messages", method = "GET", header = false } = {}) =>
+    new Request(`https://mail.agentxr.app${path}`, {
+      method,
+      headers: header ? { "X-Session": token } : { Cookie: `dmzs_session=${token}` },
+    });
+  // Signe une charge utile choisie : les jetons d'avant les sid, ou un kid faux.
+  const b64u = (bytes) => Buffer.from(bytes).toString("base64url");
+  const mint = async (payload) => {
+    const body = b64u(new TextEncoder().encode(JSON.stringify(payload)));
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+    return `${body}.${b64u(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body)))}`;
+  };
+
+  const tok = await auth.issueSession(secret, { name: "Laptop" });
+  const p = await auth.readSession(tok, secret);
+  ok(/^[0-9a-f]{24}$/.test(p.sid), "un jeton neuf porte un sid");
+  ok(p.exp - p.iat === auth.SESSION_TTL && auth.SESSION_TTL <= 400 * 86400, "durée bornée à 400 jours");
+  ok(p.sid !== (await auth.readSession(await auth.issueSession(secret), secret)).sid, "deux sid différents");
+
+  const env = (db) => ({ AUTH_SECRET: secret, DB: db });
+  ok(await auth.requestSession(reqWith(tok), env(fakeDb())), "session valide acceptée");
+  ok(!(await auth.requestSession(reqWith(tok), env(fakeDb({ gone: [p.sid] })))), "sid sur la liste noire refusé");
+  ok(!(await auth.requestSession(reqWith(tok), env(fakeDb({ after: String(now + 5) })))), "émis avant la coupure : refusé");
+  ok(await auth.requestSession(reqWith(tok), env(fakeDb({ after: String(now - 5) }))), "émis après la coupure : accepté");
+  ok(await auth.requestSession(reqWith(tok), env(fakeDb({ broken: true }))), "table absente juste après un déploiement : pas de verrouillage");
+
+  // Les jetons d'avant : pas de sid, parfois pas d'iat. Valides jusqu'à une
+  // coupure, et échangés dès le premier passage.
+  const legacy = await mint({ exp: now + 4 * 365 * 86400, iat: now - 86400, sub: "iOS" });
+  const lp = await auth.requestSession(reqWith(legacy), env(fakeDb()));
+  ok(lp && !lp.sid, "un ancien jeton sans sid reste valide");
+  ok(!(await auth.requestSession(reqWith(legacy), env(fakeDb({ after: String(now) })))), "la coupure atteint les anciens jetons");
+  const swapped = await auth.renewedCookie(lp, env(fakeDb()));
+  ok(/^dmzs_session=/.test(swapped || ""), "un ancien jeton est réémis tout de suite");
+  const sp = await auth.readSession(swapped.split(";")[0].split("=")[1], secret);
+  ok(sp.sid && sp.sub === "iOS", "le jeton réémis a un sid et garde son nom");
+  ok((await auth.renewedCookie(p, env(fakeDb()))) === null, "un jeton neuf n'est pas réémis");
+
+  // kid : signé par ce secret mais annonçant une autre clé.
+  const liar = await mint({ exp: now + 3600, iat: now, sub: "x", kid: "deadbeef", sid: "a".repeat(24) });
+  ok(!(await auth.requestSession(reqWith(liar), env(fakeDb()))), "un kid qui ne correspond pas est refusé");
+  ok(!(await auth.requestSession(reqWith(await mint({ exp: now + 3600, iat: now, scope: "admin" })), env(fakeDb()))),
+     "une portée inconnue est refusée");
+
+  // L'extension : le compteur, rien d'autre.
+  const push = await auth.issueSession(secret, { scope: auth.PUSH_SCOPE });
+  const H = { header: true };
+  ok(await auth.requestSession(reqWith(push, { path: "/api/push/state", ...H }), env(fakeDb())), "jeton push : GET /api/push/state passe");
+  ok(!(await auth.requestSession(reqWith(push, { path: "/api/messages", ...H }), env(fakeDb()))), "jeton push : la liste des messages refusée");
+  ok(!(await auth.requestSession(reqWith(push, { path: "/api/push/state", method: "POST", ...H }), env(fakeDb()))), "jeton push : POST refusé");
+  ok(!(await auth.requestSession(reqWith(push, { path: "/api/send", method: "POST", ...H }), env(fakeDb()))), "jeton push : envoi refusé");
+  const pp = await auth.requestSession(reqWith(push, { path: "/api/push/state", ...H }), env(fakeDb()));
+  ok((await auth.renewedHeaderToken(pp, env(fakeDb()))) === null, "un jeton push neuf n'est pas remplacé");
+  ok((await auth.renewedCookie(pp, env(fakeDb()))) === null, "un jeton d'en-tête ne reçoit jamais de cookie");
+
+  // L'ancien jeton complet de l'extension : remplacé par un jeton push.
+  const oldExt = await auth.requestSession(reqWith(legacy, { path: "/api/push/state", ...H }), env(fakeDb()));
+  const repl = await auth.readSession(await auth.renewedHeaderToken(oldExt, env(fakeDb())), secret);
+  eq(repl && repl.scope, auth.PUSH_SCOPE, "l'ancien jeton de l'extension est échangé contre un jeton push");
+  ok((await auth.renewedHeaderToken(p, env(fakeDb()))) === null, "un cookie n'est jamais remplacé par en-tête");
+
+  // Se déconnecter : le sid va sur la liste, jusqu'à son expiration.
+  const writes = [];
+  await auth.revokeSession(p, { DB: { prepare: (sql) => ({ bind: (...a) => ({ run: async () => writes.push([sql, a]) }) }) } });
+  ok(/INSERT/.test(writes[0][0]) && writes[0][1][0] === p.sid && writes[0][1][1] === p.exp, "revokeSession inscrit le sid et son exp");
+  ok(writes.some(([sql]) => /DELETE FROM revoked_sessions WHERE exp </.test(sql)), "et balaie ceux déjà expirés");
+  // Les autres appareils : une coupure, et un jeton pour celui qui demande.
+  const set = [];
+  const keep = await auth.revokeOthers(p, { AUTH_SECRET: secret, DB: { prepare: (sql) => ({ bind: (v) => ({ run: async () => set.push([sql, v]) }) }) } });
+  const kp = await auth.readSession(keep, secret);
+  ok(/sessions_after/.test(set[0][0]) && kp.iat >= Number(set[0][1]), "le jeton gardé est émis à la coupure, pas avant");
+  ok(await auth.requestSession(reqWith(keep), env(fakeDb({ after: set[0][1] }))), "l'appareil qui demande reste connecté");
 }
 
 console.log(`\n${fail === 0 ? "✓" : "✗"} ${pass} assertions passées, ${fail} échec(s)\n`);

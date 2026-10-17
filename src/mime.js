@@ -518,16 +518,145 @@ export function textToHtml(t) {
 }
 
 /**
+ * Character references, decoded the way a browser decodes an attribute value.
+ *
+ * Every rule below reads values as text, and a browser does not: to it
+ * `src="&#104;ttps://t.example/p.gif"` is an https URL, and
+ * `style="background:url&#40;…&#41;"` is a url(). Matching the raw text let
+ * both straight past the image blocking. Not every named reference is here —
+ * only the ones that can spell part of a URL or of a CSS function.
+ */
+const NAMED_REFS = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", colon: ":", sol: "/", bsol: "\\",
+  lpar: "(", rpar: ")", period: ".", comma: ",", semi: ";", equals: "=", num: "#",
+  percnt: "%", commat: "@", quest: "?", tab: "\t", newline: "\n", nbsp: " ",
+};
+export function decodeEntities(s) {
+  return String(s ?? "").replace(/&(?:#x([0-9a-f]+)|#(\d+)|([a-z][a-z0-9]*));?/gi, (m, hex, dec, name) => {
+    if (hex || dec) {
+      const n = parseInt(hex || dec, hex ? 16 : 10);
+      return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : "�";
+    }
+    return NAMED_REFS[name.toLowerCase()] ?? m;
+  });
+}
+
+/**
+ * CSS as its tokenizer sees it: comments gone, escapes resolved.
+ *
+ * `u\72l(` is url( and `@\69mport` is @import to a browser. Used to find a
+ * fetch hiding behind an escape, never to rewrite CSS that has none — an
+ * escaped selector like `.a\:b` means something else unescaped.
+ */
+const cssPlain = (s) =>
+  String(s ?? "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\\([0-9a-f]{1,6})[ \t\n\r\f]?|\\([^\n\r\f0-9a-f])/gi, (_m, hex, ch) =>
+      hex ? String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff) || 0xfffd) : ch
+    );
+
+/**
+ * Where a URL in a message would load from: "inline" (cid:, data: — part of
+ * the message, leaks nothing), "remote" (another server — a tracker until the
+ * reader says otherwise) or "own" (anything that would land on this app).
+ *
+ * Decided by the URL parser rather than by pattern, because the parser is
+ * what the browser runs: it drops tabs and newlines anywhere, takes `\\host`
+ * for `//host`, and reads `https:/api/x` as a path on the page's own origin.
+ * A message is rendered against this app's address, so every relative URL is
+ * a request to this app — with its cookie, wherever the frame shares the
+ * origin, as the print frame does. Same for an absolute URL naming this host.
+ */
+const OWN_BASE = "https://own.invalid/";
+function urlWhere(value, host) {
+  const v = String(value ?? "").replace(/[\t\n\r]/g, "").replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, "");
+  if (/^(?:cid|data):/i.test(v)) return "inline";
+  let u;
+  try {
+    u = new URL(v, OWN_BASE);
+  } catch {
+    return "own"; // unparseable: nothing to load, nothing worth keeping
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return "own";
+  if (u.host === "own.invalid" || (host && u.hostname === host)) return "own";
+  return "remote";
+}
+
+/**
+ * A srcset's candidates, split the way the browser splits them.
+ *
+ * Not on every comma: a data: URI is full of them. A URL runs to the next
+ * whitespace, losing only trailing commas, and its descriptors run to the
+ * next comma after that.
+ */
+function srcsetCandidates(s) {
+  const out = [];
+  let i = 0;
+  while (i < s.length) {
+    while (i < s.length && /[\s,]/.test(s[i])) i++;
+    if (i >= s.length) break;
+    let j = i;
+    while (j < s.length && !/\s/.test(s[j])) j++;
+    let url = s.slice(i, j);
+    let k = j;
+    if (/,$/.test(url)) url = url.replace(/,+$/, "");
+    else while (k < s.length && s[k] !== ",") k++;
+    out.push({ url, text: s.slice(i, k).replace(/,+$/, "").trim() });
+    i = k + 1;
+  }
+  return out;
+}
+
+/** One <style> block: fetches out, everything else as written. */
+function cleanCss(css, host) {
+  let blocked = 0;
+  const strip = (s) =>
+    s
+      .replace(/@import[^;}]*;?/gi, () => {
+        blocked++;
+        return "";
+      })
+      .replace(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))\s*\)/gi, (m, dq, sq, bare) => {
+        const where = urlWhere(dq ?? sq ?? bare ?? "", host);
+        if (where === "inline") return m;
+        if (where === "remote") blocked++;
+        return "none";
+      })
+      // image-set() takes bare strings as URLs, no url() needed.
+      .replace(/(?:-webkit-)?image-set\([^)]*\)/gi, (m) => {
+        if (!/["']/.test(m)) return m;
+        blocked++;
+        return "none";
+      });
+  const once = strip(String(css));
+  const counted = blocked;
+  const plain = cssPlain(once);
+  const again = strip(plain);
+  if (again === plain) {
+    blocked = counted;
+    return { css: once, blocked };
+  }
+  // Something was hiding behind an escape or a comment. The unescaped form,
+  // defused, is what the browser would have read anyway.
+  return { css: again, blocked };
+}
+
+/**
  * Server-side defusing of message HTML. The real security boundary is the
- * sandboxed iframe the client renders into (no scripts, no same-origin), so
- * this is belt and braces — plus the one thing the sandbox cannot do:
- * blocking remote images, which are how senders track opens. Remote loads
- * are rewritten to data-blocked-src; the client swaps them back behind a
- * "Load images" tap.
+ * sandboxed iframe the client renders into (no scripts, no same-origin), and
+ * the Content-Security-Policy written into that frame is what finally decides
+ * what loads. This is belt and braces, plus what the frame cannot decide on
+ * its own: remote loads are rewritten to data-blocked-src, so the client can
+ * swap them back behind a "Load images" tap, and loads that would land on
+ * this app are dropped outright.
+ *
+ * `opts.host` is this app's hostname, so an absolute URL naming it is caught
+ * along with the relative ones.
  *
  * Returns { html, blocked } where blocked counts neutralized remote loads.
  */
-export function sanitizeHtml(input) {
+export function sanitizeHtml(input, opts = {}) {
+  const host = String(opts.host || "").toLowerCase();
   let html = String(input ?? "");
   let blocked = 0;
 
@@ -546,20 +675,13 @@ export function sanitizeHtml(input) {
    *
    * The sandboxed iframe already denies CSS anything dangerous — no scripts,
    * no same-origin, nothing to exfiltrate to. What CSS *can* still do is
-   * fetch, which is how a sender learns you opened their mail, so remote
-   * url() and @import are what actually gets removed here.
+   * fetch, which is how a sender learns you opened their mail, so url() and
+   * @import are what actually gets removed here.
    */
   html = html.replace(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi, (_m, css) => {
-    const cleaned = String(css)
-      .replace(/@import[^;}]*;?/gi, () => {
-        blocked++;
-        return "";
-      })
-      .replace(/url\(\s*['"]?\s*(?:https?:)?\/\/[^)]*\)/gi, () => {
-        blocked++;
-        return "none";
-      });
-    return `<style>${cleaned}</style>`;
+    const cleaned = cleanCss(css, host);
+    blocked += cleaned.blocked;
+    return `<style>${cleaned.css}</style>`;
   });
   // An unclosed <style> makes everything after it CSS as far as a browser is
   // concerned, so dropping the remainder is what actually renders, not a
@@ -583,37 +705,58 @@ export function sanitizeHtml(input) {
   html = html.replace(/([\s/"'])on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "$1 ");
   // Any style carrying url() goes entirely — quoted or bare. Dropped rather
   // than deferred: a CSS background is never the message, and unlike <img>
-  // there is nothing meaningful to restore behind the Images tap.
+  // there is nothing meaningful to restore behind the Images tap. Read the
+  // way the browser reads it, references and escapes resolved, or
+  // `url&#40;` and `u\72l(` walk straight past.
   html = html.replace(/([\s/"'])style\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, (m, sep) =>
-    /url\s*\(|image-set\s*\(/i.test(m) ? `${sep} ` : m
+    /url\s*\(|image-set\s*\(/i.test(cssPlain(decodeEntities(m))) ? `${sep} ` : m
   );
-  // Leading spaces and control characters are dropped by the URL parser, so
-  // `href=" javascript:…"` is as live as the unspaced form.
+  // The URL parser drops spaces, control characters and tabs, and the
+  // browser resolves references first, so `href=" java&#115;cript:…"` is as
+  // live as the plain form.
   html = html.replace(
-    /([\s/"'])(href|src|action|formaction|background)\s*=\s*("[\x00-\x20]*(?:java|vb)script:[^"]*"|'[\x00-\x20]*(?:java|vb)script:[^']*'|(?:java|vb)script:[^\s>]+)/gi,
-    "$1 "
+    /([\s/"'])(href|src|action|formaction|background)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi,
+    (m, sep, _attr, raw) => {
+      const v = decodeEntities(raw.replace(/^["']|["']$/g, "")).replace(/[\x00-\x20]/g, "");
+      return /^(?:java|vb)script:/i.test(v) ? `${sep} ` : m;
+    }
   );
 
   /**
-   * Remote loads (images, mostly): neutralized, counted, reversible client-side.
+   * Loads (images, mostly): remote ones neutralized, counted and reversible
+   * client-side; ones that would land on this app dropped.
    *
    * Values arrive quoted *or bare* — `src=https://tracker/p.gif` with no quotes
    * is valid HTML, and matching only the quoted form let it through untouched:
    * the pixel fired on open, and `blocked` stayed 0 so the Images button never
-   * appeared to say otherwise. Match all three forms, then decide on the value.
+   * appeared to say otherwise. Match all three forms, then decide on the value
+   * as the browser will read it.
    */
-  const remote = (v) =>
-    !/^[\x00-\x20]*(?:cid|data):/i.test(v) && // inline parts leak nothing
-    /(?:^|[\s,])[\x00-\x20]*(?:https?:)?\/\//i.test(v); // ,/space covers srcset lists
-
   html = html.replace(
     /([\s/"'])(src|srcset|background|poster)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
     (m, sep, attr, dq, sq, bare) => {
-      const val = dq ?? sq ?? bare ?? "";
-      if (!remote(val)) return m; // relative, cid:, data: — leave it alone
+      let val = decodeEntities(dq ?? sq ?? bare ?? "");
+      const name = attr.toLowerCase();
+      const lead = sep === "/" ? "" : sep;
+      const quoted = (v) => `"${v.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"`;
+      // srcset is a list, judged candidate by candidate: the ones that would
+      // land on this app go, and what is left is judged together.
+      let where;
+      if (name === "srcset") {
+        const all = srcsetCandidates(val);
+        const kept = all.filter((c) => urlWhere(c.url, host) !== "own");
+        if (!kept.length) return `${lead} `;
+        where = kept.map((c) => urlWhere(c.url, host));
+        if (kept.length !== all.length) {
+          val = kept.map((c) => c.text).join(", ");
+          if (where.every((w) => w === "inline")) return `${lead} srcset=${quoted(val)}`;
+        }
+      } else where = [urlWhere(val, host)];
+      if (where.every((w) => w === "inline")) return m; // cid:, data: — leave it alone
+      if (where.includes("own")) return `${lead} `; // never a request to this app
       blocked++;
       // Re-emitted quoted, so a bare value cannot break the tag on restore.
-      return `${sep === "/" ? "" : sep} data-blocked-${attr.toLowerCase()}="${val.replace(/"/g, "&quot;")}"`;
+      return `${lead} data-blocked-${name}=${quoted(val)}`;
     }
   );
 
