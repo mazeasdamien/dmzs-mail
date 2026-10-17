@@ -16,7 +16,7 @@
     "check": "node scripts/check-client.mjs && node scripts/gen-schema.mjs --check && node test.mjs && npm run test:sync"
   },
   "devDependencies": {
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.151.1"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.131.0"
