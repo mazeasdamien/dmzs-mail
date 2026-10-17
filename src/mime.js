@@ -2,8 +2,7 @@
  * Mail plumbing: RFC 2047 headers, quoted-printable, addresses, message
  * building and HTML defusing.
  *
- * Pure string functions, no Workers API, tested by `node test.mjs` — same
- * contract as util.js/feed.js in dmzs-music.
+ * Pure string functions, no Workers API, tested by `node test.mjs`.
  */
 
 /* ── bytes and base64 ── */
@@ -93,7 +92,6 @@ export function qpDecode(input, charset = "utf-8") {
 
 /* ── addresses ── */
 
-/** `"Jean Dupont" <jean@x.fr>` | `jean@x.fr` | `Jean <jean@x.fr>` → {name, email} */
 /**
  * Strips quotes from around an address, and only from around it.
  *
@@ -109,6 +107,7 @@ export function qpDecode(input, charset = "utf-8") {
  */
 const unquote = (s) => String(s).replace(/^['"]+/, "").replace(/['"]+$/, "");
 
+/** `"Jean Dupont" <jean@x.fr>` | `jean@x.fr` | `Jean <jean@x.fr>` → {name, email} */
 export function parseAddress(input) {
   // The address is found before anything is decoded, and only the name is
   // decoded after. Decoding first let an encoded display name carry an

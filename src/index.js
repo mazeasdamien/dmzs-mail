@@ -21,8 +21,7 @@ import {
   safeEqual,
   sameOriginWrite,
 } from "./auth.js";
-import { CLIENT_VERSION } from "./version.js";
-import { MailAuthError, isAuthFailure } from "./errors.js";
+import { isAuthFailure } from "./errors.js";
 import { BODY_VERSION, bodyFromParts, unsubFromHeaders } from "./body.js";
 import { ensureSchema } from "./schema.js";
 import { seal, open } from "./crypto.js";
@@ -73,14 +72,13 @@ import {
 import { smtpSend, smtpCheck } from "./smtp.js";
 import { vapidKeys, pushAll } from "./push.js";
 import { zipStream } from "./zip.js";
-import { runBackup, latestBackup } from "./backup.js";
+import { runBackup, latestBackup, restoreBackup } from "./backup.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json; charset=utf-8" };
 const json = (data, status = 200, extra = {}) =>
   new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...extra } });
 
 const SYNC_PER_RUN = 1;              // accounts refreshed per cron pass — there is one
-const SYNC_CAP = 12;                 // new messages per account per pass
 
 async function hashHex(s, len) {
   const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
@@ -96,7 +94,7 @@ const bodyKey = (id) => `body/${id}.json`;
  * edit, and the page, this file and the service worker all agree on it or the
  * deploy never starts.
  */
-const CLIENT_SHELL = "v48";
+const CLIENT_SHELL = "v49";
 
 /**
  * IMAP system flags, spelled once.
@@ -1743,7 +1741,19 @@ async function handleApi(request, env, path, ctx) {
 
   // GET /api/backup — what is currently held. POST to take one now.
   if (path === "/api/backup" && request.method === "GET") {
-    return json({ latest: await latestBackup(env) });
+    const err = await env.DB.prepare("SELECT value FROM settings WHERE key='backup_error'").first();
+    return json({ latest: await latestBackup(env), error: err ? JSON.parse(err.value) : null });
+  }
+  // POST /api/backup/restore { confirm: "restore" } — only ever adds back
+  // what is missing; see restoreBackup.
+  if (path === "/api/backup/restore" && request.method === "POST") {
+    const b = await request.json().catch(() => ({}));
+    if (b.confirm !== "restore") return json({ error: "Say confirm: \"restore\"" }, 400);
+    try {
+      return json(await restoreBackup(env));
+    } catch (e) {
+      return json({ error: String(e.message || e) }, 502);
+    }
   }
   if (path === "/api/backup" && request.method === "POST") {
     try {
@@ -2108,23 +2118,6 @@ async function handleApi(request, env, path, ctx) {
     });
   }
 
-  // POST /api/messages/:id/archive
-  const msgArch = path.match(/^\/api\/messages\/([a-f0-9]{16})\/archive$/);
-  if (msgArch && request.method === "POST") {
-    const msg = await env.DB.prepare("SELECT * FROM messages WHERE id=?").bind(msgArch[1]).first();
-    if (!msg) return json({ error: "Unknown message" }, 404);
-    const acct = await accountById(env, msg.account_id);
-    try {
-      await moveAtProvider(env, acct, msg, "archive");
-    } catch (e) {
-      return imapError(e, acct, env);
-    }
-    await env.DB.prepare("UPDATE messages SET folder='archive', unread=0 WHERE id=?")
-      .bind(msg.id)
-      .run();
-    return json({ ok: true });
-  }
-
   // GET /api/messages/:id/attachment/:n — the file itself.
   //
   // Nothing is cached: the payload is fetched from Apple by part path at the
@@ -2353,7 +2346,7 @@ async function handleApi(request, env, path, ctx) {
     }
 
     await env.DB.prepare("UPDATE messages SET folder=? WHERE id=?").bind(target, msg.id).run();
-    return json({ ok: true, from: msg.folder, queued: acct.provider === "icloud" && !acct.secret });
+    return json({ ok: true, from: msg.folder });
   }
 
   // POST /api/messages/:id/flag { starred?, unread? } — either, or both.
@@ -2802,7 +2795,7 @@ No invented facts, no commitment to anything the brief does not cover, and no br
     } catch (e) {
       return imapError(e, acct, env);
     }
-    return json({ ok: true, filed, filedError, queued: false }, 202);
+    return json({ ok: true, filed, filedError }, 202);
   }
 
   return json({ error: "Unknown route" }, 404);
@@ -3011,12 +3004,25 @@ export default {
       return json({ error: String((e && e.message) || e) }, 500);
     }
   },
-  // Sync heartbeat. Two least-recently-synced API accounts per pass, a dozen
-  // messages each — the free plan's subrequest allowance shapes everything.
+  // Sync heartbeat: the least-recently-synced account, IMAP_CAP messages per
+  // pass. The subrequest allowance per invocation shapes everything here.
   async scheduled(event, env, ctx) {
     // Two schedules share this handler; the cron expression says which fired.
     if (event.cron && event.cron.startsWith("17 3")) {
-      ctx.waitUntil(runBackup(env, Date.now()).catch(() => {}));
+      // A failed snapshot used to vanish into .catch(() => {}). It is kept
+      // where Settings can show it, and cleared by the next good one.
+      ctx.waitUntil(
+        runBackup(env, Date.now())
+          .then(() => env.DB.prepare("DELETE FROM settings WHERE key='backup_error'").run())
+          .catch((e) =>
+            env.DB.prepare(
+              "INSERT INTO settings (key, value) VALUES ('backup_error', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+            )
+              .bind(JSON.stringify({ at: Date.now(), error: String((e && e.message) || e).slice(0, 300) }))
+              .run()
+              .catch(() => {})
+          )
+      );
       return;
     }
     ctx.waitUntil(

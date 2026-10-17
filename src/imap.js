@@ -434,4 +434,3 @@ export async function imapEmpty(im, name) {
   return exists;
 }
 
-export { quote as imapQuote };

@@ -26,13 +26,6 @@ const b64url = (bytes) => {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
 
-const b64urlToBytes = (str) => {
-  const pad = str.length % 4 ? "=".repeat(4 - (str.length % 4)) : "";
-  return Uint8Array.from(atob(String(str).replace(/-/g, "+").replace(/_/g, "/") + pad), (c) =>
-    c.charCodeAt(0)
-  );
-};
-
 async function readSetting(env, key) {
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key=?").bind(key).first();
   return row?.value ?? null;
@@ -153,4 +146,4 @@ export async function pushAll(env) {
   return sent;
 }
 
-export { b64url, b64urlToBytes };
+export { b64url };

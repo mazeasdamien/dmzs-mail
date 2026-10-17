@@ -1358,6 +1358,15 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
         <div class="sh-s" style="margin:6px 0 0;font-size:12px">A message you put your own address on used to file itself under Sent and never reach the inbox here, because both copies carry one Message-ID. New mail lands correctly; this goes back over the old ones, checks each against your inbox at iCloud, and moves what is really there.</div>
       </div>
     </details>
+    <details class="repair" id="backupBox">
+      <summary>Backup</summary>
+      <div class="body">
+        <div class="sh-s" id="backupState" style="margin:0 0 8px;font-size:12px">&mdash;</div>
+        <button class="ghost" id="backupNow" style="width:100%;justify-content:center;min-height:34px">Take a snapshot now</button>
+        <button class="ghost" id="backupRestore" style="width:100%;justify-content:center;min-height:34px">Restore what is missing</button>
+        <div class="sh-s" style="margin:6px 0 0;font-size:12px">Every night at 03:17 UTC the database &mdash; accounts, folders, read and star state, contacts, blocked senders, settings &mdash; is copied into your own storage. Message bodies are already there. Restore only adds back rows that have gone missing; nothing that exists now is changed.</div>
+      </div>
+    </details>
   </section>
 
   <section class="setsec" data-set="privacy" role="tabpanel" aria-label="Privacy" hidden>
@@ -1746,7 +1755,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v48";
+const CLIENT = "v49";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -2884,7 +2893,7 @@ async function fileCurrent(target, said) {
   const d = await fileMessage(id, target);
   if (!d) return;
   const back = d.from || wasIn;
-  toast(d.queued ? `${said} — queued` : said, async () => {
+  toast(said, async () => {
     await fileMessage(id, back);
     await Promise.all([loadList(), refreshCounts()]);
   });
@@ -4055,6 +4064,51 @@ $("#repairSelf").addEventListener("click", async (e) => {
   );
   refreshAll();
 });
+
+/* backup: what is held, a snapshot on demand, and a restore that only adds */
+async function refreshBackup() {
+  const res = await api("/api/backup").catch(() => null);
+  const d = res && res.ok ? await res.json().catch(() => ({})) : {};
+  const l = d.latest;
+  let text = l
+    ? `Last snapshot ${new Date(l.uploaded).toLocaleString()} — ${l.messages} messages, ${Math.round(l.bytes / 1024)} KB.`
+    : "No snapshot yet. The first one is taken tonight, or now.";
+  if (d.error) text += ` The last attempt failed (${new Date(d.error.at).toLocaleString()}): ${d.error.error}`;
+  $("#backupState").textContent = text;
+}
+$("#backupBox").addEventListener("toggle", (e) => { if (e.currentTarget.open) refreshBackup(); });
+$("#backupNow").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const res = await api("/api/backup", { method: "POST" }).catch(() => null);
+  btn.disabled = false;
+  const d = res ? await res.json().catch(() => ({})) : {};
+  toast(res && res.ok ? "Snapshot taken" : d.error || "Could not take a snapshot");
+  refreshBackup();
+});
+$("#backupRestore").addEventListener("click", async (e) => {
+  const yes = await ask(
+    "Restore from the last snapshot?",
+    "Rows missing from the database come back from the snapshot. Nothing that exists now is changed or removed.",
+    { ok: "Restore" }
+  );
+  if (!yes) return;
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  const res = await api("/api/backup/restore", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm: "restore" }),
+  }).catch(() => null);
+  btn.disabled = false;
+  const d = res ? await res.json().catch(() => ({})) : {};
+  if (!res || !res.ok) { toast(d.error || "Could not restore"); return; }
+  if (!d.key) { toast("There is no snapshot to restore from"); return; }
+  const n = Object.values(d.restored || {}).reduce((a, b) => a + b, 0);
+  toast(n ? `Restored ${n} missing rows` : "Nothing was missing");
+  if (n) refreshAll();
+});
+
 $("#addIcloud").addEventListener("click", () => {
   closeSheets();
   setTimeout(() => openSheet("#icloudSheet"), 60);
@@ -5688,7 +5742,7 @@ $("#composeSheet").addEventListener("keydown", (e) => {
     fileMessage(id, "archive").then((d) => {
       if (!d) return;
       const back = d.from || m.folder || "inbox";
-      toast(d.queued ? "Archived — queued" : "Archived", async () => {
+      toast("Archived", async () => {
         await fileMessage(id, back);
         await Promise.all([loadList(), refreshCounts()]);
       });

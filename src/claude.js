@@ -29,8 +29,11 @@ const FALLBACK_MODELS = new Set([
   "claude-sonnet-5-5",
 ]);
 
+// Someone is waiting on every call, mid-sentence. The SDK's defaults (ten
+// minutes, two retries) would leave the composer spinning for half an hour on
+// a bad day; one retry inside a minute and a half is the most worth waiting.
 function client(key) {
-  return new Anthropic({ apiKey: key });
+  return new Anthropic({ apiKey: key, timeout: 90_000, maxRetries: 1 });
 }
 
 /** Anthropic's own words for what went wrong, rather than the SDK's wrapping of them. */

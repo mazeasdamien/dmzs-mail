@@ -146,13 +146,6 @@ class Smtp {
 }
 
 /**
- * Connect, greet, authenticate, hang up. Sends nothing.
- *
- * Separates "can this Worker reach Apple and log in" from "was this particular
- * message accepted", which a failed send conflates into one unhelpful error.
- * Returns every reply verbatim so a rejection names itself.
- */
-/**
  * Connects on 587, upgrades to TLS, authenticates. Returns a ready session.
  *
  * Not 465. Implicit TLS on 465 answered a banner when this was first built and
@@ -186,6 +179,13 @@ async function smtpConnect({ host = "smtp.mail.me.com", port = 587, user, pass }
   return s;
 }
 
+/**
+ * Connect, greet, authenticate, hang up. Sends nothing.
+ *
+ * Separates "can this Worker reach Apple and log in" from "was this particular
+ * message accepted", which a failed send conflates into one unhelpful error.
+ * Returns every reply verbatim so a rejection names itself.
+ */
 export async function smtpCheck(opts) {
   const trace = [];
   let s = null;

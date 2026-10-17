@@ -212,11 +212,6 @@ export function sameOriginWrite(request) {
   return !origin || origin === new URL(request.url).origin;
 }
 
-/** true when the request carries a valid session. */
-export async function isAuthed(request, env) {
-  return (await requestSession(request, env)) !== null;
-}
-
 /**
  * A fresh cookie when the session is getting old, otherwise null.
  * A device stays activated indefinitely as long as it opens the app at least
