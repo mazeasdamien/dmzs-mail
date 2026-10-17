@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -45,7 +45,6 @@
   --g-fill:rgba(255,255,255,.88); --g-fill-strong:rgba(250,250,252,.97);
   --g-sheen:rgba(255,255,255,.55); --g-rim:rgba(255,255,255,.9); --g-edge:rgba(20,20,40,.09);
   --g-shade:0 1px 2px rgba(20,20,40,.05),0 10px 30px rgba(20,20,40,.11);
-  --g-blur:blur(22px) saturate(185%);
   /* iOS's tertiary fill: the grey a control sits in when it is not glass. */
   --fill:rgba(118,118,128,.12);
   /* Spacing scale. Stops the drift between 10, 11, 12 and 13px gutters that
@@ -76,7 +75,6 @@
     --g-fill:rgba(46,46,52,.86); --g-fill-strong:rgba(28,28,32,.96);
     --g-sheen:rgba(255,255,255,.07); --g-rim:rgba(255,255,255,.17); --g-edge:rgba(0,0,0,.55);
     --g-shade:0 1px 2px rgba(0,0,0,.35),0 12px 34px rgba(0,0,0,.5);
-    --g-blur:blur(22px) saturate(160%);
     --fill:rgba(118,118,128,.24);
   }
 }
@@ -93,7 +91,6 @@
   --g-fill:rgba(46,46,52,.86); --g-fill-strong:rgba(28,28,32,.96);
   --g-sheen:rgba(255,255,255,.07); --g-rim:rgba(255,255,255,.17); --g-edge:rgba(0,0,0,.55);
   --g-shade:0 1px 2px rgba(0,0,0,.35),0 12px 34px rgba(0,0,0,.5);
-  --g-blur:blur(22px) saturate(160%);
   --fill:rgba(118,118,128,.24);
 }
 /* Motion is decoration. Turning it off must never cost information, so the
@@ -107,9 +104,18 @@
     animation-iteration-count:1 !important;
     scroll-behavior:auto !important;
   }
-  .iconbtn.busy .spin,#ptr.spin .ring,#bar i{animation:sp 1.2s linear infinite !important}
+  .iconbtn.busy .spin,#ptr.spin .ring{animation:sp 1.2s linear infinite !important}
+  /* The bar is a line, not a ring: given the spinner's rotation it turned on
+     its own axis. Still and full width, it says "loading" without moving. */
+  #bar i{animation:none !important;width:100%;opacity:.6}
 }
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+/* Pinch zoom is back (a newsletter's small print is the reader's to enlarge),
+   and with it iOS's habit of zooming into any field set under 16px the moment
+   it is focused. iOS only: everywhere else keeps the sizes as designed. */
+@supports (-webkit-touch-callout:none){
+  input,textarea,select,[contenteditable]{font-size:max(16px,1em) !important}
+}
 /* `hidden` means hidden, whatever else says otherwise.
    The browser's own rule is only [hidden]{display:none}, which any author rule
    setting a display beats on the cascade — so `.field{display:flex}` quietly
@@ -295,7 +301,7 @@ button.who{cursor:pointer}
      a slab of empty background. In a browser the inset is 0 and the 10px
      floor applies, which is why this only ever looked wrong installed. */
   padding:10px 16px max(var(--sab), 10px);border-top:1px solid var(--line-strong);
-  background:var(--glass);-webkit-backdrop-filter:blur(22px);backdrop-filter:blur(22px)}
+  background:var(--glass)}
 /* Nothing stretches. Reply used to be flex:1.5 while the icons were fixed, so
    it absorbed every spare pixel and ended up a metre wide on a desktop. */
 .rbtn{flex:none;height:40px;padding:0 14px;border-radius:var(--r);
@@ -443,7 +449,6 @@ body.composing:not(.overlay) #scrim{opacity:0;pointer-events:none}
   line-height:1.5;user-select:text;-webkit-user-select:text;word-break:break-word;
   border-radius:var(--r-s)}
 .editor:empty:before{content:attr(data-ph);color:var(--t3)}
-.editor blockquote{margin:6px 0 6px 8px;padding-left:11px;border-left:2px solid var(--line-strong);color:var(--t2)}
 .editor a{color:var(--acc)}
 .editor ul,.editor ol{padding-left:22px;margin:6px 0}
 
@@ -638,7 +643,7 @@ html.busy #bar{opacity:1}
 #reader:not(.up) #rEmpty{display:flex}
 /* The header goes with the body it describes. Leaving it behind puts the
    subject of a message you just deleted above "Select a message to read". */
-#reader:not(.up) .rhead,/* With no message open, the header renders "—" and the toolbar offers Star,
+/* With no message open, the header renders "—" and the toolbar offers Star,
    Delete and Reply for a message that does not exist. Hide the lot; the
    placeholder is the only honest thing to show. */
 #reader:not(.up) #rframe,
@@ -809,13 +814,13 @@ html.busy #bar{opacity:1}
 /* Past the point where letting go files it. */
 .rowwrap.armed .swipe-act{background:color-mix(in srgb,var(--acc) 34%,var(--bg))}
 .rowwrap .swipe-act svg{flex:none}
-.rowwrap .row{background:var(--bg);will-change:transform;position:relative;z-index:1;
+.rowwrap .row{background:var(--bg);position:relative;z-index:1;
   transition:transform .22s cubic-bezier(.32,.72,0,1),background-color .16s ease}
 @media (hover:hover) and (pointer:fine){
   .rowwrap .swipe-act{display:none}
 }
-.rowwrap.dragging .row{transition:none}
-.rowwrap.unread .row,.rowwrap .row.unread{
+.rowwrap.dragging .row{transition:none;will-change:transform}
+.rowwrap .row.unread{
   background:color-mix(in srgb,var(--acc) 14%,var(--bg))}
 .rowwrap.open .row,.rowwrap .row.sel{background:color-mix(in srgb,var(--acc) 25%,var(--bg))}
 
@@ -835,7 +840,6 @@ body.selmode .rowwrap .row{touch-action:pan-y}
   display:flex;align-items:center;gap:var(--s2);
   padding:10px var(--s4) max(var(--sab), 10px);
   background:var(--glass);border-top:1px solid var(--line-strong);
-  -webkit-backdrop-filter:blur(22px);backdrop-filter:blur(22px);
   transform:translateY(110%);transition:transform .25s cubic-bezier(.32,.72,0,1)}
 #bulkbar.up{transform:translateY(0)}
 #bulkbar .n-sel{font-size:var(--t-m);font-weight:650;color:var(--t1);flex:1;min-width:0}
@@ -963,10 +967,7 @@ header::before{content:"";position:absolute;inset:0 0 -16px;z-index:-1;pointer-e
   background:linear-gradient(to bottom,
     color-mix(in srgb,var(--bg) 94%,transparent) 0%,
     color-mix(in srgb,var(--bg) 72%,transparent) 62%,
-    transparent 100%);
-  -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
-  -webkit-mask-image:linear-gradient(to bottom,#000 64%,transparent);
-  mask-image:linear-gradient(to bottom,#000 64%,transparent)}
+    transparent 100%)}
 main{padding-top:var(--hh,112px);scroll-padding-top:var(--hh,112px)}
 
 .iconbtn{color:var(--t1)}
@@ -1198,7 +1199,7 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
   <header>
     <div class="htop">
       <div style="min-width:0">
-        <div class="meta" id="hmeta" role="status" aria-live="polite">Loading…</div>
+        <div class="meta" id="hmeta">Loading…</div>
       </div>
       <div class="htools">
         <button class="iconbtn" id="syncBtn" aria-label="Refresh" aria-busy="false"><span class="spin"></span>
@@ -1588,7 +1589,9 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
   </div>
 </dialog>
 
-<div id="toast" role="status" aria-live="polite"></div>
+<!-- Not a live region: say() announces every toast, and both together read
+     each one out twice. -->
+<div id="toast"></div>
 <!-- What a key command or a swipe just did, said out loud. The toast is visual
      and easy to miss; this is for anyone who cannot see it appear. -->
 <div id="say" class="sr" role="status" aria-live="polite"></div>
@@ -1794,7 +1797,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v52";
+const CLIENT = "v53";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -1814,10 +1817,14 @@ async function api(path, opts = {}) {
   const want = res.headers.get("X-Shell");
   if (want && want !== CLIENT) staleClient(want);
   if (res.status === 401) {
+    // The poll stops with the session: it went on asking every minute, each
+    // answer rebuilding this same page under whatever you were reading.
+    sessionGone = true;
+    clearTimeout(pollTimer);
     document.body.innerHTML =
       `<div style="height:100%;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;color:var(--t2)">
          <div><strong style="display:block;color:var(--t1);font-size:17px;margin-bottom:6px">Session expired</strong>
-         Open your activation link again.</div></div>`;
+         Open your activation link again, or <a href="/auth" style="color:var(--t1)">enter the key here</a>.</div></div>`;
     throw new Error("401");
   }
   return res;
@@ -1829,10 +1836,13 @@ async function api(path, opts = {}) {
  * Not an auto-reload: doing that to someone mid-sentence in the composer
  * would throw away exactly what this app has spent the day learning to keep.
  */
-let staleSaid = false;
+// When it was last said. Once per tab used to be once ever: the next toast
+// covered it within seconds and nothing said it again.
+let staleSaid = 0;
+let sessionGone = false;
 function staleClient(want) {
-  if (staleSaid) return;
-  staleSaid = true;
+  if (Date.now() - staleSaid < 5 * 60_000) return;
+  staleSaid = Date.now();
   toast(`This tab is running ${CLIENT}, the server is on ${want}`, () => location.reload(), "Reload");
 }
 
@@ -1880,6 +1890,8 @@ function acctColor(a) {
   return i >= 0 && i < ACCENT_PALETTE.length ? ACCENT_PALETTE[i] : `hsl(${hue(a.email)} 62% 58%)`;
 }
 
+// The unread count last announced; -1 until the first render, which is not news.
+let lastSaidUnread = -1;
 function renderAccounts() {
   // Every unread message, not just the inbox's. The header used to count the
   // inbox alone, so an unread message in Archive showed as a badge on the
@@ -1910,10 +1922,13 @@ function renderAccounts() {
   parts.push(total ? `<b class="unread-n">${Number(total)} unread</b>` : "All read");
   if (broken) parts.push(`${Number(broken)} need${broken > 1 ? "" : "s"} attention`);
   $("#hmeta").innerHTML = accounts.length ? parts.join(" · ") : "No account connected yet";
+  // Rewritten twice a minute by the poll; as a live region it re-read "N
+  // unread" every time. Now it speaks only when the count goes up.
+  if (total > lastSaidUnread && lastSaidUnread >= 0) say(`${total} unread`);
+  lastSaidUnread = total;
 
   // With a single account the filter is a row of buttons that all do nothing.
   $("#accPills").hidden = accounts.length < 2;
-  document.body.classList.toggle("multi", accounts.length > 1);
   $("#accPills").innerHTML =
     accounts.length < 2
       ? ""
@@ -1962,11 +1977,18 @@ async function loadFolders() {
 /** Reads that change a count have to refresh both, or the two disagree. */
 const refreshCounts = () => Promise.all([loadFolders(), loadAccounts()]);
 
-/** Nested IMAP paths read better as their leaf: "INBOX/Cranfield" → "Cranfield". */
+/**
+ * Nested IMAP paths read better as their leaf: "INBOX/Cranfield" → "Cranfield".
+ * Split on "/" only, iCloud's delimiter: splitting on dots too showed a
+ * folder called "v1.2" as "2".
+ */
 const folderLabel = (name) => {
-  const leaf = String(name).split(/[\/.]/).filter(Boolean).pop() || name;
+  const leaf = String(name).split("/").filter(Boolean).pop() || name;
   return pretty(leaf);
 };
+/** The whole path, for the one place that has to tell two leaves apart. */
+const folderPath = (name) =>
+  String(name).split("/").filter(Boolean).map((p, i, all) => (i === all.length - 1 ? pretty(p) : p)).join(" › ");
 
 function renderFolders() {
   const cur = folders.find((f) => f.folder === folder);
@@ -2401,7 +2423,7 @@ function emptyHtml() {
           ? `<b>Not saved here.</b>One unfinished message is being held in this browser${
               keptDraft().why ? `, because ${esc(keptDraft().why)}` : ""
             }.<button class="morebtn" id="resumeKeptBtn">Resume it</button>`
-          : `<b>Empty.</b>Nothing in ${esc(pretty(folder))}.`
+          : `<b>Empty.</b>Nothing in ${esc(folderLabel(folder))}.`
       }</div>`;
 }
 
@@ -2501,18 +2523,35 @@ async function resolveInlineImages(html, id, atts) {
     });
   };
 
-  let out = html;
-  for (const [cid, index] of wanted) {
-    try {
-      const uri = await asDataUri(index);
-      if (!uri) continue;
-      out = replaceAllCaseless(out, "cid:" + cid, uri);
-    } catch {
-      /* one unreadable image should not blank the message */
+  // Three at a time, and each picture kept for the session. One after another
+  // made a six-image mail wait on six IMAP round trips in a row, and the
+  // Images button, a PDF and a reply each fetched them all over again.
+  const fetchOne = (index) => {
+    const key = `${id}/${index}`;
+    if (!inlineCache.has(key)) {
+      inlineCache.set(key, asDataUri(index).catch(() => null));
+      while (inlineCache.size > 60) inlineCache.delete(inlineCache.keys().next().value);
     }
-  }
+    return inlineCache.get(key);
+  };
+  const jobs = [...wanted];
+  const uris = new Map();
+  await Promise.all(
+    Array.from({ length: Math.min(3, jobs.length) }, async () => {
+      while (jobs.length) {
+        const [cid, index] = jobs.shift();
+        const uri = await fetchOne(index);
+        if (uri) uris.set(cid, uri);
+        else inlineCache.delete(`${id}/${index}`); // a failure is worth trying again later
+      }
+    })
+  );
+  let out = html;
+  // one unreadable image should not blank the message: it simply stays a cid:
+  for (const [cid, uri] of uris) out = replaceAllCaseless(out, "cid:" + cid, uri);
   return out;
 }
+const inlineCache = new Map();
 
 /* ── attachment icons ──
    Four shapes, not a mimetype encyclopedia: the point is to tell a picture
@@ -3201,7 +3240,7 @@ $("#rMove").addEventListener("click", () => {
     ? choices
         .map(
           (f) =>
-            `<button class="mi" data-move="${esc(f.folder)}"><span class="grow">${esc(pretty(f.folder))}</span><span class="side num">${f.n}</span></button>`
+            `<button class="mi" data-move="${esc(f.folder)}"><span class="grow">${esc(folderPath(f.folder))}</span><span class="side num">${f.n}</span></button>`
         )
         .join("")
     : `<div class="sh-s">Nothing else to move it to yet.</div>`;
@@ -3211,8 +3250,8 @@ $("#moveList").addEventListener("click", (e) => {
   const b = e.target.closest("[data-move]");
   if (!b) return;
   closeSheets();
-  if (moveBulk) { bulkApply(b.dataset.move, `Moved to ${pretty(b.dataset.move)}`); return; }
-  fileCurrent(b.dataset.move, `Moved to ${pretty(b.dataset.move)}`);
+  if (moveBulk) { bulkApply(b.dataset.move, `Moved to ${folderLabel(b.dataset.move)}`); return; }
+  fileCurrent(b.dataset.move, `Moved to ${folderLabel(b.dataset.move)}`);
 });
 /** True while the move picker is deciding for the bulk selection. */
 let moveBulk = false;
@@ -3984,8 +4023,6 @@ const DRAFT_KEY = "dmzs-draft";
 /** What the copy at Apple is called, so the next save knows what it replaces. */
 let draftPid = "";
 let draftTimer = null;
-/** False once localStorage has refused, which a pasted screenshot can do. */
-let draftLocalOk = true;
 /** Nothing has been typed since the last save, so closing has nothing to do. */
 let draftClean = true;
 /** Why the last attempt to reach Apple failed, "" while it is working. */
@@ -4054,12 +4091,10 @@ function saveDraftLocal() {
     // announced once and forgotten. A save that failed at midnight is still
     // failing at nine, and a toast nobody caught is not a diagnosis.
     localStorage.setItem(DRAFT_KEY, JSON.stringify({ ...d, why: draftWhy }));
-    draftLocalOk = true;
     setSaved("Kept");
   } catch {
     // Out of quota. Said out loud rather than swallowed: silently stopping is
     // how someone finds out at the worst possible moment.
-    draftLocalOk = false;
     localStorage.removeItem(DRAFT_KEY);
     setSaved("Too large to keep here — saved on close", true);
   }
@@ -4151,22 +4186,22 @@ async function saveDraftRemote(d, files, session) {
 
   // Everything below writes to state the composer owns, and the composer may
   // have moved on to another message while this was in flight.
-  const current = draftSession === session;
+  const stillOpen = draftSession === session;
 
   if (!res || !res.ok) {
     const why = body.error || "the server refused it";
-    if (current) setSaved(why, true);
+    if (stillOpen) setSaved(why, true);
     return why;
   }
-  if (current) draftPid = body.pid || draftPid;
+  if (stillOpen) draftPid = body.pid || draftPid;
   if (!body.filed) {
     const why = `Apple would not keep a copy: ${body.filedError || "unknown reason"}`;
-    if (current) setSaved(why, true);
+    if (stillOpen) setSaved(why, true);
     return why;
   }
   // Apple has it now, so the local copy has nothing left to protect — unless
   // that copy is already a different draft.
-  if (current) {
+  if (stillOpen) {
     localStorage.removeItem(DRAFT_KEY);
     setSaved("Saved to Drafts");
   }
@@ -4212,7 +4247,16 @@ function keepDraft() {
   }
   // Nothing has changed since the last save, so there is nothing to repeat.
   if (draftClean) return Promise.resolve();
-  if (draftSaving) return draftSaving;
+  // A save already on its way holds the words as they were when it left.
+  // Returning it alone dropped everything typed since — close, reopen, type
+  // and close again inside one round trip and those words were gone. They
+  // go into the local copy now and into a second save once the first lands,
+  // as long as it is still the same message.
+  if (draftSaving) {
+    saveDraftLocal();
+    const session = draftSession;
+    return draftSaving.then(() => (draftSession === session ? keepDraft() : undefined));
+  }
 
   clearTimeout(draftTimer);
   saveDraftLocal();
@@ -4670,8 +4714,6 @@ async function assist(mode, btn) {
     // a typed one, on screen and in whatever opens it. As paragraphs it was
     // neither: glued together in the composer, where nothing has a margin,
     // and three blank lines apart in Outlook, where a <p> has two.
-    // Plain text back, escaped and re-broken into paragraphs. Never innerHTML
-    // from a model: it would be a script-injection hole into your own composer.
     const rebuilt = d.text
       .split(/\n{2,}/)
       .map((p) => `<div>${esc(p).replace(/\n/g, "<br>")}</div>`)
@@ -4797,6 +4839,9 @@ function applyTheme(choice) {
     choice === "dark" ||
     (choice === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
   document.querySelector('meta[name="theme-color"]').setAttribute("content", dark ? "#09090b" : "#ffffff");
+  // The favicon's ring is drawn in the page colour: redrawn, or a dark tab
+  // keeps a white halo round its dot until the next count changes.
+  if (faviconMarked) { faviconMarked = null; markFavicon(true); }
 
   document.querySelectorAll("#themePick [data-theme]").forEach((b) => {
     const on = b.dataset.theme === choice;
@@ -5745,6 +5790,7 @@ $("#syncBtn").addEventListener("click", syncNow);
 
 function schedulePoll() {
   clearTimeout(pollTimer);
+  if (sessionGone) return;
   if (navigator.onLine && document.visibilityState === "visible") {
     // finally: one failed refresh must not be the last one there ever is.
     pollTimer = setTimeout(async () => {
@@ -6149,7 +6195,7 @@ $("#bulkMove").addEventListener("click", () => {
   if (!picked.size) return;
   moveBulk = true;
   $("#moveList").innerHTML = folders
-    .map((f) => `<button class="mi" data-move="${esc(f.folder)}"><span class="grow">${esc(pretty(f.folder))}</span><span class="side num">${f.n}</span></button>`)
+    .map((f) => `<button class="mi" data-move="${esc(f.folder)}"><span class="grow">${esc(folderPath(f.folder))}</span><span class="side num">${f.n}</span></button>`)
     .join("");
   $("#moveSub").textContent = "Filed at the provider, not just here.";
   openSheet("#moveSheet");
@@ -6178,6 +6224,38 @@ $("#list").addEventListener("keydown", (e) => {
   setHeaderHeight();
 }
 
+/**
+ * What the address asked for on the way in.
+ *
+ * The home-screen shortcuts in manifest.webmanifest have pointed at
+ * /?compose=1 and /?search=1 since the start, and nothing read either: both
+ * opened the inbox. `to` is a mailto: link handed over by the browser or the
+ * installed app (protocol_handlers), with its subject, cc and body.
+ */
+function parseMailto(href) {
+  const raw = String(href || "").replace(/^mailto:/i, "");
+  const [addr, query = ""] = raw.split("?");
+  const q = new URLSearchParams(query);
+  const get = (k) => [...q.entries()].find(([key]) => key.toLowerCase() === k)?.[1] || "";
+  return {
+    to: [decodeURIComponent(addr), get("to")].filter(Boolean).join(", "),
+    cc: get("cc"),
+    subject: get("subject"),
+    body: get("body"),
+  };
+}
+function openFromUrl() {
+  const q = new URLSearchParams(location.search);
+  if (![...q.keys()].length) return;
+  history.replaceState(null, "", location.pathname);
+  if (q.has("search")) { $("#q").focus(); return; }
+  if (!q.has("compose") && !q.has("to")) return;
+  if (!accounts.length) { toast("Connect an account first"); return; }
+  const m = parseMailto(q.get("to") || "");
+  const html = m.body ? m.body.split(/\r?\n/).map((l) => `<div>${esc(l) || "<br>"}</div>`).join("") : undefined;
+  openCompose({ to: m.to, cc: m.cc, subject: m.subject, html });
+}
+
 /* ── init ── */
 (async function init() {
   applyTheme(localStorage.getItem("dmzs-theme") || "light");
@@ -6190,6 +6268,7 @@ $("#list").addEventListener("keydown", (e) => {
   await Promise.all([refreshAll(), loadSignature(), loadImageSenders()]);
   schedulePoll();
   resumeKeptDraft();
+  openFromUrl();
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});

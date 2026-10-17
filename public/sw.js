@@ -7,7 +7,7 @@
 
 // Bump on every shell change. The activate handler deletes any cache whose
 // name is not this one, so an old index.html cannot outlive a deploy.
-const SHELL = "dmzs-mail-shell-v52";
+const SHELL = "dmzs-mail-shell-v53";
 
 const SHELL_FILES = [
   "/",
@@ -19,11 +19,16 @@ const SHELL_FILES = [
   "/apple-touch-icon.png",
 ];
 
+// No catch on addAll. Every file here sits behind the session, so an update
+// installed while the session was invalid cached nothing — and activate then
+// deleted the old cache, leaving no offline shell at all. A failed install
+// now keeps the previous worker and its cache, and is retried on the next
+// visit.
 self.addEventListener("install", (e) => {
   e.waitUntil(
     caches
       .open(SHELL)
-      .then((c) => c.addAll(SHELL_FILES).catch(() => {}))
+      .then((c) => c.addAll(SHELL_FILES))
       .then(() => self.skipWaiting())
   );
 });
@@ -33,6 +38,10 @@ self.addEventListener("activate", (e) => {
     caches
       .keys()
       .then((keys) => Promise.all(keys.filter((k) => k !== SHELL).map((k) => caches.delete(k))))
+      // The navigation request starts while this worker is still waking up,
+      // instead of after.
+      .then(() => self.registration.navigationPreload?.enable())
+      .catch(() => {})
       .then(() => self.clients.claim())
   );
 });
@@ -57,12 +66,21 @@ self.addEventListener("fetch", (event) => {
   // Navigation: network first so updates come through, cached shell offline.
   if (req.mode === "navigate") {
     event.respondWith(
-      fetch(req)
-        .then((res) => {
-          if (res.ok) caches.open(SHELL).then((c) => c.put("/", res.clone()));
+      (async () => {
+        try {
+          const res = (await event.preloadResponse) || (await fetch(req));
+          // Only the shell itself is the offline shell. Every navigation used
+          // to be stored under "/", so one visit to /v40.html made that the
+          // page shown with no connection.
+          if (res.ok && (url.pathname === "/" || url.pathname === "/index.html")) {
+            const copy = res.clone();
+            caches.open(SHELL).then((c) => c.put("/", copy));
+          }
           return res;
-        })
-        .catch(async () => (await caches.match("/")) || new Response("Offline", { status: 503 }))
+        } catch {
+          return (await caches.match("/")) || new Response("Offline", { status: 503 });
+        }
+      })()
     );
     return;
   }
@@ -90,6 +108,7 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     (async () => {
       let state = { unread: 0, total: 0, from: "", subject: "" };
+      let failed = true;
       try {
         // Says which shell is asking, the same way the page does. Without it
         // every push logged as a client too old to identify itself, which is
@@ -98,7 +117,10 @@ self.addEventListener("push", (event) => {
           credentials: "same-origin",
           headers: { "X-Client": SHELL.replace("dmzs-mail-shell-", "") },
         });
-        if (res.ok) state = await res.json();
+        if (res.ok) {
+          state = await res.json();
+          failed = false;
+        }
       } catch {
         /* offline: still worth ringing, just without the detail */
       }
@@ -124,10 +146,20 @@ self.addEventListener("push", (event) => {
         c.postMessage({ type: "mail", unread: state.unread });
       }
 
-      if (!state.unread) return;
+      // Every push has to end in a notification: Safari withdraws a
+      // subscription that wakes the worker without showing one, and Chrome
+      // puts up its own "updated in the background" instead. When the mail
+      // has been read elsewhere in the meantime, one is shown and taken down
+      // at once; when the state could not be read at all, the doorbell rings
+      // without the detail.
+      if (!state.unread && !failed) {
+        await self.registration.showNotification("Up to date", { tag: "dmzs-mail-quiet", silent: true });
+        for (const n of await self.registration.getNotifications({ tag: "dmzs-mail-quiet" })) n.close();
+        return;
+      }
 
       const title = state.from || "New mail";
-      const line = state.subject || `${state.unread} unread`;
+      const line = state.subject || (state.unread ? `${state.unread} unread` : "Open to see what arrived");
 
       // The same doorbell, rung twice.
       //
@@ -137,10 +169,10 @@ self.addEventListener("push", (event) => {
       // a second apart, through two pushes this handler has no way to tell
       // apart. If what is already on screen says exactly this, about exactly
       // this many unread, there is nothing to add by saying it again.
+      //
+      // Replaced quietly rather than skipped: a push has to show something.
       const up = await self.registration.getNotifications({ tag: "dmzs-mail" });
-      if (up.some((n) => n.title === title && n.body === line && n.data?.unread === state.unread)) {
-        return;
-      }
+      const same = up.some((n) => n.title === title && n.body === line && n.data?.unread === state.unread);
 
       await self.registration.showNotification(title, {
         body: line,
@@ -149,7 +181,7 @@ self.addEventListener("push", (event) => {
         // One notification that updates, rather than a stack of them: a mailbox
         // is a count, not a feed of separate events.
         tag: "dmzs-mail",
-        renotify: true,
+        renotify: !same,
         data: { unread: state.unread },
       });
     })()
