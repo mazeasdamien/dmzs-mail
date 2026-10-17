@@ -28,7 +28,7 @@ import { SYNC_PER_RUN, json, learnHost } from "./util.js";
  * edit, and the page, this file and the service worker all agree on it or the
  * deploy never starts.
  */
-const CLIENT_SHELL = "v62";
+const CLIENT_SHELL = "v63";
 
 /**
  * One activation key, three ways in.

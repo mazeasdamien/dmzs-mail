@@ -1909,7 +1909,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v62";
+const CLIENT = "v63";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -4177,6 +4177,14 @@ function syncHistory() {
   }
 }
 addEventListener("popstate", () => {
+  // Chrome keeps a title per history entry and puts the old one back when it
+  // steps onto it. Open an unread message and the entry under it still says
+  // "(1) Mail"; Back, or deleting it, lands there again while the page's own
+  // title is already "Mail" — so nothing ever changes, and nothing tells
+  // Chrome. Written away and back, it is a change Chrome has to hear.
+  const title = document.title;
+  document.title = "";
+  document.title = title;
   if (popIgnore) {
     popIgnore = false;
     setTimeout(syncHistory, 0);
