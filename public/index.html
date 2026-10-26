@@ -535,6 +535,37 @@ textarea.field{width:100%;padding:11px 12px;font-size:14.5px;line-height:1.45;mi
 .mi.warn .side{color:var(--red)}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 
+/* View switcher tabs: Mail vs Timeline */
+.viewtabs{display:flex;gap:4px;padding:3px;background:var(--elev);border:1px solid var(--line);border-radius:18px;margin:6px 0 8px}
+.vtab{flex:1;height:28px;padding:0 12px;border-radius:14px;color:var(--t2);font-size:12.5px;font-weight:600;gap:6px;transition:all .12s}
+.vtab svg{color:currentColor}
+.vtab:hover{color:var(--t1);background:var(--press)}
+.vtab.on{background:var(--bg);color:var(--t1);box-shadow:0 1px 3px var(--shadow)}
+.tldot{width:6px;height:6px;border-radius:50%;background:var(--acc);flex:none}
+
+/* Timeline view */
+#timelineView{padding:10px 16px 40px;display:flex;flex-direction:column;gap:16px}
+.tl-group{display:flex;flex-direction:column;gap:8px}
+.tl-date{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--t3);padding:2px 4px}
+.tl-card{padding:12px 14px;border-radius:var(--r);background:var(--elev);border:1px solid var(--line);display:flex;flex-direction:column;gap:6px;transition:background .12s, border-color .12s;cursor:pointer;position:relative}
+.tl-card:hover{background:var(--press2);border-color:var(--line-strong)}
+.tl-card.today{border-left:3px solid var(--acc)}
+.tl-card.cancelled{opacity:.6}
+.tl-card.cancelled .tl-title{text-decoration:line-through}
+.tl-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.tl-title{font-size:14px;font-weight:650;color:var(--t1);line-height:1.3}
+.tl-badge{font-size:11.5px;font-weight:700;padding:2px 7px;border-radius:8px;background:color-mix(in srgb,var(--acc) 14%,transparent);color:var(--acc);white-space:nowrap;flex:none}
+.tl-meta{font-size:12px;color:var(--t2);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.tl-actions{display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:wrap}
+.tl-actions button{height:26px;padding:0 10px;font-size:11.5px;border-radius:13px}
+.tl-actions button[aria-pressed="true"]{background:var(--acc);color:#fff;border-color:var(--acc)}
+.tl-join{background:var(--acc);color:var(--on-acc)!important;font-weight:600;display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px;border-radius:13px;font-size:11.5px;text-decoration:none}
+.tl-rsvp{font-size:11.5px;padding:2px 8px;border-radius:8px;background:var(--press);color:var(--t2);font-weight:600}
+.tl-rsvp.accepted{background:color-mix(in srgb,#22c55e 18%,transparent);color:#16a34a}
+.tl-rsvp.declined{background:color-mix(in srgb,var(--red) 18%,transparent);color:var(--red)}
+.tl-empty{padding:48px 16px;text-align:center;color:var(--t2);display:flex;flex-direction:column;align-items:center;gap:10px;font-size:14px}
+.tl-empty svg{color:var(--t3);opacity:.7}
+
 /* search */
 /* Search and the folder picker share a line: two controls that both narrow
    the same list, and it buys back a whole row of vertical space above the
@@ -1253,16 +1284,28 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
         </button>
       </div>
     </div>
-    <div class="toprow">
-    <div class="searchwrap" id="searchWrap">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-      <input id="q" type="text" placeholder="Search all mail" autocomplete="off" autocapitalize="off" spellcheck="false">
-      <button id="qClear" aria-label="Clear search">&times;</button>
-    </div>
-    <div class="pills" id="accPills"></div>
-    <div class="folderbar">
-      <button id="folderBtn" aria-haspopup="dialog" aria-expanded="false"><span id="folderName">Inbox</span><span id="folderCount"></span><span class="caret">▾</span></button>
-      <span id="offline" role="status" hidden>Offline</span>
+    <nav class="viewtabs" id="viewTabs" role="tablist" aria-label="Sections">
+      <button class="vtab on" id="tabMail" role="tab" aria-selected="true">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+        <span>Mail</span>
+      </button>
+      <button class="vtab" id="tabTimeline" role="tab" aria-selected="false">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <span>Timeline</span>
+        <span class="tldot" id="timelineDot" hidden></span>
+      </button>
+    </nav>
+    <div class="toprow" id="topRow">
+      <div class="searchwrap" id="searchWrap">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="q" type="text" placeholder="Search all mail" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <button id="qClear" aria-label="Clear search">&times;</button>
+      </div>
+      <div class="pills" id="accPills"></div>
+      <div class="folderbar">
+        <button id="folderBtn" aria-haspopup="dialog" aria-expanded="false"><span id="folderName">Inbox</span><span id="folderCount"></span><span class="caret">▾</span></button>
+        <span id="offline" role="status" hidden>Offline</span>
+      </div>
     </div>
   </header>
   <main id="main">
@@ -1270,6 +1313,7 @@ header::before{-webkit-backdrop-filter:none;backdrop-filter:none;-webkit-mask-im
     <!-- The list is a list, and every row in it is reachable from the keyboard
          with a name that carries what sighted users get from the layout. -->
     <div id="list" role="list" aria-label="Messages"></div>
+    <div id="timelineView" role="region" aria-label="Timeline of meetings" hidden></div>
   </main>
 </div>
 
@@ -1909,7 +1953,7 @@ function busy(delta) {
  * Which build this page is. Matches SHELL in sw.js and CLIENT_SHELL in the
  * Worker; every API call says it, and every reply says what it should be.
  */
-const CLIENT = "v63";
+const CLIENT = "v64";
 
 async function api(path, opts = {}) {
   busy(1);
@@ -6149,7 +6193,7 @@ async function resumeDraft(id) {
 
 async function refreshAll(spin = false) {
   if (spin) $("#syncBtn").classList.add("busy");
-  await Promise.all([loadAccounts(), loadFolders(), loadList(false, { keep: true }), loadOutbox()]);
+  await Promise.all([loadAccounts(), loadFolders(), loadList(false, { keep: true }), loadOutbox(), loadTimeline()]);
   if (spin) $("#syncBtn").classList.remove("busy");
 
   // Tell the Chrome extension, if it is installed, that the count just moved.
@@ -6509,6 +6553,9 @@ function renderInvite(cur) {
   if (ics >= 0) {
     actions += `<a class="ghost" href="/api/messages/${encodeURIComponent(m.id)}/attachment/${ics}" download="invite.ics">Add to calendar</a>`;
   }
+  if (inv.url) {
+    actions += `<a class="ghost" href="${esc(inv.url)}" target="_blank" rel="noopener noreferrer">Join meeting</a>`;
+  }
   // Answers to your own invitations arrive as METHOD:REPLY: say who said what.
   const replied =
     inv.method === "REPLY" && inv.attendees.length
@@ -6542,7 +6589,177 @@ $("#rInvite").addEventListener("click", async (e) => {
     current.rsvp = status;
     renderInvite(current);
   }
+  const tlEv = timelineEvents.find((x) => x.id === id);
+  if (tlEv) {
+    tlEv.rsvp = status;
+    renderTimeline();
+  }
   toast({ accepted: "Accepted — the organiser has been told", tentative: "Answered maybe", declined: "Declined — the organiser has been told" }[status]);
+});
+
+/* ── timeline: upcoming meetings ── */
+let currentTab = "mail";
+let timelineEvents = [];
+
+function switchTab(tab) {
+  if (tab === currentTab) return;
+  currentTab = tab;
+  const isTl = tab === "timeline";
+  $("#tabMail").classList.toggle("on", !isTl);
+  $("#tabMail").setAttribute("aria-selected", String(!isTl));
+  $("#tabTimeline").classList.toggle("on", isTl);
+  $("#tabTimeline").setAttribute("aria-selected", String(isTl));
+  $("#topRow").hidden = isTl;
+  $("#list").hidden = isTl;
+  $("#timelineView").hidden = !isTl;
+  if (isTl) {
+    loadTimeline();
+  } else {
+    renderFolders();
+  }
+}
+
+$("#tabMail").addEventListener("click", () => switchTab("mail"));
+$("#tabTimeline").addEventListener("click", () => switchTab("timeline"));
+
+async function loadTimeline() {
+  if (currentTab === "timeline") $("#hmeta").textContent = "Loading meetings…";
+  const res = await api("/api/timeline").catch(() => null);
+  const d = res && res.ok ? await res.json().catch(() => ({})) : {};
+  timelineEvents = d.events || [];
+  renderTimeline();
+}
+
+function eventDayLabel(ms) {
+  const d = new Date(ms);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const targetDay = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diff = Math.round((targetDay - today) / 86400_000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  if (diff === -1) return "Yesterday";
+  return d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+}
+
+function eventTimeText(ev) {
+  if (ev.start.allDay) return "All day";
+  const s = new Date(ev.start.ms);
+  const e = ev.end ? new Date(ev.end.ms) : null;
+  const t = (d) => d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  if (!e) return t(s);
+  return e.toDateString() === s.toDateString()
+    ? `${t(s)} – ${t(e)}`
+    : `${t(s)} – ${e.toLocaleDateString(undefined, { day: "numeric", month: "short" })} ${t(e)}`;
+}
+
+function renderTimeline() {
+  if (!$("#timelineView")) return;
+  const now = Date.now();
+  const upcoming = timelineEvents.filter((e) => (e.end?.ms || e.start.ms) >= now - 2 * 3600_000);
+
+  const hasToday = timelineEvents.some((e) => eventDayLabel(e.start.ms) === "Today");
+  $("#timelineDot").hidden = !hasToday;
+
+  if (currentTab === "timeline") {
+    $("#hmeta").textContent = `Timeline · ${upcoming.length} ${upcoming.length === 1 ? "upcoming meeting" : "upcoming meetings"}`;
+  }
+
+  if (!timelineEvents.length) {
+    $("#timelineView").innerHTML =
+      `<div class="tl-empty">` +
+      `<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>` +
+      `<div><b>No meetings yet</b></div>` +
+      `<div style="font-size:12.5px;color:var(--t3);max-width:260px">Calendar invitations received in your mail will appear here in chronological order.</div>` +
+      `</div>`;
+    return;
+  }
+
+  const groups = new Map();
+  for (const ev of timelineEvents) {
+    const dayKey = eventDayLabel(ev.start.ms);
+    if (!groups.has(dayKey)) groups.set(dayKey, []);
+    groups.get(dayKey).push(ev);
+  }
+
+  let html = "";
+  for (const [day, evs] of groups) {
+    const isToday = day === "Today";
+    html += `<div class="tl-group">`;
+    html += `<div class="tl-date" style="${isToday ? "color:var(--acc)" : ""}">${esc(day)}</div>`;
+    for (const ev of evs) {
+      const isPast = (ev.end?.ms || ev.start.ms) < now - 1800_000;
+      const cancelled = ev.status === "CANCELLED";
+      const who = ev.organizer || (ev.from_name ? `${ev.from_name} <${ev.from_email}>` : ev.from_email);
+      let rsvpPill = "";
+      if (ev.rsvp === "accepted") rsvpPill = `<span class="tl-rsvp accepted">Accepted</span>`;
+      else if (ev.rsvp === "declined") rsvpPill = `<span class="tl-rsvp declined">Declined</span>`;
+      else if (ev.rsvp === "tentative") rsvpPill = `<span class="tl-rsvp">Maybe</span>`;
+
+      html +=
+        `<div class="tl-card${isToday ? " today" : ""}${cancelled ? " cancelled" : ""}${isPast ? " past" : ""}" data-ev-id="${esc(ev.id)}" tabindex="0" role="button" aria-label="${esc(ev.summary || "Meeting")}">` +
+        `<div class="tl-head">` +
+        `<div class="tl-title">${cancelled ? "Cancelled: " : ""}${esc(ev.summary || "Meeting")}</div>` +
+        `<div class="tl-badge">${esc(eventTimeText(ev))}</div>` +
+        `</div>` +
+        (ev.location ? `<div class="tl-meta"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>${esc(ev.location)}</div>` : "") +
+        (who ? `<div class="tl-meta"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>Organised by ${esc(who)}</div>` : "") +
+        `<div class="tl-actions">` +
+        (ev.url ? `<a class="tl-join" href="${esc(ev.url)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"/><rect width="14" height="14" x="1" y="5" rx="2" ry="2"/></svg>Join</a>` : "") +
+        rsvpPill +
+        `<button class="ghost" data-tl-rsvp="accepted" data-eid="${esc(ev.id)}" aria-pressed="${ev.rsvp === "accepted"}">Accept</button>` +
+        `<button class="ghost" data-tl-rsvp="tentative" data-eid="${esc(ev.id)}" aria-pressed="${ev.rsvp === "tentative"}">Maybe</button>` +
+        `<button class="ghost" data-tl-rsvp="declined" data-eid="${esc(ev.id)}" aria-pressed="${ev.rsvp === "declined"}">Decline</button>` +
+        `</div>` +
+        `</div>`;
+    }
+    html += `</div>`;
+  }
+
+  $("#timelineView").innerHTML = html;
+}
+
+$("#timelineView").addEventListener("click", async (e) => {
+  const rsvpBtn = e.target.closest("[data-tl-rsvp]");
+  if (rsvpBtn) {
+    e.stopPropagation();
+    const id = rsvpBtn.dataset.eid;
+    const status = rsvpBtn.dataset.tlRsvp;
+    for (const b of rsvpBtn.parentElement.querySelectorAll("[data-tl-rsvp]")) b.disabled = true;
+    const res = await api(`/api/messages/${id}/rsvp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    }).catch(() => null);
+    for (const b of rsvpBtn.parentElement.querySelectorAll("[data-tl-rsvp]")) b.disabled = false;
+    if (res && res.ok) {
+      const ev = timelineEvents.find((x) => x.id === id);
+      if (ev) ev.rsvp = status;
+      if (current && current.message.id === id) {
+        current.rsvp = status;
+        renderInvite(current);
+      }
+      renderTimeline();
+      toast({ accepted: "Accepted — the organiser has been told", tentative: "Answered maybe", declined: "Declined — the organiser has been told" }[status] || "RSVP sent");
+    } else {
+      toast("Could not send answer");
+    }
+    return;
+  }
+  const card = e.target.closest("[data-ev-id]");
+  if (card && !e.target.closest("a, button")) {
+    openMsg(card.dataset.evId);
+  }
+});
+
+$("#timelineView").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    const card = e.target.closest("[data-ev-id]");
+    if (card && !e.target.closest("button, a")) {
+      e.preventDefault();
+      openMsg(card.dataset.evId);
+    }
+  }
 });
 
 /* ── summary, snooze, .eml ── */

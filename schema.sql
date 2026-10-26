@@ -139,4 +139,22 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(
   tokenize = 'unicode61 remove_diacritics 2'
 );
 
+CREATE TABLE IF NOT EXISTS events (
+  id          TEXT PRIMARY KEY,             -- messages.id
+  account_id  TEXT NOT NULL,
+  uid         TEXT NOT NULL DEFAULT '',     -- VEVENT UID
+  summary     TEXT NOT NULL DEFAULT '',     -- VEVENT summary or message subject
+  location    TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  url         TEXT NOT NULL DEFAULT '',     -- meeting join link (Teams, Meet, Zoom...)
+  start_ms    INTEGER NOT NULL,
+  end_ms      INTEGER NOT NULL,
+  all_day     INTEGER NOT NULL DEFAULT 0,
+  status      TEXT NOT NULL DEFAULT '',     -- CONFIRMED, CANCELLED, etc.
+  organizer   TEXT NOT NULL DEFAULT '',     -- CN or email
+  created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_ms);
+
 CREATE INDEX IF NOT EXISTS idx_messages_uid     ON messages(account_id, mailbox, uid);

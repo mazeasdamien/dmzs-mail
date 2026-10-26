@@ -11,6 +11,7 @@ import { decodePart, flattenStructure, parseHeaders, parseMessage, parseSexp } f
 import { SYSTEM_FOLDERS } from "./filing.js";
 import { IMAP_CAP, MAX_BODY_BYTES, folderNameFor, icloudPassword } from "./mailbox.js";
 import { flagAccount, forgetMessages, indexMessage, storeRows } from "./store.js";
+import { indexEvent } from "./ics.js";
 import { bodyKey, defuse, hashHex, json } from "./util.js";
 
 /** Raw message → a messages row plus its defused body. */
@@ -642,6 +643,7 @@ export async function syncIcloud(env, account, tally = {}) {
         });
         // Indexed from the defused HTML, so what is searched is what you read.
         await indexMessage(env, id, row, htmlToText(doc.html || ""));
+        if (doc.calendar) await indexEvent(env, id, account.id, doc.calendar, row.subject);
       }
       if (rows.length) {
         await storeRows(env, account.id, rows);

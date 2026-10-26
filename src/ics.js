@@ -40,11 +40,104 @@ function lines(text) {
 const unescapeText = (v) =>
   String(v || "").replace(/\\([nN,;\\])/g, (_m, c) => (c === "n" || c === "N" ? "\n" : c));
 
+/** Windows timezone names (as written by Outlook, Exchange, Teams) -> IANA names for Intl. */
+const WINDOWS_TO_IANA = {
+  "romance standard time": "Europe/Paris",
+  "w. europe standard time": "Europe/Berlin",
+  "central europe standard time": "Europe/Prague",
+  "central european standard time": "Europe/Warsaw",
+  "gmt standard time": "Europe/London",
+  "greenwich standard time": "Atlantic/Reykjavik",
+  "w. central africa standard time": "Africa/Lagos",
+  "south africa standard time": "Africa/Johannesburg",
+  "egypt standard time": "Africa/Cairo",
+  "morocco standard time": "Africa/Casablanca",
+  "fle standard time": "Europe/Helsinki",
+  "gtb standard time": "Europe/Bucharest",
+  "e. europe standard time": "Europe/Chisinau",
+  "jordan standard time": "Asia/Amman",
+  "middle east standard time": "Asia/Beirut",
+  "syria standard time": "Asia/Damascus",
+  "israel standard time": "Asia/Jerusalem",
+  "arabic standard time": "Asia/Baghdad",
+  "arab standard time": "Asia/Riyadh",
+  "iran standard time": "Asia/Tehran",
+  "russian standard time": "Europe/Moscow",
+  "belarus standard time": "Europe/Minsk",
+  "caucasus standard time": "Asia/Yerevan",
+  "azerbaijan standard time": "Asia/Baku",
+  "georgian standard time": "Asia/Tbilisi",
+  "arabian standard time": "Asia/Dubai",
+  "afghanistan standard time": "Asia/Kabul",
+  "west asia standard time": "Asia/Tashkent",
+  "india standard time": "Asia/Kolkata",
+  "sri lanka standard time": "Asia/Colombo",
+  "nepal standard time": "Asia/Kathmandu",
+  "central asia standard time": "Asia/Almaty",
+  "bangladesh standard time": "Asia/Dhaka",
+  "myanmar standard time": "Asia/Yangon",
+  "se asia standard time": "Asia/Bangkok",
+  "china standard time": "Asia/Shanghai",
+  "taipei standard time": "Asia/Taipei",
+  "singapore standard time": "Asia/Singapore",
+  "w. australia standard time": "Australia/Perth",
+  "north asia standard time": "Asia/Krasnoyarsk",
+  "north asia east standard time": "Asia/Irkutsk",
+  "tokyo standard time": "Asia/Tokyo",
+  "korea standard time": "Asia/Seoul",
+  "yakutsk standard time": "Asia/Yakutsk",
+  "cen. australia standard time": "Australia/Adelaide",
+  "aus central standard time": "Australia/Darwin",
+  "aus eastern standard time": "Australia/Sydney",
+  "e. australia standard time": "Australia/Brisbane",
+  "tasmania standard time": "Australia/Hobart",
+  "vladivostok standard time": "Asia/Vladivostok",
+  "west pacific standard time": "Pacific/Port_Moresby",
+  "magadan standard time": "Asia/Magadan",
+  "new zealand standard time": "Pacific/Auckland",
+  "fiji standard time": "Pacific/Fiji",
+  "tonga standard time": "Pacific/Tongatapu",
+  "hawaiian standard time": "Pacific/Honolulu",
+  "alaskan standard time": "America/Anchorage",
+  "pacific standard time": "America/Los_Angeles",
+  "pacific standard time (mexico)": "America/Tijuana",
+  "us mountain standard time": "America/Phoenix",
+  "mountain standard time": "America/Denver",
+  "mountain standard time (mexico)": "America/Mazatlan",
+  "central standard time": "America/Chicago",
+  "central standard time (mexico)": "America/Mexico_City",
+  "canada central standard time": "America/Regina",
+  "eastern standard time": "America/New_York",
+  "us eastern standard time": "America/Indiana/Indianapolis",
+  "atlantic standard time": "America/Halifax",
+  "newfoundland standard time": "America/St_Johns",
+  "sa pacific standard time": "America/Bogota",
+  "sa western standard time": "America/La_Paz",
+  "sa eastern standard time": "America/Cayenne",
+  "e. south america standard time": "America/Sao_Paulo",
+  "argentina standard time": "America/Argentina/Buenos_Aires",
+  "utc": "UTC",
+};
+
+/** Resolves an iCalendar TZID (Windows name, prefixed path, or IANA) to an IANA identifier. */
+function resolveTz(tz) {
+  if (!tz) return null;
+  let clean = String(tz).trim().replace(/^["'\\]+|["'\\]+$/g, "");
+  if (clean.startsWith("/")) clean = clean.slice(1);
+  const lower = clean.toLowerCase();
+  if (WINDOWS_TO_IANA[lower]) return WINDOWS_TO_IANA[lower];
+  const stripped = lower.replace(/\(utc[+-]\d{2}:\d{2}\)\s*/i, "").trim();
+  if (WINDOWS_TO_IANA[stripped]) return WINDOWS_TO_IANA[stripped];
+  return clean;
+}
+
 /** The offset (ms) of a named zone at a moment, from Intl — null if the name is not IANA. */
 function zoneOffset(tz, utcMs) {
+  const resolved = resolveTz(tz);
+  if (!resolved) return null;
   try {
     const f = new Intl.DateTimeFormat("en-US", {
-      timeZone: tz,
+      timeZone: resolved,
       hourCycle: "h23",
       year: "numeric", month: "2-digit", day: "2-digit",
       hour: "2-digit", minute: "2-digit", second: "2-digit",
@@ -66,11 +159,10 @@ const offsetMs = (s) => {
 /**
  * A DATE or DATE-TIME property → { ms, allDay }.
  *
- * Z means UTC. A TZID is looked up with Intl when it is an IANA name; the
- * Windows names Outlook writes ("Romance Standard Time") are not, so the
- * VTIMEZONE in the same file is used instead — its summer offset from April
- * to October, its winter one otherwise, which is right for every zone that
- * changes clocks in March and October and close enough to show an invite.
+ * Z means UTC. A TZID is mapped to IANA and resolved with Intl, which knows
+ * the exact DST transition instants for every year. If Intl fails to recognise
+ * the name, the VTIMEZONE block in the same file is used, calculating the last
+ * Sunday of March and October transitions rather than a blanket month check.
  */
 function when(prop, zones) {
   if (!prop) return null;
@@ -91,10 +183,16 @@ function when(prop, zones) {
     const again = zoneOffset(tz, wall - off);
     return { ms: wall - (again ?? off), allDay: false };
   }
-  const zone = zones[tz];
+  const zone = zones[tz] || zones[resolveTz(tz)];
   if (zone) {
-    const summer = +mo >= 4 && +mo <= 10;
-    return { ms: wall - (summer ? zone.daylight ?? zone.standard : zone.standard ?? zone.daylight), allDay: false };
+    const lastSunMarch = 31 - new Date(Date.UTC(+y, 2, 31)).getUTCDay();
+    const lastSunOct = 31 - new Date(Date.UTC(+y, 9, 31)).getUTCDay();
+    const isSummer =
+      (+mo > 3 && +mo < 10) ||
+      (+mo === 3 && +d >= lastSunMarch) ||
+      (+mo === 10 && +d < lastSunOct);
+    const zoff = isSummer ? (zone.daylight ?? zone.standard) : (zone.standard ?? zone.daylight);
+    return { ms: wall - zoff, allDay: false };
   }
   return { ms: wall, allDay: false, floating: true };
 }
@@ -137,13 +235,23 @@ export function parseIcs(text) {
     if (dur) dtend = { ...dtstart, ms: dtstart.ms + (((+dur[1] || 0) * 24 + (+dur[2] || 0)) * 60 + (+dur[3] || 0)) * 60_000 };
   }
   const org = one("ORGANIZER");
+  const summary = unescapeText(one("SUMMARY")?.value);
+  const location = unescapeText(one("LOCATION")?.value);
+  const description = unescapeText(one("DESCRIPTION")?.value).slice(0, 2000);
+  const rawUrl = one("URL")?.value || "";
+  const videoMatch = `${rawUrl}\n${location}\n${description}`.match(
+    /https:\/\/(?:[a-zA-Z0-9-]+\.)?(?:teams\.microsoft\.com|meet\.google\.com|zoom\.us|webex\.com)\/[^\s<>"')]+/i
+  );
+  const url = rawUrl || (videoMatch ? videoMatch[0] : "");
+
   return {
     method,
     uid: one("UID")?.value || "",
     sequence: Number(one("SEQUENCE")?.value || 0),
-    summary: unescapeText(one("SUMMARY")?.value),
-    location: unescapeText(one("LOCATION")?.value),
-    description: unescapeText(one("DESCRIPTION")?.value).slice(0, 2000),
+    summary,
+    location,
+    description,
+    url,
     status: (one("STATUS")?.value || "").toUpperCase(),
     start: dtstart,
     end: dtend,
@@ -193,4 +301,52 @@ export function icsReply(invite, { email, name = "", status, now = new Date() })
     "END:VCALENDAR",
   ].filter(Boolean);
   return out.map(foldLine).join("\r\n") + "\r\n";
+}
+
+/**
+ * Indexes or removes an invitation in the events table for the timeline.
+ */
+export async function indexEvent(env, messageId, accountId, calendarText, fallbackSubject = "") {
+  if (!env?.DB || !messageId) return null;
+  if (!calendarText) {
+    await env.DB.prepare("DELETE FROM events WHERE id=?").bind(messageId).run().catch(() => {});
+    return null;
+  }
+  const inv = parseIcs(calendarText);
+  if (!inv || !inv.start) {
+    await env.DB.prepare("DELETE FROM events WHERE id=?").bind(messageId).run().catch(() => {});
+    return null;
+  }
+  const org = inv.organizer ? (inv.organizer.name ? `${inv.organizer.name} <${inv.organizer.email}>` : inv.organizer.email) : "";
+  const endMs = inv.end ? inv.end.ms : (inv.start.ms + 3600_000);
+  const status = inv.method === "CANCEL" || inv.status === "CANCELLED" ? "CANCELLED" : (inv.status || "CONFIRMED");
+  await env.DB.prepare(
+    `INSERT INTO events (id, account_id, uid, summary, location, description, url, start_ms, end_ms, all_day, status, organizer, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       summary=excluded.summary,
+       location=excluded.location,
+       description=excluded.description,
+       url=excluded.url,
+       start_ms=excluded.start_ms,
+       end_ms=excluded.end_ms,
+       all_day=excluded.all_day,
+       status=excluded.status,
+       organizer=excluded.organizer`
+  ).bind(
+    messageId,
+    accountId,
+    inv.uid || messageId,
+    (inv.summary || fallbackSubject || "Meeting").slice(0, 300),
+    (inv.location || "").slice(0, 300),
+    (inv.description || "").slice(0, 1000),
+    (inv.url || "").slice(0, 500),
+    inv.start.ms,
+    endMs,
+    inv.start.allDay ? 1 : 0,
+    status,
+    org.slice(0, 200),
+    Date.now()
+  ).run().catch(() => {});
+  return inv;
 }

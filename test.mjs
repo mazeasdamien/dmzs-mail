@@ -1021,6 +1021,10 @@ console.log("\n── invitations (iCalendar) ───────────�
   eq(inv.summary, "Point projet, revue", "échappements du texte retirés");
   eq(inv.start.ms, Date.UTC(2026, 9, 20, 8, 0), "fuseau Windows résolu par le VTIMEZONE (heure d'été)");
   eq(inv.end.ms - inv.start.ms, 3600_000, "durée d'une heure");
+  // Changement d'heure fin octobre : le 26 octobre 2026 est en heure d'hiver (+0100 au lieu de +0200)
+  const invHiver = parseIcs(ics.replace("20261020T100000", "20261026T140000").replace("20261020T110000", "20261026T150000"));
+  eq(invHiver.start.ms, Date.UTC(2026, 9, 26, 13, 0), "fuseau Windows prend en compte le changement d'heure d'hiver (26 octobre)");
+  eq(invHiver.end.ms, Date.UTC(2026, 9, 26, 14, 0), "fin d'événement correcte en heure d'hiver");
   eq(inv.organizer, { email: "jean@y.fr", name: "Jean Dupont" }, "organisateur, adresse en minuscules");
   ok(inv.description.includes("budgetsuite pliée"), "lignes pliées recollées");
   eq(parseIcs("DTSTART;TZID=Europe/Paris:20260115T090000\r\nBEGIN:VEVENT\r\nDTSTART;TZID=Europe/Paris:20260115T090000\r\nUID:u\r\nEND:VEVENT").start.ms,
@@ -1037,6 +1041,11 @@ console.log("\n── invitations (iCalendar) ───────────�
 
   const raw = buildRfc822({ from: "moi@x.fr", to: "jean@y.fr", subject: "Accepted: Point", text: "Accepted", calendar: { method: "REPLY", text: rep } });
   ok(/Content-Type: text\/calendar; charset="utf-8"; method=REPLY/.test(raw), "le message porte la partie text/calendar");
+
+  // Lien Teams / visio extrait
+  const icsTeams = ics.replace("LOCATION:Salle 4", "LOCATION:Microsoft Teams Meeting").replace("Ordre du jour :", "Rejoindre https://teams.microsoft.com/l/meetup-join/19%3ameeting_xyz\\nOrdre du jour :");
+  const invTeams = parseIcs(icsTeams);
+  ok(invTeams.url.includes("teams.microsoft.com"), "lien de réunion Teams extrait");
 
   // Et le chemin inverse : une invitation reçue garde sa partie calendrier.
   const recu = parseMessage(

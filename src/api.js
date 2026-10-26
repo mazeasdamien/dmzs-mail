@@ -8,7 +8,7 @@ import { bodyFromParts } from "./body.js";
 import { DEFAULT_MODEL as CLAUDE_DEFAULT, keyRefused, rewrite, usableModels } from "./claude.js";
 import { open, seal } from "./crypto.js";
 import { isAuthFailure } from "./errors.js";
-import { icsReply, parseIcs } from "./ics.js";
+import { icsReply, indexEvent, parseIcs } from "./ics.js";
 import { imapCreate, imapDelete, imapEmpty, imapFetchMeta, imapFetchPart, imapFetchRaw, imapFlag, imapList, imapListRaw, imapMove, imapOpen, imapPurge, imapRename, imapSearch, imapSelect } from "./imap.js";
 import { b64decode, blockMatches, buildRfc822, htmlToText, isBlockPattern, newMessageId, parseAddressList, qpBytes, replyReferences, textToHtml } from "./mime.js";
 import { pushAll, vapidKeys } from "./push.js";
@@ -944,6 +944,9 @@ export async function handleApi(request, env, path, ctx, session) {
         : "",
       body: { ...body, calendar: undefined },
     });
+    if (body.calendar) {
+      await indexEvent(env, msg.id, msg.account_id, body.calendar, msg.subject);
+    }
   }
 
   // GET /api/messages/:id/attachment/:n — the file itself.
@@ -1153,6 +1156,7 @@ export async function handleApi(request, env, path, ctx, session) {
     await env.MAIL.delete(bodyKey(msg.id));
     await env.DB.batch([
       env.DB.prepare("DELETE FROM messages WHERE id=?").bind(msg.id),
+      env.DB.prepare("DELETE FROM events WHERE id=?").bind(msg.id),
       ...(await unindex(env, [msg.id])),
     ]);
     return json({ ok: true, alreadyGone: gone });
@@ -1715,6 +1719,60 @@ No invented facts, no commitment to anything the brief does not cover, and no br
         "Cache-Control": "no-store",
       },
     });
+  }
+
+  // GET /api/timeline — upcoming meetings from invitations.
+  if (path === "/api/timeline" && request.method === "GET") {
+    const seeded = await env.DB.prepare("SELECT value FROM settings WHERE key='events_seeded'").first().catch(() => null);
+    if (!seeded) {
+      const { results: msgs } = await env.DB.prepare(
+        "SELECT id, account_id, subject FROM messages WHERE has_body=1 AND folder NOT IN ('trash', 'spam') ORDER BY date DESC LIMIT 150"
+      ).all().catch(() => ({ results: [] }));
+      for (const m of (msgs || [])) {
+        try {
+          const obj = await env.MAIL.get(bodyKey(m.id));
+          if (obj) {
+            const body = JSON.parse(await obj.text());
+            if (body.calendar) {
+              await indexEvent(env, m.id, m.account_id, body.calendar, m.subject);
+            }
+          }
+        } catch { /* ignore individual body errors */ }
+      }
+      await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('events_seeded', '1')").run().catch(() => {});
+    }
+
+    const { results } = await env.DB.prepare(
+      `SELECT e.*, m.subject as msg_subject, m.from_name, m.from_email, m.folder
+       FROM events e
+       JOIN messages m ON m.id = e.id
+       WHERE m.folder NOT IN ('trash', 'spam')
+       ORDER BY e.start_ms ASC`
+    ).all().catch(() => ({ results: [] }));
+
+    const events = [];
+    for (const ev of (results || [])) {
+      const rsvp = (await env.DB.prepare("SELECT value FROM settings WHERE key=?").bind(`rsvp_${ev.id}`).first().catch(() => null))?.value || "";
+      events.push({
+        id: ev.id,
+        account_id: ev.account_id,
+        uid: ev.uid,
+        summary: ev.summary || ev.msg_subject || "Meeting",
+        location: ev.location,
+        description: ev.description,
+        url: ev.url,
+        start: { ms: ev.start_ms, allDay: !!ev.all_day },
+        end: { ms: ev.end_ms, allDay: !!ev.all_day },
+        status: ev.status,
+        organizer: ev.organizer,
+        from_name: ev.from_name,
+        from_email: ev.from_email,
+        folder: ev.folder,
+        rsvp,
+      });
+    }
+
+    return json({ events });
   }
 
   // GET /api/snoozed — what is put away, and until when.
